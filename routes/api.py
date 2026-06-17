@@ -16,6 +16,8 @@ def chat(mensagem: str):
 @router.post("/webhook")
 async def webhook(data: dict):
 
+    print("DADOS RECEBIDOS:", data)
+
     mensagem = data.get("mensagem", "")
 
     resposta = perguntar_ia(mensagem)
