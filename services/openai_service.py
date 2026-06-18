@@ -8,7 +8,7 @@ client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY")
 )
 
-def perguntar_ia(mensagem):
+def perguntar_ia(contexto):
 
     resposta = client.responses.create(
         model="gpt-5-mini",
