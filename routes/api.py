@@ -1,30 +1,36 @@
-from services.zapi_service import enviar_whatsapp
+from fastapi import APIRouter
+from services.openai_service import perguntar_ia
+
+router = APIRouter()
 
 @router.post("/webhook")
 async def webhook(data: dict):
+
+    print("WEBHOOK RECEBIDO:")
+    print(data)
 
     try:
 
         if data.get("isGroup"):
             return {"status": "grupo_ignorado"}
 
-        mensagem = data["text"]["message"]
+        mensagem = data.get("text", {}).get("message", "")
 
-        numero = data["phone"]
-
-        print("Mensagem:", mensagem)
+        print("Mensagem recebida:", mensagem)
 
         resposta_ia = perguntar_ia(mensagem)
 
-        print("Resposta:", resposta_ia)
+        print("Resposta IA:", resposta_ia)
 
-        enviar_whatsapp(numero, resposta_ia)
-
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "resposta": resposta_ia
+        }
 
     except Exception as e:
 
-        print("ERRO:", e)
-        print(data)
+        print("ERRO:", str(e))
 
-        return {"status": "erro"}
+        return {
+            "status": "erro"
+        }
