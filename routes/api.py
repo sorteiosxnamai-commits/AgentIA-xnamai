@@ -2,6 +2,10 @@
 async def webhook(data: dict):
 
     try:
+
+        if data.get("isGroup"):
+            return {"status": "grupo_ignorado"}
+
         mensagem = data["text"]["message"]
 
         print("Mensagem recebida:", mensagem)
@@ -17,7 +21,6 @@ async def webhook(data: dict):
 
     except Exception as e:
         print("ERRO:", e)
+        print(data)
 
-        return {
-            "status": "erro"
-        }
+        return {"status": "erro"}
