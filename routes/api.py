@@ -1,3 +1,5 @@
+from services.zapi_service import enviar_whatsapp
+
 @router.post("/webhook")
 async def webhook(data: dict):
 
@@ -8,18 +10,20 @@ async def webhook(data: dict):
 
         mensagem = data["text"]["message"]
 
-        print("Mensagem recebida:", mensagem)
+        numero = data["phone"]
+
+        print("Mensagem:", mensagem)
 
         resposta_ia = perguntar_ia(mensagem)
 
-        print("Resposta IA:", resposta_ia)
+        print("Resposta:", resposta_ia)
 
-        return {
-            "status": "ok",
-            "resposta": resposta_ia
-        }
+        enviar_whatsapp(numero, resposta_ia)
+
+        return {"status": "ok"}
 
     except Exception as e:
+
         print("ERRO:", e)
         print(data)
 
