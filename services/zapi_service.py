@@ -2,7 +2,7 @@ import requests
 
 INSTANCE_ID = "3F4CB317B66E2245E7E58645B9B7D1FC"
 TOKEN = "99C8DCB079A8020DF63E7085"
-CLIENT_TOKEN = "SEU_TOKEN_COMPLETO_AQUI"
+CLIENT_TOKEN = "CF9cd4078a935541489c79fb0fe74d847fS"
 
 def enviar_mensagem(numero, mensagem):
 
@@ -25,8 +25,6 @@ def enviar_mensagem(numero, mensagem):
         timeout=30
     )
 
-    print("URL:", url)
-    print("HEADERS:", headers)
     print("STATUS ZAPI:", response.status_code)
     print("RESPOSTA ZAPI:", response.text)
 
