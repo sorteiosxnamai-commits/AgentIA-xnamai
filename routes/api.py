@@ -59,50 +59,41 @@ async def webhook(data: dict):
             mensagem
         )
 
-        # Atualiza histórico JSON
         atualizar_historico_json(cliente_id)
 
         print("Mensagem salva")
 
-        # =========================
-        # HISTÓRICO DA CONVERSA
-        # =========================
+        # ==================================
+        # HISTÓRICO
+        # ==================================
 
         historico = buscar_historico(cliente_id)
 
-        contexto = ""
+        historico_texto = ""
 
         for msg in historico:
 
             if msg["tipo"] == "cliente":
-                contexto += f"Cliente: {msg['mensagem']}\n"
+                historico_texto += f"Cliente: {msg['mensagem']}\n"
             else:
-                contexto += f"Atendente: {msg['mensagem']}\n"
+                historico_texto += f"Atendente: {msg['mensagem']}\n"
 
-        # =========================
-        # PRODUTOS DA XNAMAI
-        # =========================
+        # ==================================
+        # PRODUTOS
+        # ==================================
 
         produtos = buscar_produtos()
 
-        print("PRODUTOS ENCONTRADOS:")
+        print("========== PRODUTOS ==========")
         print(produtos)
+        print("TOTAL PRODUTOS:", len(produtos))
+        print("==============================")
 
-        contexto_produtos = """
-
-CATÁLOGO OFICIAL DA XNAMAI
-
-Utilize os produtos abaixo para responder clientes.
-
-Se o cliente perguntar sobre produtos,
-preços ou recomendações, utilize este catálogo.
-
-"""
+        catalogo = ""
 
         for produto in produtos:
 
-            contexto_produtos += f"""
-
+            catalogo += f"""
 Nome: {produto['nome']}
 Categoria: {produto['categoria']}
 Preço: R$ {produto['preco']}
@@ -111,37 +102,60 @@ Descrição: {produto['descricao']}
 
 """
 
-        contexto += contexto_produtos
+        # ==================================
+        # CONTEXTO FINAL
+        # ==================================
 
-        print("CONTEXTO ENVIADO PARA IA:")
-        print(contexto)
+        contexto_final = f"""
+Você é uma atendente da Xnamai.
 
-        # =========================
+HISTÓRICO DA CONVERSA:
+
+{historico_texto}
+
+MENSAGEM ATUAL DO CLIENTE:
+
+{mensagem}
+
+CATÁLOGO DE PRODUTOS DA XNAMAI:
+
+{catalogo}
+
+REGRAS:
+
+- Utilize SOMENTE os produtos cadastrados no catálogo.
+- Quando encontrar um produto relacionado ao pedido do cliente, informe:
+  Nome, preço, descrição e estoque.
+- Nunca diga que não existem produtos sem antes consultar o catálogo.
+- Se o cliente pedir um fone, procure produtos da categoria Audio.
+- Se o cliente pedir caixa de som, procure produtos da categoria Audio.
+"""
+
+        print("========== CONTEXTO FINAL ==========")
+        print(contexto_final)
+        print("====================================")
+
+        # ==================================
         # IA
-        # =========================
+        # ==================================
 
-        print("ENVIANDO PARA IA")
-
-        resposta_ia = perguntar_ia(contexto)
+        resposta_ia = perguntar_ia(contexto_final)
 
         print("RESPOSTA IA:")
         print(resposta_ia)
 
-        # Salva resposta da IA
+        # Salva resposta
         salvar_mensagem(
             cliente_id,
             "ia",
             resposta_ia
         )
 
-        # Atualiza histórico JSON novamente
         atualizar_historico_json(cliente_id)
 
-        print("Resposta salva")
-
-        # =========================
-        # ENVIA WHATSAPP
-        # =========================
+        # ==================================
+        # WHATSAPP
+        # ==================================
 
         enviar_mensagem(
             numero,
