@@ -103,7 +103,17 @@ def buscar_produtos():
         .execute()
     )
 
+    print("================================")
+    print("RESULTADO PRODUTOS:")
+    print(resultado)
+
+    print("DADOS PRODUTOS:")
+    print(resultado.data)
+    print("================================")
+
     return resultado.data
+
+    
 
 
 def buscar_produto_por_nome(nome):
