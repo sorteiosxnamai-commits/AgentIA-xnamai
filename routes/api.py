@@ -18,8 +18,7 @@ router = APIRouter()
 @router.post("/webhook")
 async def webhook(data: dict):
 
-
-    
+    try:
 
         print("WEBHOOK RECEBIDO:")
         print(data)
@@ -38,10 +37,7 @@ async def webhook(data: dict):
         print("Número:", numero)
         print("Mensagem:", mensagem)
 
-        # =========================
         # CLIENTE
-        # =========================
-
         cliente = buscar_cliente(numero)
 
         if not cliente:
@@ -51,10 +47,7 @@ async def webhook(data: dict):
 
         print("CLIENTE ID:", cliente_id)
 
-        # =========================
-        # SALVA MENSAGEM CLIENTE
-        # =========================
-
+        # SALVA MENSAGEM
         salvar_mensagem(
             cliente_id,
             "cliente",
@@ -63,10 +56,7 @@ async def webhook(data: dict):
 
         atualizar_historico_json(cliente_id)
 
-        # =========================
         # HISTÓRICO
-        # =========================
-
         historico = buscar_historico(cliente_id)
 
         historico_texto = ""
@@ -78,58 +68,40 @@ async def webhook(data: dict):
             else:
                 historico_texto += f"Atendente: {msg['mensagem']}\n"
 
-        # =========================
         # PRODUTOS
-        # =========================
+        produtos = buscar_produtos()
 
-        # ==================================
-# PRODUTOS
-# ==================================
+        print("================================")
+        print("PRODUTOS VINDOS DO SUPABASE:")
+        print(produtos)
 
-produtos = buscar_produtos()
+        if produtos:
+            print("TOTAL PRODUTOS:", len(produtos))
+        else:
+            print("TOTAL PRODUTOS: 0")
 
-print("================================")
-print("PRODUTOS VINDOS DO SUPABASE:")
-print(produtos)
+        print("================================")
 
-if produtos:
-    print("TOTAL PRODUTOS:", len(produtos))
-else:
-    print("TOTAL PRODUTOS: 0")
+        catalogo = ""
 
-print("================================")
+        for produto in produtos:
 
-catalogo = ""
+            catalogo += (
+                f"Nome: {produto['nome']}\n"
+                f"Categoria: {produto['categoria']}\n"
+                f"Preço: R$ {produto['preco']}\n"
+                f"Estoque: {produto['estoque']}\n"
+                f"Descrição: {produto['descricao']}\n\n"
+            )
 
-for produto in produtos:
+        print("================================")
+        print("CATALOGO MONTADO:")
+        print(catalogo)
+        print("================================")
 
-    catalogo += (
-        f"PRODUTO\n"
-        f"Nome: {produto['nome']}\n"
-        f"Categoria: {produto['categoria']}\n"
-        f"Preço: R$ {produto['preco']}\n"
-        f"Estoque: {produto['estoque']}\n"
-        f"Descrição: {produto['descricao']}\n\n"
-    )
-
-print("================================")
-print("CATALOGO MONTADO:")
-print(catalogo)
-print("================================")
-
-contexto_final = f"""
+        # CONTEXTO IA
+        contexto_final = f"""
 Você é uma atendente da Xnamai.
-
-IMPORTANTE:
-
-Os produtos abaixo EXISTEM no banco de dados.
-
-Você DEVE utilizar esses produtos ao responder.
-
-Se existir um produto relacionado ao pedido do cliente,
-você deve apresentar o produto.
-
-Nunca diga que não encontrou produtos sem verificar a lista.
 
 CATÁLOGO DE PRODUTOS:
 
@@ -143,33 +115,47 @@ MENSAGEM DO CLIENTE:
 
 {mensagem}
 
-EXEMPLOS:
+IMPORTANTE:
 
-Se existir:
-
-Nome: Fone Bluetooth HMaston RS60
-
-e o cliente pedir:
-
-"quero um fone"
-
-responda:
-
-"Temos o Fone Bluetooth HMaston RS60 disponível por R$ 89,90."
-
-Se existir:
-
-Nome: Caixa de Som Bluetooth LT800
-
-e o cliente pedir:
-
-"quero uma caixa de som"
-
-responda:
-
-"Temos a Caixa de Som Bluetooth LT800 disponível por R$ 129,90."
-
-Nunca invente produtos.
-Nunca invente preços.
-Nunca invente estoque.
+- Utilize SOMENTE os produtos do catálogo.
+- Nunca invente produtos.
+- Nunca invente preços.
+- Nunca invente estoque.
+- Se existir um produto relacionado ao pedido do cliente, apresente ele.
+- Se o cliente pedir fone, procure produtos de áudio.
+- Se o cliente pedir caixa de som, procure produtos de áudio.
 """
+
+        print("CONTEXTO ENVIADO:")
+        print(contexto_final)
+
+        resposta_ia = perguntar_ia(contexto_final)
+
+        print("RESPOSTA IA:")
+        print(resposta_ia)
+
+        salvar_mensagem(
+            cliente_id,
+            "ia",
+            resposta_ia
+        )
+
+        atualizar_historico_json(cliente_id)
+
+        enviar_mensagem(
+            numero,
+            resposta_ia
+        )
+
+        return {
+            "status": "ok"
+        }
+
+    except Exception as e:
+
+        print("ERRO:", str(e))
+
+        return {
+            "status": "erro",
+            "mensagem": str(e)
+        }
