@@ -37,7 +37,10 @@ async def webhook(data: dict):
         print("Número:", numero)
         print("Mensagem:", mensagem)
 
-        # Buscar cliente
+        # =========================
+        # CLIENTE
+        # =========================
+
         cliente = buscar_cliente(numero)
 
         if not cliente:
@@ -47,7 +50,10 @@ async def webhook(data: dict):
 
         print("CLIENTE ID:", cliente_id)
 
-        # Salvar mensagem do cliente
+        # =========================
+        # SALVA MENSAGEM CLIENTE
+        # =========================
+
         salvar_mensagem(
             cliente_id,
             "cliente",
@@ -81,7 +87,7 @@ async def webhook(data: dict):
         print(produtos)
 
         if not produtos:
-            print("NENHUM PRODUTO ENCONTRADO")
+            print("NENHUM PRODUTO ENCONTRADO NO SUPABASE")
         else:
             print(f"TOTAL PRODUTOS: {len(produtos)}")
 
@@ -89,16 +95,16 @@ async def webhook(data: dict):
 
         for produto in produtos:
 
-            catalogo += f"""
-Nome: {produto.get('nome', '')}
-Categoria: {produto.get('categoria', '')}
-Preço: R$ {produto.get('preco', '')}
-Estoque: {produto.get('estoque', '')}
-Descrição: {produto.get('descricao', '')}
+            catalogo += (
+                f"PRODUTO\n"
+                f"Nome: {produto['nome']}\n"
+                f"Categoria: {produto['categoria']}\n"
+                f"Preço: R$ {produto['preco']}\n"
+                f"Estoque: {produto['estoque']}\n"
+                f"Descrição: {produto['descricao']}\n\n"
+            )
 
-"""
-
-        print("========== CATÁLOGO ==========")
+        print("========== CATALOGO ==========")
         print(catalogo)
 
         # =========================
@@ -108,11 +114,13 @@ Descrição: {produto.get('descricao', '')}
         contexto_final = f"""
 ATENÇÃO:
 
-Os produtos abaixo existem no banco de dados da Xnamai.
+Os produtos abaixo EXISTEM no banco de dados da Xnamai.
 
-Nunca diga que não encontrou produtos sem verificar o catálogo.
+Você DEVE utilizar esses produtos para responder.
 
-CATÁLOGO:
+Nunca diga que não encontrou produtos sem analisar o catálogo.
+
+CATÁLOGO DE PRODUTOS:
 
 {catalogo}
 
@@ -126,14 +134,16 @@ MENSAGEM ATUAL DO CLIENTE:
 
 REGRAS:
 
-- Utilize apenas os produtos do catálogo.
+- Utilize SOMENTE os produtos do catálogo.
 - Informe nome, preço, descrição e estoque.
 - Nunca invente produtos.
 - Nunca invente preços.
 - Nunca invente estoque.
+- Se o cliente pedir um fone, procure produtos cujo nome contenha "Fone".
+- Se o cliente pedir uma caixa de som, procure produtos cujo nome contenha "Caixa".
 """
 
-        print("========== CONTEXTO ==========")
+        print("========== CONTEXTO FINAL ==========")
         print(contexto_final)
 
         # =========================
@@ -145,7 +155,10 @@ REGRAS:
         print("RESPOSTA IA:")
         print(resposta_ia)
 
-        # Salvar resposta da IA
+        # =========================
+        # SALVA RESPOSTA
+        # =========================
+
         salvar_mensagem(
             cliente_id,
             "ia",
@@ -155,7 +168,7 @@ REGRAS:
         atualizar_historico_json(cliente_id)
 
         # =========================
-        # WHATSAPP
+        # ENVIA WHATSAPP
         # =========================
 
         enviar_mensagem(
@@ -163,7 +176,7 @@ REGRAS:
             resposta_ia
         )
 
-        print("Mensagem enviada")
+        print("Mensagem enviada para WhatsApp")
 
         return {
             "status": "ok"
