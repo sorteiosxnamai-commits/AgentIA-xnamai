@@ -1,6 +1,10 @@
 from database.supabase import supabase
 
 
+# =========================
+# CLIENTES
+# =========================
+
 def buscar_cliente(telefone):
 
     resultado = (
@@ -29,13 +33,23 @@ def criar_cliente(telefone):
     return resultado.data[0]
 
 
+# =========================
+# CONVERSAS
+# =========================
+
 def salvar_mensagem(cliente_id, tipo, mensagem):
 
-    supabase.table("conversas").insert({
-        "cliente_id": cliente_id,
-        "tipo": tipo,
-        "mensagem": mensagem
-    }).execute()
+    resultado = (
+        supabase.table("conversas")
+        .insert({
+            "cliente_id": cliente_id,
+            "tipo": tipo,
+            "mensagem": mensagem
+        })
+        .execute()
+    )
+
+    return resultado
 
 
 def buscar_historico(cliente_id):
@@ -75,3 +89,45 @@ def atualizar_historico_json(cliente_id):
     )
 
     return resultado
+
+
+# =========================
+# PRODUTOS
+# =========================
+
+def buscar_produtos():
+
+    resultado = (
+        supabase.table("produtos")
+        .select("*")
+        .execute()
+    )
+
+    return resultado.data
+
+
+def buscar_produto_por_nome(nome):
+
+    resultado = (
+        supabase.table("produtos")
+        .select("*")
+        .ilike("nome", f"%{nome}%")
+        .execute()
+    )
+
+    return resultado.data
+
+
+def buscar_produto_por_id(produto_id):
+
+    resultado = (
+        supabase.table("produtos")
+        .select("*")
+        .eq("id", produto_id)
+        .execute()
+    )
+
+    if resultado.data:
+        return resultado.data[0]
+
+    return None
