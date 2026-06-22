@@ -49,3 +49,27 @@ def buscar_historico(cliente_id):
     )
 
     return resultado.data
+
+
+def atualizar_historico_json(cliente_id):
+
+    historico = buscar_historico(cliente_id)
+
+    historico_json = []
+
+    for msg in historico:
+
+        historico_json.append({
+            "role": "user" if msg["tipo"] == "cliente" else "assistant",
+            "content": msg["mensagem"],
+            "timestamp": str(msg["criado_em"])
+        })
+
+    (
+        supabase.table("clientes")
+        .update({
+            "historico": historico_json
+        })
+        .eq("id", cliente_id)
+        .execute()
+    )

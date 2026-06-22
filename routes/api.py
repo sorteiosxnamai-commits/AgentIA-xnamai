@@ -7,7 +7,8 @@ from services.supabase_service import (
     buscar_cliente,
     criar_cliente,
     salvar_mensagem,
-    buscar_historico
+    buscar_historico,
+    atualizar_historico_json
 )
 
 router = APIRouter()
