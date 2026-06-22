@@ -1,12 +1,11 @@
 import requests
-import os
 
-INSTANCE_ID = os.getenv("instance181898")
-TOKEN = os.getenv("xe2moxi8yqfd51zs")
+INSTANCE_ID = "instance181898"
+TOKEN = "xe2moxi8yqfd51zs"
 
 def enviar_mensagem(numero, mensagem):
 
-    url = f"https://api.ultramsg.com/instance181898/{INSTANCE_ID}/messages/chat"
+    url = f"https://api.ultramsg.com/{INSTANCE_ID}/messages/chat"
 
     payload = {
         "token": TOKEN,
@@ -16,4 +15,5 @@ def enviar_mensagem(numero, mensagem):
 
     response = requests.post(url, data=payload)
 
-    print(response.text)
+    print("STATUS:", response.status_code)
+    print("RESPOSTA:", response.text)
