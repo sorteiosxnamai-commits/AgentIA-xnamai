@@ -18,7 +18,8 @@ router = APIRouter()
 @router.post("/webhook")
 async def webhook(data: dict):
 
-    try:
+
+    
 
         print("WEBHOOK RECEBIDO:")
         print(data)
@@ -81,112 +82,37 @@ async def webhook(data: dict):
         # PRODUTOS
         # =========================
 
-        produtos = buscar_produtos()
+        # ==================================
+# PRODUTOS
+# ==================================
 
-        print("========== PRODUTOS ==========")
-        print(produtos)
+produtos = buscar_produtos()
 
-        if not produtos:
-            print("NENHUM PRODUTO ENCONTRADO NO SUPABASE")
-        else:
-            print(f"TOTAL PRODUTOS: {len(produtos)}")
+print("================================")
+print("PRODUTOS VINDOS DO SUPABASE:")
+print(produtos)
 
-        catalogo = ""
+if produtos:
+    print("TOTAL PRODUTOS:", len(produtos))
+else:
+    print("TOTAL PRODUTOS: 0")
 
-        for produto in produtos:
+print("================================")
 
-            catalogo += (
-                f"PRODUTO\n"
-                f"Nome: {produto['nome']}\n"
-                f"Categoria: {produto['categoria']}\n"
-                f"Preço: R$ {produto['preco']}\n"
-                f"Estoque: {produto['estoque']}\n"
-                f"Descrição: {produto['descricao']}\n\n"
-            )
+catalogo = ""
 
-        print("========== CATALOGO ==========")
-        print(catalogo)
+for produto in produtos:
 
-        # =========================
-        # CONTEXTO DA IA
-        # =========================
+    catalogo += (
+        f"PRODUTO\n"
+        f"Nome: {produto['nome']}\n"
+        f"Categoria: {produto['categoria']}\n"
+        f"Preço: R$ {produto['preco']}\n"
+        f"Estoque: {produto['estoque']}\n"
+        f"Descrição: {produto['descricao']}\n\n"
+    )
 
-        contexto_final = f"""
-ATENÇÃO:
-
-Os produtos abaixo EXISTEM no banco de dados da Xnamai.
-
-Você DEVE utilizar esses produtos para responder.
-
-Nunca diga que não encontrou produtos sem analisar o catálogo.
-
-CATÁLOGO DE PRODUTOS:
-
-{catalogo}
-
-HISTÓRICO DA CONVERSA:
-
-{historico_texto}
-
-MENSAGEM ATUAL DO CLIENTE:
-
-{mensagem}
-
-REGRAS:
-
-- Utilize SOMENTE os produtos do catálogo.
-- Informe nome, preço, descrição e estoque.
-- Nunca invente produtos.
-- Nunca invente preços.
-- Nunca invente estoque.
-- Se o cliente pedir um fone, procure produtos cujo nome contenha "Fone".
-- Se o cliente pedir uma caixa de som, procure produtos cujo nome contenha "Caixa".
-"""
-
-        print("========== CONTEXTO FINAL ==========")
-        print(contexto_final)
-
-        # =========================
-        # IA
-        # =========================
-
-        resposta_ia = perguntar_ia(contexto_final)
-
-        print("RESPOSTA IA:")
-        print(resposta_ia)
-
-        # =========================
-        # SALVA RESPOSTA
-        # =========================
-
-        salvar_mensagem(
-            cliente_id,
-            "ia",
-            resposta_ia
-        )
-
-        atualizar_historico_json(cliente_id)
-
-        # =========================
-        # ENVIA WHATSAPP
-        # =========================
-
-        enviar_mensagem(
-            numero,
-            resposta_ia
-        )
-
-        print("Mensagem enviada para WhatsApp")
-
-        return {
-            "status": "ok"
-        }
-
-    except Exception as e:
-
-        print("ERRO:", str(e))
-
-        return {
-            "status": "erro",
-            "mensagem": str(e)
-        }
+print("================================")
+print("CATALOGO MONTADO:")
+print(catalogo)
+print("================================")
