@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from services.openai_service import perguntar_ia
-from services.zapi_service import enviar_mensagem
+from services.ultramsg_service import enviar_mensagem
 
 from services.supabase_service import (
     buscar_cliente,
@@ -21,18 +21,20 @@ async def webhook(data: dict):
         print("WEBHOOK RECEBIDO:")
         print(data)
 
-        # Ignora grupos
-        if data.get("isGroup"):
-            return {"status": "grupo_ignorado"}
+        # UltraMsg envia vários tipos de eventos
+        if "data" not in data:
+            return {"status": "evento_ignorado"}
 
-        # Ignora mensagens enviadas pelo próprio número
-        if data.get("fromMe"):
-            return {"status": "mensagem_propria"}
+        evento = data["data"]
 
-        mensagem = data["text"]["message"]
-        numero = data["phone"]
+        numero = evento.get("from")
+        mensagem = evento.get("body")
 
-        print("Mensagem recebida:", mensagem)
+        if not numero or not mensagem:
+            return {"status": "sem_mensagem"}
+
+        print("Número:", numero)
+        print("Mensagem:", mensagem)
 
         # Procura cliente
         cliente = buscar_cliente(numero)
@@ -54,9 +56,9 @@ async def webhook(data: dict):
             mensagem
         )
 
-        print("Mensagem salva:", mensagem)
+        print("Mensagem salva")
 
-        # Busca histórico completo
+        # Busca histórico
         historico = buscar_historico(cliente_id)
 
         contexto = ""
@@ -68,12 +70,11 @@ async def webhook(data: dict):
             else:
                 contexto += f"IA: {msg['mensagem']}\n"
 
-        print("ANTES DA IA")
+        print("ENVIANDO PARA IA")
 
         resposta_ia = perguntar_ia(contexto)
 
-        print("DEPOIS DA IA")
-        print("Resposta IA:", resposta_ia)
+        print("RESPOSTA IA:", resposta_ia)
 
         # Salva resposta da IA
         salvar_mensagem(
@@ -81,14 +82,16 @@ async def webhook(data: dict):
             "ia",
             resposta_ia
         )
-        print("Resposta IA salva:", resposta_ia)
 
-        print("ANTES DE ENVIAR")
+        print("Resposta salva")
 
+        # Envia para WhatsApp
         enviar_mensagem(
             numero,
             resposta_ia
         )
+
+        print("Mensagem enviada para WhatsApp")
 
         return {
             "status": "ok"
