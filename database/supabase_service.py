@@ -106,6 +106,20 @@ def buscar_produtos():
     print("================================")
     print("RESULTADO PRODUTOS:")
     print(resultado)
+    print("DADOS:")
+    print(resultado.data)
+    print("================================")
+
+    return resultado.data
+
+    print("RESULTADO PRODUTOS:")
+    print(resultado.data)
+
+    return resultado.data
+
+    print("================================")
+    print("RESULTADO PRODUTOS:")
+    print(resultado)
 
     print("DADOS PRODUTOS:")
     print(resultado.data)
