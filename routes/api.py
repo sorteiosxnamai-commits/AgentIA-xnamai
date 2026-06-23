@@ -9,7 +9,11 @@ from services.supabase_service import (
     salvar_mensagem,
     buscar_historico,
     atualizar_historico_json,
-    buscar_produtos
+    buscar_produtos,
+    criar_atendimento,
+    buscar_atendimento_aberto,
+    criar_lead,
+    buscar_lead
 )
 
 router = APIRouter()
@@ -47,6 +51,40 @@ async def webhook(data: dict):
 
         print("CLIENTE ID:", cliente_id)
 
+        # ATENDIMENTO
+        atendimento = buscar_atendimento_aberto(cliente_id)
+
+        if not atendimento:
+            criar_atendimento(cliente_id)
+
+        # LEADS
+        texto = mensagem.lower()
+
+        interesses = [
+            "fone",
+            "caixa de som",
+            "carregador",
+            "cabo",
+            "suporte"
+        ]
+
+        for interesse in interesses:
+
+            if interesse in texto:
+
+                lead = buscar_lead(
+                    cliente_id,
+                    interesse
+                )
+
+                if not lead:
+                    criar_lead(
+                        cliente_id,
+                        interesse
+                    )
+
+                break
+
         # SALVA MENSAGEM
         salvar_mensagem(
             cliente_id,
@@ -71,17 +109,6 @@ async def webhook(data: dict):
         # PRODUTOS
         produtos = buscar_produtos()
 
-        print("================================")
-        print("PRODUTOS VINDOS DO SUPABASE:")
-        print(produtos)
-
-        if produtos:
-            print("TOTAL PRODUTOS:", len(produtos))
-        else:
-            print("TOTAL PRODUTOS: 0")
-
-        print("================================")
-
         catalogo = ""
 
         for produto in produtos:
@@ -94,19 +121,7 @@ async def webhook(data: dict):
                 f"Descrição: {produto['descricao']}\n\n"
             )
 
-        print("================================")
-        print("CATALOGO MONTADO:")
-        print(catalogo)
-        print("================================")
-
-        # CONTEXTO IA
         contexto_final = f"""
-Você é uma atendente da Xnamai.
-
-CATÁLOGO DE PRODUTOS:
-
-{catalogo}
-
 HISTÓRICO:
 
 {historico_texto}
@@ -115,18 +130,12 @@ MENSAGEM DO CLIENTE:
 
 {mensagem}
 
-IMPORTANTE:
+CATÁLOGO DE PRODUTOS:
 
-- Utilize SOMENTE os produtos do catálogo.
-- Nunca invente produtos.
-- Nunca invente preços.
-- Nunca invente estoque.
-- Se existir um produto relacionado ao pedido do cliente, apresente ele.
-- Se o cliente pedir fone, procure produtos de áudio.
-- Se o cliente pedir caixa de som, procure produtos de áudio.
+{catalogo}
 """
 
-        print("CONTEXTO ENVIADO:")
+        print("CONTEXTO ENVIADO PARA IA:")
         print(contexto_final)
 
         resposta_ia = perguntar_ia(contexto_final)
@@ -134,6 +143,7 @@ IMPORTANTE:
         print("RESPOSTA IA:")
         print(resposta_ia)
 
+        # SALVA RESPOSTA
         salvar_mensagem(
             cliente_id,
             "ia",
@@ -142,6 +152,7 @@ IMPORTANTE:
 
         atualizar_historico_json(cliente_id)
 
+        # ENVIA WHATSAPP
         enviar_mensagem(
             numero,
             resposta_ia
