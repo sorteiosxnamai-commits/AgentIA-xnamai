@@ -131,3 +131,37 @@ def buscar_produto_por_id(produto_id):
         return resultado.data[0]
 
     return None
+
+# =========================
+# LEADS
+# =========================
+
+def criar_lead(cliente_id, interesse):
+
+    resultado = (
+        supabase.table("leads")
+        .insert({
+            "cliente_id": cliente_id,
+            "interesse": interesse,
+            "status": "novo"
+        })
+        .execute()
+    )
+
+    return resultado
+
+
+def buscar_lead(cliente_id, interesse):
+
+    resultado = (
+        supabase.table("leads")
+        .select("*")
+        .eq("cliente_id", cliente_id)
+        .eq("interesse", interesse)
+        .execute()
+    )
+
+    if resultado.data:
+        return resultado.data[0]
+
+    return None
