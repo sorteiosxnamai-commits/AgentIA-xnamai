@@ -33,6 +33,20 @@ def criar_cliente(telefone):
     return resultado.data[0]
 
 
+def salvar_openai_thread_id(cliente_id, thread_id):
+
+    resultado = (
+        supabase.table("clientes")
+        .update({
+            "openai_thread_id": thread_id
+        })
+        .eq("id", cliente_id)
+        .execute()
+    )
+
+    return resultado
+
+
 # =========================
 # CONVERSAS
 # =========================

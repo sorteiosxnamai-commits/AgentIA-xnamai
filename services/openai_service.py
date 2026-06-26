@@ -1,53 +1,90 @@
-from openai import OpenAI
-from dotenv import load_dotenv
 import os
+import time
+
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv()
 
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def perguntar_ia(contexto):
+ASSISTANT_ID = os.getenv("OPENAI_ASSISTANT_ID", "").strip()
 
-    resposta = client.responses.create(
-        model="gpt-5",
-        instructions="""
-Você é a atendente oficial da Xnamai.
+FALLBACK_INSTRUCTIONS = """
+Você é a atendente oficial da Xnamai no WhatsApp.
 
-IMPORTANTE:
+Responda PRIMEIRO com informação útil. Use SOMENTE produtos do catálogo enviado.
+Nunca invente produto, preço ou estoque. Mensagens curtas (2 a 4 frases).
+Não faça perguntas desnecessárias quando o cliente já disse o que quer.
+"""
 
-Você sempre receberá um catálogo de produtos dentro da conversa.
 
-REGRAS:
+def _extrair_texto_resposta(messages) -> str:
+    for message in messages.data:
+        if message.role != "assistant":
+            continue
 
-- Utilize SOMENTE os produtos enviados no catálogo.
-- Nunca invente produtos.
-- Nunca invente preços.
-- Nunca invente estoque.
-- Sempre consulte o catálogo antes de responder.
-- Se existir um produto relacionado ao que o cliente pediu, apresente esse produto.
-- Se não existir no catálogo, informe educadamente.
+        partes = []
+        for block in message.content:
+            if block.type == "text":
+                partes.append(block.text.value)
 
-EXEMPLO:
+        if partes:
+            return "\n".join(partes).strip()
 
-Cliente:
-Quero um fone.
+    raise ValueError("Assistant não retornou texto na resposta.")
 
-Se existir:
 
-Nome: Fone Bluetooth HMaston RS60
+def _perguntar_assistant(contexto: str, thread_id: str | None = None) -> tuple[str, str]:
+    if not thread_id:
+        thread_id = client.beta.threads.create().id
 
-Resposta:
-
-Temos o Fone Bluetooth HMaston RS60 disponível.
-O valor é R$ 89,90 e ele é uma ótima opção para uso diário.
-
-Sempre responda em português.
-Nunca diga que é uma IA.
-Seja natural e profissional.
-""",
-        input=contexto
+    client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=contexto,
     )
 
-    return resposta.output_text
+    run = client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=ASSISTANT_ID,
+    )
+
+    while run.status in ("queued", "in_progress"):
+        time.sleep(0.5)
+        run = client.beta.threads.runs.retrieve(
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+
+    if run.status != "completed":
+        raise ValueError(f"OpenAI Assistant falhou com status: {run.status}")
+
+    messages = client.beta.threads.messages.list(
+        thread_id=thread_id,
+        order="desc",
+        limit=5,
+    )
+
+    return _extrair_texto_resposta(messages), thread_id
+
+
+def _perguntar_responses(contexto: str) -> tuple[str, None]:
+    resposta = client.responses.create(
+        model="gpt-5",
+        instructions=FALLBACK_INSTRUCTIONS,
+        input=contexto,
+    )
+    return resposta.output_text, None
+
+
+def perguntar_ia(contexto: str, thread_id: str | None = None) -> tuple[str, str | None]:
+    """
+    Usa o Assistant da OpenAI (OPENAI_ASSISTANT_ID) se configurado.
+    Caso contrário, usa a API Responses com prompt local.
+    Retorna (texto_resposta, thread_id).
+    """
+    if ASSISTANT_ID:
+        return _perguntar_assistant(contexto, thread_id)
+
+    return _perguntar_responses(contexto)

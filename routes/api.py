@@ -17,7 +17,8 @@ from services.supabase_service import (
     buscar_historico,
     atualizar_historico_json,
     criar_lead,
-    buscar_lead
+    buscar_lead,
+    salvar_openai_thread_id,
 )
 
 router = APIRouter()
@@ -171,8 +172,6 @@ def processar_mensagem(data: dict):
         # =========================
 
         contexto = f"""
-Você é uma atendente da Xnamai.
-
 HISTÓRICO DA CONVERSA:
 
 {historico_texto}
@@ -181,16 +180,23 @@ MENSAGEM ATUAL DO CLIENTE:
 
 {mensagem}
 
-PRODUTOS DISPONÍVEIS:
+PRODUTOS DISPONÍVEIS PARA ESTA CONSULTA:
 
 {catalogo}
 
-Responda de forma amigável e utilize os produtos disponíveis quando fizer sentido.
+Responda direto ao pedido do cliente usando o catálogo acima. Não faça perguntas desnecessárias.
 """
 
         print("ENVIANDO PARA IA")
 
-        resposta_ia = perguntar_ia(contexto)
+        thread_id = cliente.get("openai_thread_id")
+        resposta_ia, thread_id = perguntar_ia(contexto, thread_id=thread_id)
+
+        if thread_id and thread_id != cliente.get("openai_thread_id"):
+            try:
+                salvar_openai_thread_id(cliente_id, thread_id)
+            except Exception as thread_error:
+                print("AVISO: não salvou openai_thread_id:", thread_error)
 
         print("RESPOSTA IA:")
         print(resposta_ia)
