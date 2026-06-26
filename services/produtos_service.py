@@ -6,8 +6,11 @@ from dotenv import load_dotenv
 
 from services.mercos_service import (
     _extrair_termos,
+    buscar_produtos_mercos as listar_todos_mercos,
     buscar_produtos_para_atendimento as buscar_produtos_mercos,
+    mercos_configurado,
     montar_catalogo_texto,
+    normalizar_produto,
 )
 from services.supabase_service import buscar_produtos
 
@@ -40,6 +43,37 @@ def _normalizar_texto(texto: str) -> str:
     texto = unicodedata.normalize("NFKD", texto)
     texto = "".join(c for c in texto if not unicodedata.combining(c))
     return texto.lower()
+
+
+PADROES_SAUDACAO = (
+    r"^(oi|ola|olá|hey|eae|e ai|eai|bom dia|boa tarde|boa noite|hello|hi)\b",
+    r"^(tudo bem|td bem|blz|beleza)\b",
+)
+
+
+def _eh_saudacao(mensagem: str) -> bool:
+    texto = _normalizar_texto(mensagem.strip())
+    if not texto:
+        return False
+    return any(re.search(padrao, texto) for padrao in PADROES_SAUDACAO)
+
+
+def _catalogo_inicial() -> tuple[list[dict], str, str | None]:
+    erro_mercos = None
+
+    if mercos_configurado():
+        try:
+            produtos = [
+                normalizar_produto(p)
+                for p in listar_todos_mercos()[:LIMITE_CATALOGO]
+            ]
+            if produtos:
+                return produtos, "mercos", None
+        except Exception as e:
+            erro_mercos = str(e)
+
+    produtos = buscar_produtos()[:LIMITE_CATALOGO]
+    return produtos, "supabase", erro_mercos
 
 
 def _consulta_catalogo(mensagem: str) -> bool:
@@ -89,20 +123,21 @@ def buscar_produtos_para_atendimento(mensagem: str) -> dict:
     fonte = _fonte_configurada()
     erro_mercos = None
 
-    if _consulta_catalogo(mensagem):
-        produtos = buscar_produtos()[:LIMITE_CATALOGO]
+    if _consulta_catalogo(mensagem) or _eh_saudacao(mensagem):
+        produtos, fonte_cat, erro_mercos = _catalogo_inicial()
         return {
             "produtos": produtos,
-            "fonte": "supabase",
-            "erro_mercos": None,
+            "fonte": fonte_cat,
+            "erro_mercos": erro_mercos,
         }
 
     termos = _extrair_termos(mensagem)
     if not termos:
+        produtos, fonte_cat, erro_mercos = _catalogo_inicial()
         return {
-            "produtos": [],
-            "fonte": "nenhum",
-            "erro_mercos": None,
+            "produtos": produtos,
+            "fonte": fonte_cat,
+            "erro_mercos": erro_mercos,
         }
 
     if fonte in ("mercos", "auto"):

@@ -2,7 +2,7 @@ import os
 import time
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, NotFoundError
 
 load_dotenv()
 
@@ -81,10 +81,22 @@ def _perguntar_responses(contexto: str) -> tuple[str, None]:
 def perguntar_ia(contexto: str, thread_id: str | None = None) -> tuple[str, str | None]:
     """
     Usa o Assistant da OpenAI (OPENAI_ASSISTANT_ID) se configurado.
-    Caso contrário, usa a API Responses com prompt local.
+    Se o Assistant não existir na conta da API key, usa Responses API.
     Retorna (texto_resposta, thread_id).
     """
     if ASSISTANT_ID:
-        return _perguntar_assistant(contexto, thread_id)
+        try:
+            return _perguntar_assistant(contexto, thread_id)
+        except NotFoundError:
+            print(
+                "AVISO: Assistant não encontrado (OPENAI_ASSISTANT_ID). "
+                "Verifique se a OPENAI_API_KEY é da mesma conta do painel OpenAI. "
+                "Usando Responses API como fallback."
+            )
+        except Exception as e:
+            if "No assistant found" in str(e):
+                print("AVISO: Assistant inválido. Usando Responses API como fallback.")
+            else:
+                raise
 
     return _perguntar_responses(contexto)
