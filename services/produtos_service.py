@@ -47,15 +47,13 @@ def _normalizar_texto(texto: str) -> str:
 
 PADROES_SAUDACAO = (
     r"^(oi|ola|olá|hey|eae|e ai|eai|bom dia|boa tarde|boa noite|hello|hi)\b",
-    r"^(tudo bem|td bem|blz|beleza)\b",
 )
 
 
-def _eh_saudacao(mensagem: str) -> bool:
-    texto = _normalizar_texto(mensagem.strip())
-    if not texto:
-        return False
-    return any(re.search(padrao, texto) for padrao in PADROES_SAUDACAO)
+def eh_saudacao(mensagem: str, historico_texto: str = "") -> bool:
+    from services.conversa_service import eh_saudacao_inicial
+
+    return eh_saudacao_inicial(mensagem, historico_texto)
 
 
 def _catalogo_inicial() -> tuple[list[dict], str, str | None]:
@@ -119,15 +117,11 @@ def _buscar_supabase(mensagem: str) -> list[dict]:
     return produtos[:LIMITE_CATALOGO]
 
 
-def eh_saudacao(mensagem: str) -> bool:
-    return _eh_saudacao(mensagem)
-
-
 def buscar_produtos_para_atendimento(mensagem: str) -> dict:
     fonte = _fonte_configurada()
     erro_mercos = None
 
-    if _consulta_catalogo(mensagem) or _eh_saudacao(mensagem):
+    if _consulta_catalogo(mensagem):
         produtos, fonte_cat, erro_mercos = _catalogo_inicial()
         return {
             "produtos": produtos,

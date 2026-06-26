@@ -18,6 +18,11 @@ from services.produto_imagem_service import (
     produtos_com_foto_disponivel,
 )
 
+from services.conversa_service import (
+    eh_confirmacao_fechamento,
+    extrair_nome_do_historico,
+    resposta_fechamento_pedido,
+)
 from services.produtos_service import (
     buscar_produtos_para_atendimento,
     eh_saudacao,
@@ -125,11 +130,16 @@ def processar_mensagem(data: dict):
         # PRODUTOS
         # =========================
 
-        saudacao = eh_saudacao(mensagem)
+        nome_conversa = extrair_nome_do_historico(historico_texto, nome_cliente)
+        fechamento = eh_confirmacao_fechamento(
+            mensagem, historico_texto, ultima_resposta_ia
+        )
+        saudacao = eh_saudacao(mensagem, historico_texto)
 
-        if saudacao:
+        if fechamento or saudacao:
             produtos = []
             catalogo = ""
+            resultado_produtos = {"fonte": "", "erro_mercos": None}
         else:
             resultado_produtos = buscar_produtos_para_atendimento(mensagem)
             produtos = resultado_produtos["produtos"]
@@ -182,8 +192,25 @@ def processar_mensagem(data: dict):
             )
         )
 
-        if saudacao:
-            resposta_ia = resposta_saudacao(nome_cliente)
+        if fechamento:
+            frete_estimado = float(os.getenv("FRETE_ESTIMADO", "0") or "0")
+            resposta_ia = resposta_fechamento_pedido(
+                historico_texto,
+                nome_cliente,
+                frete_estimado,
+            )
+            resultado_fechamento = buscar_produtos_para_atendimento(historico_texto)
+            if vendedor_configurado():
+                notificar_vendedor(
+                    numero_cliente=numero,
+                    nome_cliente=nome_conversa,
+                    interesse="pedido fechado",
+                    mensagem_cliente=mensagem,
+                    produtos=resultado_fechamento.get("produtos"),
+                )
+                print("VENDEDOR NOTIFICADO: pedido fechado")
+        elif saudacao:
+            resposta_ia = resposta_saudacao(nome_conversa)
         elif pediu_foto and produtos and not com_foto:
             resposta_ia = resposta_sem_foto(produtos[0])
         elif pediu_foto and com_foto and repetindo:
@@ -195,7 +222,7 @@ def processar_mensagem(data: dict):
                 mensagem=mensagem,
                 catalogo=catalogo,
                 historico_texto=historico_texto,
-                nome_cliente=nome_cliente,
+                nome_cliente=nome_conversa,
                 ultima_resposta_ia=ultima_resposta_ia,
                 foto_automatica=bool(com_foto and pediu_foto),
             )
