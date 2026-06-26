@@ -117,3 +117,18 @@ def enviar_fotos_produtos(numero: str, produtos: list[dict], mensagem: str) -> i
             enviadas += 1
 
     return enviadas
+
+
+def produtos_com_foto_disponivel(produtos: list[dict], mensagem: str) -> list[dict]:
+    return selecionar_produtos_com_foto(produtos, mensagem)
+
+
+def extrair_busca_do_historico(historico_texto: str) -> str:
+    """Usa mensagens recentes do cliente quando ele só pede foto."""
+    linhas = historico_texto.strip().split("\n")
+    mensagens_cliente = [
+        linha.replace("Cliente:", "").strip()
+        for linha in linhas
+        if linha.startswith("Cliente:")
+    ]
+    return " ".join(mensagens_cliente[-4:])

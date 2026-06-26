@@ -3,9 +3,20 @@ import asyncio
 import os
 import traceback
 
-from services.openai_service import perguntar_ia, resposta_saudacao
+from services.openai_service import (
+    perguntar_ia,
+    resposta_com_foto,
+    resposta_ja_informado,
+    resposta_saudacao,
+    resposta_sem_foto,
+)
 from services.ultramsg_service import enviar_imagem, enviar_mensagem, ultramsg_configurado
-from services.produto_imagem_service import enviar_fotos_produtos
+from services.produto_imagem_service import (
+    cliente_pediu_foto,
+    enviar_fotos_produtos,
+    extrair_busca_do_historico,
+    produtos_com_foto_disponivel,
+)
 
 from services.produtos_service import (
     buscar_produtos_para_atendimento,
@@ -100,6 +111,7 @@ def processar_mensagem(data: dict):
         historico = buscar_historico(cliente_id)
 
         historico_texto = ""
+        ultima_resposta_ia = ""
 
         for msg in historico:
 
@@ -107,6 +119,7 @@ def processar_mensagem(data: dict):
                 historico_texto += f"Cliente: {msg['mensagem']}\n"
             else:
                 historico_texto += f"IA: {msg['mensagem']}\n"
+                ultima_resposta_ia = msg["mensagem"]
 
         # =========================
         # PRODUTOS
@@ -120,6 +133,13 @@ def processar_mensagem(data: dict):
         else:
             resultado_produtos = buscar_produtos_para_atendimento(mensagem)
             produtos = resultado_produtos["produtos"]
+
+            if cliente_pediu_foto(mensagem) and not produtos:
+                busca_historico = extrair_busca_do_historico(historico_texto)
+                if busca_historico.strip():
+                    resultado_produtos = buscar_produtos_para_atendimento(busca_historico)
+                    produtos = resultado_produtos["produtos"]
+
             catalogo = montar_catalogo_texto(produtos[:8])
 
             print("================================")
@@ -151,15 +171,33 @@ def processar_mensagem(data: dict):
 
         print("ENVIANDO PARA IA")
 
+        com_foto = produtos_com_foto_disponivel(produtos, mensagem) if produtos else []
+        pediu_foto = cliente_pediu_foto(mensagem)
+        repetindo = (
+            pediu_foto
+            and ultima_resposta_ia
+            and any(
+                p in ultima_resposta_ia.lower()
+                for p in ("vou te enviar", "já te mando", "segue a foto", "foto do")
+            )
+        )
+
         if saudacao:
             resposta_ia = resposta_saudacao(nome_cliente)
+        elif pediu_foto and produtos and not com_foto:
+            resposta_ia = resposta_sem_foto(produtos[0])
+        elif pediu_foto and com_foto and repetindo:
+            resposta_ia = resposta_ja_informado(com_foto[0])
+        elif pediu_foto and com_foto:
+            resposta_ia = resposta_com_foto(com_foto[0])
         else:
             resposta_ia = perguntar_ia(
                 mensagem=mensagem,
                 catalogo=catalogo,
                 historico_texto=historico_texto,
                 nome_cliente=nome_cliente,
-                eh_saudacao=False,
+                ultima_resposta_ia=ultima_resposta_ia,
+                foto_automatica=bool(com_foto and pediu_foto),
             )
 
         print("RESPOSTA IA:")
