@@ -37,8 +37,17 @@ def processar_mensagem(data: dict):
             print("MENSAGEM PROPRIA IGNORADA")
             return
 
-        numero = evento.get("from", "").split("@")[0].replace("+", "").strip()
+        numero_raw = evento.get("from", "")
+        if "@g.us" in numero_raw:
+            print("MENSAGEM DE GRUPO IGNORADA:", numero_raw)
+            return
+
+        numero = numero_raw.split("@")[0].replace("+", "").strip()
         mensagem = evento.get("body")
+
+        if evento.get("type") and evento.get("type") != "chat":
+            print("TIPO IGNORADO:", evento.get("type"))
+            return
 
         if not numero or not mensagem:
             print("SEM NUMERO OU MENSAGEM:", evento)
@@ -207,7 +216,7 @@ Responda de forma amigável e utilize os produtos disponíveis quando fizer sent
             resposta_ia
         )
 
-        print("MENSAGEM ENVIADA")
+        print("PROCESSAMENTO CONCLUIDO")
 
     except Exception as e:
 

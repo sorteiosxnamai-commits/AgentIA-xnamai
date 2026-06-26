@@ -49,6 +49,17 @@ def enviar_mensagem(numero, mensagem):
         print("STATUS:", response.status_code)
         print("RESPOSTA:", response.text)
 
+        if response.status_code != 200:
+            return None
+
+        try:
+            dados = response.json()
+            if isinstance(dados, dict) and dados.get("error"):
+                print("ERRO ULTRAMSG:", dados["error"])
+                return None
+        except ValueError:
+            pass
+
         return response.text
 
     except Exception as e:
