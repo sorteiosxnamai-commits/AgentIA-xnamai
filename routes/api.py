@@ -3,7 +3,7 @@ import asyncio
 import os
 import traceback
 
-from services.openai_service import perguntar_ia
+from services.openai_service import perguntar_ia, resposta_saudacao
 from services.ultramsg_service import enviar_mensagem, ultramsg_configurado
 
 from services.produtos_service import (
@@ -110,19 +110,23 @@ def processar_mensagem(data: dict):
         # PRODUTOS
         # =========================
 
-        resultado_produtos = buscar_produtos_para_atendimento(mensagem)
-        produtos = resultado_produtos["produtos"]
-        limite_catalogo = 3 if eh_saudacao(mensagem) else 8
-        catalogo = montar_catalogo_texto(produtos[:limite_catalogo])
         saudacao = eh_saudacao(mensagem)
 
-        print("================================")
-        print("FONTE PRODUTOS:", resultado_produtos["fonte"])
-        if resultado_produtos["erro_mercos"]:
-            print("MERCOS INDISPONIVEL:", resultado_produtos["erro_mercos"])
-        print("PRODUTOS ENCONTRADOS:")
-        print(produtos)
-        print("================================")
+        if saudacao:
+            produtos = []
+            catalogo = ""
+        else:
+            resultado_produtos = buscar_produtos_para_atendimento(mensagem)
+            produtos = resultado_produtos["produtos"]
+            catalogo = montar_catalogo_texto(produtos[:8])
+
+            print("================================")
+            print("FONTE PRODUTOS:", resultado_produtos["fonte"])
+            if resultado_produtos["erro_mercos"]:
+                print("MERCOS INDISPONIVEL:", resultado_produtos["erro_mercos"])
+            print("PRODUTOS ENCONTRADOS:")
+            print(produtos)
+            print("================================")
 
         # =========================
         # LEADS + NOTIFICA VENDEDOR
@@ -145,13 +149,16 @@ def processar_mensagem(data: dict):
 
         print("ENVIANDO PARA IA")
 
-        resposta_ia = perguntar_ia(
-            mensagem=mensagem,
-            catalogo=catalogo,
-            historico_texto=historico_texto,
-            nome_cliente=nome_cliente,
-            eh_saudacao=saudacao,
-        )
+        if saudacao:
+            resposta_ia = resposta_saudacao(nome_cliente)
+        else:
+            resposta_ia = perguntar_ia(
+                mensagem=mensagem,
+                catalogo=catalogo,
+                historico_texto=historico_texto,
+                nome_cliente=nome_cliente,
+                eh_saudacao=False,
+            )
 
         print("RESPOSTA IA:")
         print(resposta_ia)

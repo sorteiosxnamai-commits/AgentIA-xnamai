@@ -24,10 +24,10 @@ Responda PRIMEIRO com informação útil. Só faça pergunta se for IMPOSSÍVEL 
 - Não existe no catálogo → diga claramente e sugira alternativa do catálogo se houver.
 
 === SAUDAÇÃO (oi, olá, bom dia) ===
-- Cumprimente de volta.
-- Apresente-se como Xnamai.
-- Pergunte o que a pessoa procura.
-- Mensagem curta e amigável.
+- APENAS cumprimente de volta e se apresente como Xnamai.
+- NÃO liste produtos. NÃO mencione preços. NÃO cite o catálogo.
+- Pode perguntar em 1 frase o que a pessoa procura.
+- Máximo 2 frases curtas.
 
 === NÃO FAÇA PERGUNTAS DESNECESSÁRIAS ===
 - Não pergunte "como posso ajudar?" se o cliente já disse o que quer.
@@ -38,6 +38,16 @@ Responda PRIMEIRO com informação útil. Só faça pergunta se for IMPOSSÍVEL 
 - 2 a 4 frases. Estilo WhatsApp.
 - Nunca diga que é IA.
 """
+
+
+def resposta_saudacao(nome_cliente: str = "") -> str:
+    """Resposta fixa para oi/olá — sem listar produtos."""
+    if nome_cliente:
+        return (
+            f"Oi, {nome_cliente}! Tudo bem? Sou da Xnamai. "
+            "Me conta o que você precisa 😊"
+        )
+    return "Oi! Tudo bem? Sou da Xnamai. Me conta o que você precisa 😊"
 
 
 def perguntar_ia(
