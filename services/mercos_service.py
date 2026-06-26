@@ -214,12 +214,21 @@ def montar_catalogo_texto(produtos: list[dict]) -> str:
 
     catalogo = ""
     for produto in produtos:
+        estoque = produto.get("estoque")
+        if estoque in (None, "", 0, "0"):
+            estoque_texto = "disponível"
+        else:
+            estoque_texto = str(estoque)
+
+        descricao = produto.get("descricao", "") or ""
+        if len(descricao) > 120:
+            descricao = descricao[:120] + "..."
+
         catalogo += (
             f"Nome: {produto['nome']}\n"
-            f"Código: {produto.get('codigo', '')}\n"
-            f"Categoria: {produto.get('categoria', '')}\n"
             f"Preço: R$ {produto['preco']}\n"
-            f"Estoque: {produto['estoque']}\n"
-            f"Descrição: {produto.get('descricao', '')}\n\n"
+            f"Estoque: {estoque_texto}\n"
+            f"Categoria: {produto.get('categoria', '')}\n"
+            f"Descrição: {descricao}\n\n"
         )
     return catalogo

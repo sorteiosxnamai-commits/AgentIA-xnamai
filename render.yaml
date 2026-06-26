@@ -12,6 +12,8 @@ services:
         sync: false
       - key: OPENAI_ASSISTANT_ID
         sync: false
+      - key: OPENAI_USE_ASSISTANT
+        value: "false"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY

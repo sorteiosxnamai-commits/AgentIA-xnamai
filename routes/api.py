@@ -8,6 +8,7 @@ from services.ultramsg_service import enviar_mensagem, ultramsg_configurado
 
 from services.produtos_service import (
     buscar_produtos_para_atendimento,
+    eh_saudacao,
 )
 from services.mercos_service import montar_catalogo_texto
 from services.supabase_service import (
@@ -112,7 +113,9 @@ def processar_mensagem(data: dict):
 
         resultado_produtos = buscar_produtos_para_atendimento(mensagem)
         produtos = resultado_produtos["produtos"]
-        catalogo = montar_catalogo_texto(produtos)
+        limite_catalogo = 3 if eh_saudacao(mensagem) else 8
+        catalogo = montar_catalogo_texto(produtos[:limite_catalogo])
+        saudacao = eh_saudacao(mensagem)
 
         print("================================")
         print("FONTE PRODUTOS:", resultado_produtos["fonte"])
@@ -141,26 +144,17 @@ def processar_mensagem(data: dict):
         # CONTEXTO IA
         # =========================
 
-        contexto = f"""
-HISTÓRICO DA CONVERSA:
-
-{historico_texto}
-
-MENSAGEM ATUAL DO CLIENTE:
-
-{mensagem}
-
-PRODUTOS DISPONÍVEIS PARA ESTA CONSULTA:
-
-{catalogo}
-
-Responda direto ao pedido do cliente usando o catálogo acima. Não faça perguntas desnecessárias.
-"""
-
         print("ENVIANDO PARA IA")
 
         thread_id = cliente.get("openai_thread_id")
-        resposta_ia, thread_id = perguntar_ia(contexto, thread_id=thread_id)
+        resposta_ia, thread_id = perguntar_ia(
+            mensagem=mensagem,
+            catalogo=catalogo,
+            historico_texto=historico_texto,
+            nome_cliente=nome_cliente,
+            eh_saudacao=saudacao,
+            thread_id=thread_id,
+        )
 
         if thread_id and thread_id != cliente.get("openai_thread_id"):
             try:

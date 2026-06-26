@@ -119,6 +119,10 @@ def _buscar_supabase(mensagem: str) -> list[dict]:
     return produtos[:LIMITE_CATALOGO]
 
 
+def eh_saudacao(mensagem: str) -> bool:
+    return _eh_saudacao(mensagem)
+
+
 def buscar_produtos_para_atendimento(mensagem: str) -> dict:
     fonte = _fonte_configurada()
     erro_mercos = None
