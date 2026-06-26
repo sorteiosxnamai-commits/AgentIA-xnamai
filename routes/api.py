@@ -16,9 +16,12 @@ from services.supabase_service import (
     salvar_mensagem,
     buscar_historico,
     atualizar_historico_json,
-    criar_lead,
-    buscar_lead,
     salvar_openai_thread_id,
+)
+from services.vendedor_service import (
+    notificar_vendedor,
+    processar_lead_e_notificar,
+    vendedor_configurado,
 )
 
 router = APIRouter()
@@ -45,6 +48,7 @@ def processar_mensagem(data: dict):
 
         numero = numero_raw.split("@")[0].replace("+", "").strip()
         mensagem = evento.get("body")
+        nome_cliente = evento.get("pushname") or ""
 
         if evento.get("type") and evento.get("type") != "chat":
             print("TIPO IGNORADO:", evento.get("type"))
@@ -114,58 +118,19 @@ def processar_mensagem(data: dict):
         print("================================")
 
         # =========================
-        # LEADS AUTOMÁTICOS
+        # LEADS + NOTIFICA VENDEDOR
         # =========================
 
-        mensagem_lower = mensagem.lower()
+        resultado_lead = processar_lead_e_notificar(
+            cliente_id=cliente_id,
+            numero_cliente=numero,
+            nome_cliente=nome_cliente,
+            mensagem=mensagem,
+            produtos=produtos,
+        )
 
-        if "fone" in mensagem_lower:
-
-            if not buscar_lead(cliente_id, "fone"):
-                criar_lead(cliente_id, "fone")
-                print("LEAD SALVO: fone")
-
-        elif "caixa de som" in mensagem_lower:
-
-            if not buscar_lead(cliente_id, "caixa de som"):
-                criar_lead(cliente_id, "caixa de som")
-                print("LEAD SALVO: caixa de som")
-
-        elif "notebook" in mensagem_lower:
-
-            if not buscar_lead(cliente_id, "notebook"):
-                criar_lead(cliente_id, "notebook")
-                print("LEAD SALVO: notebook")
-
-        elif "celular" in mensagem_lower:
-
-            if not buscar_lead(cliente_id, "celular"):
-                criar_lead(cliente_id, "celular")
-                print("LEAD SALVO: celular")
-
-        elif "carregador" in mensagem_lower:
-
-            if not buscar_lead(cliente_id, "carregador"):
-                criar_lead(cliente_id, "carregador")
-                print("LEAD SALVO: carregador")
-
-        elif "smartwatch" in mensagem_lower:
-
-            if not buscar_lead(cliente_id, "smartwatch"):
-                criar_lead(cliente_id, "smartwatch")
-                print("LEAD SALVO: smartwatch")
-
-        elif "tablet" in mensagem_lower:
-
-            if not buscar_lead(cliente_id, "tablet"):
-                criar_lead(cliente_id, "tablet")
-                print("LEAD SALVO: tablet")
-
-        elif "monitor" in mensagem_lower:
-
-            if not buscar_lead(cliente_id, "monitor"):
-                criar_lead(cliente_id, "monitor")
-                print("LEAD SALVO: monitor")
+        if resultado_lead["notificado"]:
+            print("VENDEDOR NOTIFICADO:", resultado_lead["interesse"])
 
         # =========================
         # CONTEXTO IA
@@ -252,6 +217,7 @@ async def status():
     return {
         "status": "online",
         "ultramsg_configurado": ultramsg_configurado(),
+        "vendedor_configurado": vendedor_configurado(),
         "produtos_fonte": os.getenv("PRODUTOS_FONTE", "auto"),
     }
 
@@ -283,6 +249,29 @@ async def teste_produtos(q: str = ""):
 @router.get("/teste-mercos")
 async def teste_mercos(q: str = ""):
     return await teste_produtos(q)
+
+
+@router.get("/teste-vendedor")
+async def teste_vendedor():
+    """Envia notificação de teste para o WhatsApp do vendedor."""
+    if not vendedor_configurado():
+        return {
+            "status": "erro",
+            "mensagem": "Configure VENDEDOR_WHATSAPP no .env / Render (ex: 5543999999999)",
+        }
+
+    resposta = notificar_vendedor(
+        numero_cliente="5543000000000",
+        nome_cliente="Cliente Teste",
+        interesse="fone",
+        mensagem_cliente="Quero comprar um fone",
+        produtos=[{"nome": "Fone Bluetooth HMaston RS60"}],
+    )
+
+    return {
+        "status": "ok" if resposta else "erro",
+        "resposta_ultramsg": resposta,
+    }
 
 
 @router.get("/teste-ultramsg")

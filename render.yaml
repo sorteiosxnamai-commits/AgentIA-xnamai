@@ -28,3 +28,5 @@ services:
         sync: false
       - key: ULTRAMSG_TOKEN
         sync: false
+      - key: VENDEDOR_WHATSAPP
+        sync: false
