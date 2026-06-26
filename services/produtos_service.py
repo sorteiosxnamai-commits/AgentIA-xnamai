@@ -26,6 +26,9 @@ PADROES_CATALOGO = (
     r"tem ai|tem pra vender|tem disponivel",
     r"lista de produtos",
     r"me mostra",
+    r"conferiu|conferir|verificou|checou",
+    r"algo mais|mais alguma",
+    r"disponivel|estoque",
 )
 
 
@@ -65,6 +68,8 @@ def _filtrar_produtos(produtos: list[dict], mensagem: str) -> list[dict]:
 
 def _buscar_supabase(mensagem: str) -> list[dict]:
     produtos = buscar_produtos()
+    if not produtos:
+        return []
 
     if _consulta_catalogo(mensagem):
         return produtos[:LIMITE_CATALOGO]
@@ -74,7 +79,10 @@ def _buscar_supabase(mensagem: str) -> list[dict]:
         return []
 
     filtrados = _filtrar_produtos(produtos, mensagem)
-    return filtrados
+    if filtrados:
+        return filtrados
+
+    return produtos[:LIMITE_CATALOGO]
 
 
 def buscar_produtos_para_atendimento(mensagem: str) -> dict:
