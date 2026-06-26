@@ -13,9 +13,17 @@ def _normalizar_numero(numero: str) -> str:
     return numero.split("@")[0].replace("+", "").strip()
 
 
+def ultramsg_configurado() -> bool:
+    return bool(INSTANCE_ID and TOKEN)
+
+
 def enviar_mensagem(numero, mensagem):
 
     try:
+        if not ultramsg_configurado():
+            print("ERRO ULTRAMSG: ULTRAMSG_INSTANCE_ID ou ULTRAMSG_TOKEN não configurados")
+            return None
+
         numero = _normalizar_numero(numero)
 
         print("================================")

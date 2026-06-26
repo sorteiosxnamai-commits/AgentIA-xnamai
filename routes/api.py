@@ -1,7 +1,7 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 
 from services.openai_service import perguntar_ia
-from services.ultramsg_service import enviar_mensagem
+from services.ultramsg_service import enviar_mensagem, ultramsg_configurado
 
 from services.produtos_service import (
     buscar_produtos_para_atendimento,
@@ -20,27 +20,26 @@ from services.supabase_service import (
 router = APIRouter()
 
 
-@router.post("/webhook")
-async def webhook(data: dict):
+def processar_mensagem(data: dict):
 
     try:
 
-        print("WEBHOOK RECEBIDO:")
-        print(data)
-
         if "data" not in data:
-            return {"status": "evento_ignorado"}
+            print("EVENTO IGNORADO:", data)
+            return
 
         evento = data["data"]
 
         if evento.get("fromMe"):
-            return {"status": "mensagem_propria_ignorada"}
+            print("MENSAGEM PROPRIA IGNORADA")
+            return
 
         numero = evento.get("from", "").split("@")[0].replace("+", "").strip()
         mensagem = evento.get("body")
 
         if not numero or not mensagem:
-            return {"status": "sem_mensagem"}
+            print("SEM NUMERO OU MENSAGEM:", evento)
+            return
 
         print("Número:", numero)
         print("Mensagem:", mensagem)
@@ -99,9 +98,6 @@ async def webhook(data: dict):
             print("MERCOS INDISPONIVEL:", resultado_produtos["erro_mercos"])
         print("PRODUTOS ENCONTRADOS:")
         print(produtos)
-        print("================================")
-        print("CATALOGO MONTADO:")
-        print(catalogo)
         print("================================")
 
         # =========================
@@ -210,19 +206,21 @@ Responda de forma amigável e utilize os produtos disponíveis quando fizer sent
 
         print("MENSAGEM ENVIADA")
 
-        return {
-            "status": "ok"
-        }
-
     except Exception as e:
 
         print("ERRO:")
         print(str(e))
 
-        return {
-            "status": "erro",
-            "mensagem": str(e)
-        }
+
+@router.post("/webhook")
+async def webhook(data: dict, background_tasks: BackgroundTasks):
+
+    print("WEBHOOK RECEBIDO:")
+    print(data)
+
+    background_tasks.add_task(processar_mensagem, data)
+
+    return {"status": "recebido"}
 
 
 @router.get("/teste-produtos")
@@ -252,3 +250,26 @@ async def teste_produtos(q: str = ""):
 @router.get("/teste-mercos")
 async def teste_mercos(q: str = ""):
     return await teste_produtos(q)
+
+
+@router.get("/teste-ultramsg")
+async def teste_ultramsg(tel: str = ""):
+    """Envia mensagem de teste direto pela UltraMsg (Render → WhatsApp)."""
+    if not tel:
+        return {"status": "erro", "mensagem": "Informe ?tel=5543988601234"}
+
+    if not ultramsg_configurado():
+        return {
+            "status": "erro",
+            "mensagem": "Configure ULTRAMSG_INSTANCE_ID e ULTRAMSG_TOKEN no Render",
+        }
+
+    resposta = enviar_mensagem(
+        tel,
+        "Teste do agente Xnamai no Render. Se chegou, a UltraMsg está ok.",
+    )
+
+    return {
+        "status": "ok" if resposta else "erro",
+        "resposta_ultramsg": resposta,
+    }
