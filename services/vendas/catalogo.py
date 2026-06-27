@@ -72,17 +72,33 @@ def _deduplicar(produtos: list[dict]) -> list[dict]:
     return resultado
 
 
-def _termos_busca(mensagem: str, historico_texto: str = "") -> list[str]:
+def _termos_do_cliente(mensagem: str, historico_texto: str = "") -> list[str]:
+    """Termos da mensagem atual ou das últimas falas do cliente — nunca do histórico completo."""
     termos = _extrair_termos(mensagem)
     if termos:
         return termos
 
-    if historico_texto:
-        termos_hist = _extrair_termos(historico_texto)
-        if termos_hist:
-            return termos_hist[-5:]
+    if not historico_texto:
+        return []
+
+    linhas_cliente = [
+        linha.replace("Cliente:", "").strip()
+        for linha in historico_texto.split("\n")
+        if linha.startswith("Cliente:")
+    ]
+    for linha in reversed(linhas_cliente[-6:]):
+        termos = _extrair_termos(linha)
+        if termos:
+            return termos
 
     return []
+
+
+def _mensagem_busca(mensagem: str, historico_texto: str = "") -> str:
+    termos = _termos_do_cliente(mensagem, historico_texto)
+    if termos:
+        return " ".join(termos)
+    return mensagem.strip()
 
 
 def _buscar_mercos(mensagem: str, historico_texto: str = "") -> tuple[list[dict], str | None]:
@@ -94,32 +110,37 @@ def _buscar_mercos(mensagem: str, historico_texto: str = "") -> tuple[list[dict]
             brutos = buscar_produtos_mercos()[:LIMITE_CATALOGO]
             return [normalizar_produto(p) for p in brutos], None
 
-        termos = _termos_busca(mensagem, historico_texto)
+        busca = _mensagem_busca(mensagem, historico_texto)
+        termos = _extrair_termos(busca)
         if not termos:
             return [], None
 
-        produtos = buscar_mercos_por_mensagem(mensagem)
-        if produtos:
-            return produtos, None
-
-        if historico_texto.strip():
-            produtos = buscar_mercos_por_mensagem(historico_texto)
-            if produtos:
-                return produtos, None
-
-        return [], None
+        produtos = buscar_mercos_por_mensagem(busca)
+        return produtos, None
     except Exception as e:
         return [], str(e)
 
 
-def _buscar_supabase(mensagem: str) -> list[dict]:
-    produtos = buscar_produtos()
+def _filtrar_produtos_locais(produtos: list[dict]) -> list[dict]:
+    from services.mercos_service import eh_produto_exemplo, ocultar_produtos_exemplo
+
+    if not ocultar_produtos_exemplo():
+        return produtos
+    return [p for p in produtos if not eh_produto_exemplo(p)]
+
+
+def _buscar_supabase(mensagem: str, historico_texto: str = "") -> list[dict]:
+    produtos = _filtrar_produtos_locais(buscar_produtos())
     if not produtos:
         return []
 
-    termos = _extrair_termos(mensagem)
-    if not termos:
+    if _consulta_catalogo(mensagem):
         return produtos[:LIMITE_CATALOGO]
+
+    busca = _mensagem_busca(mensagem, historico_texto)
+    termos = _extrair_termos(busca)
+    if not termos:
+        return []
 
     encontrados = []
     for produto in produtos:
@@ -130,7 +151,7 @@ def _buscar_supabase(mensagem: str) -> list[dict]:
         if any(t in texto for t in termos):
             encontrados.append(produto)
 
-    return (encontrados or produtos)[:LIMITE_CATALOGO]
+    return encontrados[:LIMITE_CATALOGO]
 
 
 def _categoria_chave(produto: dict) -> str:
@@ -230,12 +251,16 @@ def _catalogo_completo_mercos() -> list[dict]:
 
 
 def montar_contexto_catalogo(mensagem: str, historico_texto: str = "") -> dict:
-    """Consulta Mercos primeiro; Supabase só como fallback."""
+    """Consulta Mercos primeiro; Supabase só como fallback. Sem match = catálogo vazio."""
+    consulta_ampla = _consulta_catalogo(mensagem)
+    termos_cliente = _termos_do_cliente(mensagem, historico_texto)
+    consulta_especifica = bool(termos_cliente) and not consulta_ampla
+
     produtos, erro_mercos = _buscar_mercos(mensagem, historico_texto)
     fonte = "mercos" if produtos else ""
 
     if not produtos:
-        produtos = _buscar_supabase(mensagem)
+        produtos = _buscar_supabase(mensagem, historico_texto)
         if produtos:
             fonte = "supabase"
 
@@ -257,19 +282,29 @@ def montar_contexto_catalogo(mensagem: str, historico_texto: str = "") -> dict:
             return ""
         return f"\n=== {titulo} ===\n{montar_catalogo_texto(itens)}"
 
-    catalogo_texto = montar_catalogo_texto(produtos)
-    if similares:
-        catalogo_texto += bloco("OPÇÕES SEMELHANTES (só se fizer sentido mencionar)", similares)
-    if upsell:
-        catalogo_texto += bloco("UPSELL — versão superior (mencione só com interesse claro)", upsell)
-    if complementos:
-        catalogo_texto += bloco("COMPLEMENTOS — cross-sell natural (opcional)", complementos)
-
     if not produtos:
+        busca = " ".join(termos_cliente) if termos_cliente else mensagem.strip()
         catalogo_texto = (
-            "Nenhum produto encontrado no catálogo Mercos/Supabase para esta consulta.\n"
-            "Não invente produtos. Pergunte o que o cliente procura ou sugira categoria."
+            f"Nenhum produto encontrado para: {busca or 'esta consulta'}.\n"
+            "O cliente pediu algo que NÃO está no catálogo.\n"
+            "NÃO ofereça produto aleatório ou de outra categoria.\n"
+            "Seja honesto, diga que não temos no momento e pergunte se quer "
+            "ver outra categoria do catálogo ou ser avisado quando chegar."
         )
+    else:
+        catalogo_texto = montar_catalogo_texto(produtos)
+        if similares:
+            catalogo_texto += bloco(
+                "OPÇÕES SEMELHANTES (só se relacionadas ao que o cliente pediu)", similares
+            )
+        if upsell:
+            catalogo_texto += bloco(
+                "UPSELL — versão superior (só na mesma linha do interesse)", upsell
+            )
+        if complementos:
+            catalogo_texto += bloco(
+                "COMPLEMENTOS — cross-sell natural (só se combinar com o pedido)", complementos
+            )
 
     return {
         "produtos": produtos,
@@ -279,4 +314,7 @@ def montar_contexto_catalogo(mensagem: str, historico_texto: str = "") -> dict:
         "catalogo": catalogo_texto,
         "fonte": fonte or "nenhum",
         "erro_mercos": erro_mercos,
+        "consulta_especifica": consulta_especifica,
+        "termos_cliente": termos_cliente,
+        "sem_match": consulta_especifica and not produtos,
     }

@@ -27,6 +27,8 @@ class ContextoVenda:
     orientacao_spin: str = ""
     orientacao_objecao: str = ""
     briefing: str = ""
+    sem_match: bool = False
+    termos_cliente: list = field(default_factory=list)
 
 
 ESTAGIO_ORIENTACAO = {
@@ -111,6 +113,14 @@ def preparar_contexto_venda(
             "Use só o catálogo abaixo; não invente produtos."
         )
 
+    if ctx_cat.get("sem_match"):
+        busca = " ".join(ctx_cat.get("termos_cliente") or [])
+        partes.append(
+            f"Cliente pediu '{busca}' e NÃO temos no catálogo. "
+            "Não empurre outro produto. Seja transparente e ofereça avisar quando chegar "
+            "ou mostrar o que temos SE o cliente quiser mudar de assunto."
+        )
+
     briefing = "\n".join(p for p in partes if p)
 
     return ContextoVenda(
@@ -128,4 +138,6 @@ def preparar_contexto_venda(
         orientacao_spin=orientacao_spin(mensagem, historico_texto, bant),
         orientacao_objecao=orientacao_objecao(objecao),
         briefing=briefing,
+        sem_match=bool(ctx_cat.get("sem_match")),
+        termos_cliente=ctx_cat.get("termos_cliente") or [],
     )

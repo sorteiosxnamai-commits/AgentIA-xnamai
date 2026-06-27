@@ -142,6 +142,26 @@ def _produto_ativo(produto: dict) -> bool:
     return True
 
 
+def ocultar_produtos_exemplo() -> bool:
+    return os.getenv("MERCOS_OCULTAR_EXEMPLOS", "true").strip().lower() in (
+        "1",
+        "true",
+        "sim",
+        "yes",
+    )
+
+
+def eh_produto_exemplo(produto: dict) -> bool:
+    nome = _normalizar_texto(str(produto.get("nome") or ""))
+    return "[exemplo]" in nome
+
+
+def _filtrar_catalogo(produtos: list[dict]) -> list[dict]:
+    if not ocultar_produtos_exemplo():
+        return produtos
+    return [p for p in produtos if not eh_produto_exemplo(p)]
+
+
 def _valor_preco(produto: dict):
     for campo in ("preco_tabela", "preco", "preco_venda", "preco_unitario"):
         valor = produto.get(campo)
@@ -231,6 +251,7 @@ def buscar_produtos_mercos() -> list[dict]:
         time.sleep(0.3)
 
     ativos = [p for p in produtos if _produto_ativo(p)]
+    ativos = _filtrar_catalogo(ativos)
     _cache_produtos["dados"] = ativos
     _cache_produtos["expira_em"] = agora + CACHE_TTL_SEGUNDOS
     return ativos
