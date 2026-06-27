@@ -11,6 +11,9 @@ load_dotenv(override=True)
 BASE_URL = os.getenv("MERCOS_BASE_URL", "https://sandbox.mercos.com/api").rstrip("/")
 LIMITE_CATALOGO = 20
 SANDBOX_APPLICATION_TOKEN = "7a1540f6-642c-11e8-a500-72dcfa7a7c91"
+CACHE_TTL_SEGUNDOS = int(os.getenv("MERCOS_CACHE_SEGUNDOS", "600"))
+
+_cache_produtos: dict = {"dados": None, "expira_em": 0.0}
 
 STOPWORDS = {
     "a", "o", "as", "os", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das",
@@ -27,6 +30,15 @@ def mercos_configurado() -> bool:
         os.getenv("MERCOS_APPLICATION_TOKEN")
         and os.getenv("MERCOS_COMPANY_TOKEN")
     )
+
+
+def mercos_ambiente_sandbox() -> bool:
+    return "sandbox" in BASE_URL.lower()
+
+
+def invalidar_cache_produtos_mercos() -> None:
+    _cache_produtos["dados"] = None
+    _cache_produtos["expira_em"] = 0.0
 
 
 def _application_tokens() -> list[str]:
@@ -51,24 +63,33 @@ def _headers(application_token: str) -> dict:
     }
 
 
-def _requisicao_mercos(pagina: int) -> requests.Response:
+def _executar_requisicao_mercos(
+    method: str,
+    path: str,
+    params: dict | None = None,
+    json_body: dict | None = None,
+    timeout: int = 15,
+) -> requests.Response:
     company_token = os.getenv("MERCOS_COMPANY_TOKEN", "").strip()
 
     if not company_token:
         raise ValueError("MERCOS_COMPANY_TOKEN não configurado no .env")
 
     ultimo_erro = None
+    url = f"{BASE_URL}{path}"
 
     for application_token in _application_tokens():
         for tentativa in range(3):
-            resposta = requests.get(
-                f"{BASE_URL}/v1/produtos",
+            resposta = requests.request(
+                method,
+                url,
                 headers=_headers(application_token),
-                params={"pagina": pagina},
-                timeout=8,
+                params=params,
+                json=json_body,
+                timeout=timeout,
             )
 
-            if resposta.status_code == 200:
+            if resposta.status_code in (200, 201):
                 return resposta
 
             if resposta.status_code == 429:
@@ -77,7 +98,7 @@ def _requisicao_mercos(pagina: int) -> requests.Response:
                     continue
 
                 raise ValueError(
-                    "Mercos sandbox retornou 429 (muitas requisições). "
+                    "Mercos retornou 429 (muitas requisições). "
                     "Aguarde 1 minuto e tente novamente."
                 )
 
@@ -85,16 +106,19 @@ def _requisicao_mercos(pagina: int) -> requests.Response:
                 ultimo_erro = resposta.text.strip() or "não autorizado"
                 break
 
-            resposta.raise_for_status()
+            return resposta
 
     raise ValueError(
-        "Mercos sandbox retornou 401 (não autorizado). "
-        "Recopie o Company Token em https://sandbox.mercos.com "
-        "(Minha conta → Sistema → Integração). "
-        "Use o ApplicationToken da documentação Mercos "
-        "(d39001ac-0b14-11f0-8ed7-6e1485be00f2). "
-        "Se persistir, fale no chat da Mercos para vincular sua empresa ao aplicativo. "
+        "Mercos retornou 401 (não autorizado). Verifique MERCOS_COMPANY_TOKEN. "
         f"Detalhe: {ultimo_erro}"
+    )
+
+
+def _requisicao_mercos(pagina: int) -> requests.Response:
+    return _executar_requisicao_mercos(
+        "GET",
+        "/v1/produtos",
+        params={"pagina": pagina},
     )
 
 
@@ -181,6 +205,10 @@ def normalizar_produto(produto: dict) -> dict:
 
 
 def buscar_produtos_mercos() -> list[dict]:
+    agora = time.time()
+    if _cache_produtos["dados"] is not None and agora < _cache_produtos["expira_em"]:
+        return _cache_produtos["dados"]
+
     produtos = []
     pagina = 1
 
@@ -200,8 +228,12 @@ def buscar_produtos_mercos() -> list[dict]:
             break
 
         pagina += 1
+        time.sleep(0.3)
 
-    return [p for p in produtos if _produto_ativo(p)]
+    ativos = [p for p in produtos if _produto_ativo(p)]
+    _cache_produtos["dados"] = ativos
+    _cache_produtos["expira_em"] = agora + CACHE_TTL_SEGUNDOS
+    return ativos
 
 
 def _produto_corresponde(produto: dict, termos: list[str]) -> bool:
@@ -241,6 +273,85 @@ def buscar_produtos_para_atendimento(mensagem: str) -> list[dict]:
         return []
 
     return []
+
+
+def buscar_produto_bruto_por_mensagem(mensagem: str) -> dict | None:
+    termos = _extrair_termos(mensagem)
+    if not termos:
+        return None
+
+    for produto in buscar_produtos_mercos():
+        if _produto_corresponde(produto, termos):
+            return produto
+
+    return None
+
+
+def criar_cliente_mercos(
+    nome: str,
+    telefone: str = "",
+    observacao: str = "",
+) -> int:
+    payload = {
+        "razao_social": (nome or "Cliente WhatsApp")[:100],
+        "nome_fantasia": (nome or "Cliente WhatsApp")[:100],
+        "tipo": "F",
+        "observacao": observacao[:500] if observacao else "Cliente via WhatsApp Agent IA",
+    }
+
+    if telefone:
+        payload["telefones"] = [{"numero": telefone}]
+
+    resposta = _executar_requisicao_mercos("POST", "/v1/clientes", json_body=payload)
+
+    if resposta.status_code not in (200, 201):
+        raise ValueError(
+            f"Erro ao criar cliente Mercos ({resposta.status_code}): {resposta.text[:300]}"
+        )
+
+    mercos_id = resposta.headers.get("MeusPedidosID")
+    if mercos_id:
+        return int(mercos_id)
+
+    dados = resposta.json() if resposta.text.strip() else {}
+    if dados.get("id"):
+        return int(dados["id"])
+
+    raise ValueError("Cliente criado no Mercos, mas ID não retornado.")
+
+
+def criar_pedido_mercos(
+    cliente_id: int,
+    produto_id: int,
+    quantidade: float,
+    preco_bruto: float,
+    condicao_pagamento: str,
+    observacoes: str = "",
+) -> dict:
+    from datetime import date
+
+    payload = {
+        "cliente_id": cliente_id,
+        "data_emissao": date.today().isoformat(),
+        "condicao_pagamento": condicao_pagamento,
+        "observacoes": observacoes[:500],
+        "itens": [
+            {
+                "produto_id": produto_id,
+                "quantidade": quantidade,
+                "preco_bruto": round(float(preco_bruto), 2),
+            }
+        ],
+    }
+
+    resposta = _executar_requisicao_mercos("POST", "/v1/pedidos", json_body=payload)
+
+    if resposta.status_code not in (200, 201):
+        raise ValueError(
+            f"Erro ao criar pedido Mercos ({resposta.status_code}): {resposta.text[:300]}"
+        )
+
+    return resposta.json() if resposta.text.strip() else {}
 
 
 def montar_catalogo_texto(produtos: list[dict]) -> str:

@@ -57,9 +57,14 @@ def eh_saudacao(mensagem: str, historico_texto: str = "") -> bool:
 
 
 def _catalogo_inicial() -> tuple[list[dict], str, str | None]:
+    fonte = _fonte_configurada()
     erro_mercos = None
 
-    if mercos_configurado():
+    if fonte == "supabase":
+        produtos = buscar_produtos()[:LIMITE_CATALOGO]
+        return produtos, "supabase", None
+
+    if fonte in ("mercos", "auto") and mercos_configurado():
         try:
             produtos = [
                 normalizar_produto(p)
@@ -69,6 +74,8 @@ def _catalogo_inicial() -> tuple[list[dict], str, str | None]:
                 return produtos, "mercos", None
         except Exception as e:
             erro_mercos = str(e)
+            if fonte == "mercos":
+                raise
 
     produtos = buscar_produtos()[:LIMITE_CATALOGO]
     return produtos, "supabase", erro_mercos

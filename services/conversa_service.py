@@ -1,6 +1,7 @@
 import re
 import unicodedata
 
+from services.pix_service import montar_mensagem_pix_exemplo
 from services.produtos_service import buscar_produtos_para_atendimento
 
 CONFIRMACOES = (
@@ -307,6 +308,7 @@ def resposta_fechamento_pedido(
     frete_estimado: float = 0,
     mensagem_atual: str = "",
     ultima_resposta_ia: str = "",
+    mercos_pedido: dict | None = None,
 ) -> str:
     nome = extrair_nome_do_historico(historico_texto, pushname)
     produto = _buscar_produto_do_historico(historico_texto) or {}
@@ -352,6 +354,21 @@ def resposta_fechamento_pedido(
 
     if pagamento:
         linhas.append(f"💳 Pagamento: {pagamento}")
+
+    if pagamento and "pix" in pagamento.lower():
+        try:
+            valor_pix = float(str(preco).replace(",", ".")) if preco is not None else None
+            if frete_estimado > 0 and valor_pix is not None:
+                valor_pix += frete_estimado
+        except (TypeError, ValueError):
+            valor_pix = None
+        linhas.append(montar_mensagem_pix_exemplo(valor=valor_pix))
+
+    if mercos_pedido and mercos_pedido.get("pedido_id"):
+        numero = mercos_pedido.get("numero") or mercos_pedido["pedido_id"]
+        if isinstance(numero, float) and numero.is_integer():
+            numero = int(numero)
+        linhas.append(f"🧾 Pedido Mercos #{numero}")
 
     linhas.append("Pedido registrado! Em breve nossa equipe finaliza com você.")
     return "\n".join(linhas)

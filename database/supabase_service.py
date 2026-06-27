@@ -17,7 +17,7 @@ def buscar_cliente(telefone):
     if resultado.data:
         return resultado.data[0]
 
-    return Nonesss
+    return 
 
 
     

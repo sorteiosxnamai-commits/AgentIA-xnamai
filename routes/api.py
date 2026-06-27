@@ -28,7 +28,12 @@ from services.produtos_service import (
     buscar_produtos_para_atendimento,
     eh_saudacao,
 )
-from services.mercos_service import montar_catalogo_texto
+from services.mercos_service import (
+    mercos_ambiente_sandbox,
+    mercos_configurado,
+    montar_catalogo_texto,
+)
+from services.pedido_mercos_service import mercos_criar_pedido_habilitado
 from services.supabase_service import (
     buscar_cliente,
     criar_cliente,
@@ -38,6 +43,7 @@ from services.supabase_service import (
     atualizar_historico_json,
 )
 from services.sync_mercos_service import sincronizar_produtos_mercos
+from services.pedido_mercos_service import criar_pedido_fechamento_mercos
 from services.vendedor_service import (
     notificar_vendedor,
     processar_lead_e_notificar,
@@ -196,12 +202,26 @@ def processar_mensagem(data: dict):
 
         if fechamento or alteracao_pagamento:
             frete_estimado = float(os.getenv("FRETE_ESTIMADO", "0") or "0")
+            mercos_pedido = None
+
+            if fechamento and not alteracao_pagamento:
+                mercos_pedido = criar_pedido_fechamento_mercos(
+                    historico_texto=historico_texto,
+                    cliente_supabase=cliente,
+                    telefone=numero,
+                    pushname=nome_cliente,
+                    mensagem_atual=mensagem,
+                    ultima_resposta_ia=ultima_resposta_ia,
+                    frete_estimado=frete_estimado,
+                )
+
             resposta_ia = resposta_fechamento_pedido(
                 historico_texto,
                 nome_cliente,
                 frete_estimado,
                 mensagem_atual=mensagem,
                 ultima_resposta_ia=ultima_resposta_ia,
+                mercos_pedido=mercos_pedido,
             )
             resultado_fechamento = buscar_produtos_para_atendimento(historico_texto)
             if vendedor_configurado():
@@ -213,6 +233,11 @@ def processar_mensagem(data: dict):
                     produtos=resultado_fechamento.get("produtos"),
                 )
                 print("VENDEDOR NOTIFICADO: pedido fechado")
+
+            if mercos_pedido and mercos_pedido.get("pedido_id"):
+                print("MERCOS PEDIDO CRIADO:", mercos_pedido)
+            elif mercos_pedido and mercos_pedido.get("erro"):
+                print("MERCOS PEDIDO FALHOU:", mercos_pedido["erro"])
         elif saudacao:
             resposta_ia = resposta_saudacao(nome_conversa)
         elif pediu_foto and produtos and not com_foto:
@@ -292,6 +317,10 @@ async def status():
         "ultramsg_configurado": ultramsg_configurado(),
         "vendedor_configurado": vendedor_configurado(),
         "produtos_fonte": os.getenv("PRODUTOS_FONTE", "auto"),
+        "mercos_configurado": mercos_configurado(),
+        "mercos_sandbox": mercos_ambiente_sandbox(),
+        "mercos_criar_pedido": mercos_criar_pedido_habilitado(),
+        "mercos_base_url": os.getenv("MERCOS_BASE_URL", ""),
     }
 
 
