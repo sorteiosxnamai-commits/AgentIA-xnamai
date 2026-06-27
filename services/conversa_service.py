@@ -123,6 +123,17 @@ NOMES_IGNORAR = {
     "no",
     "o",
     "a",
+    "vermelha",
+    "vermelho",
+    "azul",
+    "preto",
+    "branco",
+    "rosa",
+    "verde",
+    "show",
+    "toalha",
+    "rosto",
+    "banho",
 }
 
 
@@ -139,14 +150,20 @@ def extrair_nome_do_historico(historico_texto: str, pushname: str = "") -> str:
         if match and _nome_valido(match.group(1)):
             return match.group(1).strip().title()
 
-    nomes_ia = re.findall(
-        r"(?:fechado|perfeito|show|obrigad[oa]|certo|combinado),\s+([A-Za-zÀ-ÿ]{2,20})",
-        historico_texto,
-        re.I,
-    )
-    nomes_validos = [n for n in nomes_ia if _nome_valido(n)]
-    if nomes_validos:
-        return nomes_validos[-1].strip().title()
+    nomes_ia = []
+    for linha in historico_texto.split("\n"):
+        if not linha.startswith("Cliente:"):
+            continue
+        for match in re.finditer(
+            r"(?:fechado|perfeito|obrigad[oa]|certo|combinado),\s+([A-Za-zÀ-ÿ]{2,20})",
+            linha,
+            re.I,
+        ):
+            if _nome_valido(match.group(1)):
+                nomes_ia.append(match.group(1))
+
+    if nomes_ia:
+        return nomes_ia[-1].strip().title()
 
     if pushname:
         return pushname.split()[0]

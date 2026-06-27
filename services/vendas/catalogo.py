@@ -78,6 +78,15 @@ TERMOS_ESTETICOS = {
     "rosto", "banho", "conjunto", "queria", "quero", "pra", "pro",
 }
 
+TERMOS_NAO_PRODUTO = TERMOS_ESTETICOS | {
+    "sim", "nao", "não", "ok", "tem", "catalogo", "nada", "disponivel",
+    "claro", "pode", "hoje", "voce", "voces", "vcs", "vc", "ver",
+}
+
+
+def termos_produto_relevantes(termos: list[str]) -> list[str]:
+    return [t for t in termos if t not in TERMOS_NAO_PRODUTO and len(t) >= 3]
+
 
 def _termos_do_cliente(mensagem: str, historico_texto: str = "") -> list[str]:
     """Termos da mensagem atual + produto citado nas falas recentes do cliente."""
@@ -277,6 +286,26 @@ def _catalogo_completo_mercos() -> list[dict]:
         return []
 
 
+def montar_catalogo_geral(limite: int = LIMITE_CATALOGO) -> dict:
+    """Catálogo completo — quando o cliente pede para ver o que temos."""
+    todos = _catalogo_completo_mercos() or _filtrar_produtos_locais(buscar_produtos())
+    produtos = _deduplicar(todos)[:limite]
+
+    return {
+        "produtos": produtos,
+        "similares": [],
+        "upsell": [],
+        "complementos": [],
+        "catalogo": montar_catalogo_texto(produtos),
+        "fonte": "mercos" if mercos_configurado() and _catalogo_completo_mercos() else "supabase",
+        "erro_mercos": None,
+        "consulta_especifica": False,
+        "termos_cliente": [],
+        "sem_match": False,
+        "amostra_disponivel": produtos,
+    }
+
+
 def montar_contexto_catalogo(mensagem: str, historico_texto: str = "") -> dict:
     """Consulta Mercos primeiro; Supabase só como fallback. Sem match = catálogo vazio."""
     consulta_ampla = _consulta_catalogo(mensagem)
@@ -349,6 +378,10 @@ def montar_contexto_catalogo(mensagem: str, historico_texto: str = "") -> dict:
         "erro_mercos": erro_mercos,
         "consulta_especifica": consulta_especifica,
         "termos_cliente": termos_cliente,
-        "sem_match": consulta_especifica and not produtos,
-        "amostra_disponivel": _amostra_produtos_reais() if consulta_especifica and not produtos else [],
+        "sem_match": consulta_especifica
+        and not produtos
+        and bool(termos_produto_relevantes(termos_cliente)),
+        "amostra_disponivel": _amostra_produtos_reais()
+        if consulta_especifica and not produtos
+        else [],
     }
