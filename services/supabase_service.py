@@ -1,14 +1,40 @@
+import os
+
+from dotenv import load_dotenv
+
 from database.supabase import supabase
+
+load_dotenv(override=True)
+
+TABELA_CLIENTES = os.getenv("AGENT_CLIENTES_TABLE", "agent_clientes")
+TABELA_HISTORICO = os.getenv("AGENT_HISTORICO_TABLE", "agent_historico")
+
+
+def _normalizar_produto(row: dict) -> dict:
+    """Compatível com produtos do ETL PulseDesk (preco_tabela, saldo_estoque)."""
+    preco = row.get("preco")
+    if preco in (None, ""):
+        preco = row.get("preco_tabela") or 0
+    estoque = row.get("estoque")
+    if estoque is None:
+        estoque = row.get("saldo_estoque")
+    if estoque is None:
+        estoque = 0
+    return {
+        **row,
+        "preco": preco,
+        "estoque": estoque,
+        "descricao": row.get("descricao") or row.get("observacoes") or "",
+    }
 
 
 # =========================
-# CLIENTES
+# CLIENTES (agente WhatsApp)
 # =========================
 
 def buscar_cliente(telefone):
-
     resultado = (
-        supabase.table("clientes")
+        supabase.table(TABELA_CLIENTES)
         .select("*")
         .eq("telefone", telefone)
         .execute()
@@ -21,13 +47,12 @@ def buscar_cliente(telefone):
 
 
 def criar_cliente(telefone, nome=""):
-
     dados = {"telefone": telefone}
     if nome:
         dados["nome"] = nome
 
     resultado = (
-        supabase.table("clientes")
+        supabase.table(TABELA_CLIENTES)
         .insert(dados)
         .execute()
     )
@@ -36,12 +61,11 @@ def criar_cliente(telefone, nome=""):
 
 
 def atualizar_cliente(cliente_id, **campos):
-
     if not campos:
         return None
 
     resultado = (
-        supabase.table("clientes")
+        supabase.table(TABELA_CLIENTES)
         .update(campos)
         .eq("id", cliente_id)
         .execute()
@@ -51,9 +75,8 @@ def atualizar_cliente(cliente_id, **campos):
 
 
 def salvar_openai_thread_id(cliente_id, thread_id):
-
     resultado = (
-        supabase.table("clientes")
+        supabase.table(TABELA_CLIENTES)
         .update({
             "openai_thread_id": thread_id
         })
@@ -65,13 +88,12 @@ def salvar_openai_thread_id(cliente_id, thread_id):
 
 
 # =========================
-# CONVERSAS
+# HISTÓRICO (agente)
 # =========================
 
 def salvar_mensagem(cliente_id, tipo, mensagem):
-
     resultado = (
-        supabase.table("conversas")
+        supabase.table(TABELA_HISTORICO)
         .insert({
             "cliente_id": cliente_id,
             "tipo": tipo,
@@ -84,9 +106,8 @@ def salvar_mensagem(cliente_id, tipo, mensagem):
 
 
 def buscar_historico(cliente_id):
-
     resultado = (
-        supabase.table("conversas")
+        supabase.table(TABELA_HISTORICO)
         .select("*")
         .eq("cliente_id", cliente_id)
         .order("criado_em")
@@ -97,21 +118,19 @@ def buscar_historico(cliente_id):
 
 
 def atualizar_historico_json(cliente_id):
-
     historico = buscar_historico(cliente_id)
 
     historico_json = []
 
     for msg in historico:
-
         historico_json.append({
             "role": "user" if msg["tipo"] == "cliente" else "assistant",
             "content": msg["mensagem"],
-            "timestamp": str(msg["criado_em"])
+            "timestamp": str(msg.get("criado_em") or ""),
         })
 
     resultado = (
-        supabase.table("clientes")
+        supabase.table(TABELA_CLIENTES)
         .update({
             "historico": historico_json
         })
@@ -123,22 +142,20 @@ def atualizar_historico_json(cliente_id):
 
 
 # =========================
-# PRODUTOS
+# PRODUTOS (ETL PulseDesk → Supabase)
 # =========================
 
 def buscar_produtos():
-
     resultado = (
         supabase.table("produtos")
         .select("*")
         .execute()
     )
 
-    return resultado.data
+    return [_normalizar_produto(row) for row in (resultado.data or [])]
 
 
 def buscar_produto_por_nome(nome):
-
     resultado = (
         supabase.table("produtos")
         .select("*")
@@ -146,11 +163,10 @@ def buscar_produto_por_nome(nome):
         .execute()
     )
 
-    return resultado.data
+    return [_normalizar_produto(row) for row in (resultado.data or [])]
 
 
 def buscar_produto_por_id(produto_id):
-
     resultado = (
         supabase.table("produtos")
         .select("*")
@@ -159,13 +175,12 @@ def buscar_produto_por_id(produto_id):
     )
 
     if resultado.data:
-        return resultado.data[0]
+        return _normalizar_produto(resultado.data[0])
 
     return None
 
 
 def buscar_produto_por_mercos_id(mercos_id):
-
     resultado = (
         supabase.table("produtos")
         .select("*")
@@ -174,12 +189,13 @@ def buscar_produto_por_mercos_id(mercos_id):
     )
 
     if resultado.data:
-        return resultado.data[0]
+        return _normalizar_produto(resultado.data[0])
 
     return None
 
 
 def sincronizar_produto_mercos(dados: dict) -> str:
+    """Legado — preferir ETL do backend PulseDesk."""
     mercos_id = dados.get("mercos_id")
     existente = None
 
@@ -220,12 +236,12 @@ def sincronizar_produto_mercos(dados: dict) -> str:
     supabase.table("produtos").insert(campos).execute()
     return "criado"
 
+
 # =========================
 # LEADS
 # =========================
 
 def criar_lead(cliente_id, interesse):
-
     resultado = (
         supabase.table("leads")
         .insert({
@@ -240,7 +256,6 @@ def criar_lead(cliente_id, interesse):
 
 
 def buscar_lead(cliente_id, interesse):
-
     resultado = (
         supabase.table("leads")
         .select("*")

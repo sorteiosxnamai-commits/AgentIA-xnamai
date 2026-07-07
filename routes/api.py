@@ -55,6 +55,7 @@ from services.supabase_service import (
 )
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pedido_mercos_service import criar_pedido_fechamento_mercos
+from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
 from services.vendedor_service import (
     notificar_vendedor,
     processar_lead_e_notificar,
@@ -129,6 +130,7 @@ def processar_mensagem(data: dict):
             "cliente",
             mensagem
         )
+        espelhar_mensagem_cliente(numero, nome_cliente, mensagem)
 
         atualizar_historico_json(cliente_id)
 
@@ -313,6 +315,7 @@ def processar_mensagem(data: dict):
             "ia",
             resposta_ia
         )
+        espelhar_mensagem_agente(numero, nome_cliente, resposta_ia)
 
         atualizar_historico_json(cliente_id)
 

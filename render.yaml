@@ -23,7 +23,9 @@ services:
       - key: MERCOS_COMPANY_TOKEN
         sync: false
       - key: PRODUTOS_FONTE
-        value: auto
+        value: supabase
+      - key: PULSEDESK_BRIDGE_ENABLED
+        value: "true"
       - key: ULTRAMSG_INSTANCE_ID
         sync: false
       - key: ULTRAMSG_TOKEN

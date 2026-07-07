@@ -1,4 +1,5 @@
 import unicodedata
+import os
 
 from dotenv import load_dotenv
 
@@ -15,6 +16,15 @@ from services.supabase_service import buscar_produtos
 load_dotenv(override=True)
 
 LIMITE_CATALOGO = 20
+
+
+def _fonte_produtos() -> str:
+    return os.getenv("PRODUTOS_FONTE", "supabase").strip().lower()
+
+
+def _usar_somente_supabase() -> bool:
+    """ETL PulseDesk alimenta Supabase — agente não consulta Mercos por mensagem."""
+    return _fonte_produtos() in ("supabase", "local", "etl", "pulsedesk")
 
 PADROES_CATALOGO = (
     r"o que (mais )?(voce|voces|vc|vcs) tem",
@@ -268,7 +278,7 @@ def _complementos(produto_ref: dict, catalogo: list[dict], limite: int = 2) -> l
 
 def _amostra_produtos_reais(limite: int = 4) -> list[dict]:
     """Produtos reais do catálogo para redirecionar quando o pedido não existe."""
-    if mercos_configurado():
+    if not _usar_somente_supabase() and mercos_configurado():
         try:
             brutos = buscar_produtos_mercos()[:limite]
             return [normalizar_produto(p) for p in brutos]
@@ -278,7 +288,7 @@ def _amostra_produtos_reais(limite: int = 4) -> list[dict]:
 
 
 def _catalogo_completo_mercos() -> list[dict]:
-    if not mercos_configurado():
+    if _usar_somente_supabase() or not mercos_configurado():
         return []
     try:
         return [normalizar_produto(p) for p in buscar_produtos_mercos()]
@@ -288,7 +298,13 @@ def _catalogo_completo_mercos() -> list[dict]:
 
 def montar_catalogo_geral(limite: int = LIMITE_CATALOGO) -> dict:
     """Catálogo completo — quando o cliente pede para ver o que temos."""
-    todos = _catalogo_completo_mercos() or _filtrar_produtos_locais(buscar_produtos())
+    if _usar_somente_supabase():
+        todos = _filtrar_produtos_locais(buscar_produtos())
+        fonte = "supabase"
+    else:
+        todos = _catalogo_completo_mercos() or _filtrar_produtos_locais(buscar_produtos())
+        fonte = "mercos" if mercos_configurado() and _catalogo_completo_mercos() else "supabase"
+
     produtos = _deduplicar(todos)[:limite]
 
     return {
@@ -297,7 +313,7 @@ def montar_catalogo_geral(limite: int = LIMITE_CATALOGO) -> dict:
         "upsell": [],
         "complementos": [],
         "catalogo": montar_catalogo_texto(produtos),
-        "fonte": "mercos" if mercos_configurado() and _catalogo_completo_mercos() else "supabase",
+        "fonte": fonte,
         "erro_mercos": None,
         "consulta_especifica": False,
         "termos_cliente": [],
@@ -307,21 +323,28 @@ def montar_catalogo_geral(limite: int = LIMITE_CATALOGO) -> dict:
 
 
 def montar_contexto_catalogo(mensagem: str, historico_texto: str = "") -> dict:
-    """Consulta Mercos primeiro; Supabase só como fallback. Sem match = catálogo vazio."""
+    """Com PRODUTOS_FONTE=supabase lê só o ETL; senão Mercos primeiro."""
     consulta_ampla = _consulta_catalogo(mensagem)
     termos_cliente = _termos_do_cliente(mensagem, historico_texto)
     consulta_especifica = bool(termos_cliente) and not consulta_ampla
 
-    produtos, erro_mercos = _buscar_mercos(mensagem, historico_texto)
-    fonte = "mercos" if produtos else ""
-
-    if not produtos:
+    if _usar_somente_supabase():
         produtos = _buscar_supabase(mensagem, historico_texto)
-        if produtos:
-            fonte = "supabase"
+        fonte = "supabase"
+        erro_mercos = None
+    else:
+        produtos, erro_mercos = _buscar_mercos(mensagem, historico_texto)
+        fonte = "mercos" if produtos else ""
+        if not produtos:
+            produtos = _buscar_supabase(mensagem, historico_texto)
+            if produtos:
+                fonte = "supabase"
 
     produtos = _deduplicar(produtos)[:LIMITE_CATALOGO]
-    catalogo_base = _catalogo_completo_mercos() or buscar_produtos()
+    if _usar_somente_supabase():
+        catalogo_base = _filtrar_produtos_locais(buscar_produtos())
+    else:
+        catalogo_base = _catalogo_completo_mercos() or buscar_produtos()
 
     principal = produtos[0] if produtos else None
     similares: list[dict] = []
