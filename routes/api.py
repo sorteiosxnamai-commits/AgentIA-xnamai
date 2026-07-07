@@ -62,6 +62,8 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
+CODE_VERSION = "2026-07-07-preco-pulsedesk"
+
 router = APIRouter()
 
 
@@ -371,7 +373,32 @@ async def status():
         "mercos_criar_pedido": mercos_criar_pedido_habilitado(),
         "mercos_base_url": os.getenv("MERCOS_BASE_URL", ""),
         "vendas_consultivas": True,
+        "code_version": CODE_VERSION,
+        "pulsedesk_bridge": os.getenv("PULSEDESK_BRIDGE_ENABLED", "true"),
     }
+
+
+@router.get("/teste-supabase-produtos")
+async def teste_supabase_produtos():
+    """Diagnóstico direto — lê produtos do Supabase sem montar catálogo."""
+    try:
+        from services.supabase_service import buscar_produtos
+
+        produtos = buscar_produtos()
+        return {
+            "status": "ok",
+            "code_version": CODE_VERSION,
+            "total": len(produtos),
+            "amostra": produtos[:3],
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "status": "erro",
+            "code_version": CODE_VERSION,
+            "mensagem": str(e),
+            "traceback": traceback.format_exc(),
+        }
 
 
 @router.post("/sync-produtos")
@@ -413,9 +440,12 @@ async def teste_produtos(q: str = ""):
             "erro_mercos": ctx.erro_mercos,
         }
     except Exception as e:
+        import traceback
         return {
             "status": "erro",
+            "code_version": CODE_VERSION,
             "mensagem": str(e),
+            "traceback": traceback.format_exc(),
         }
 
 

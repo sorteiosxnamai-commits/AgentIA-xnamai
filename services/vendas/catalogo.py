@@ -11,7 +11,7 @@ from services.mercos_service import (
     montar_catalogo_texto,
     normalizar_produto,
 )
-from services.supabase_service import buscar_produtos
+from services.supabase_service import buscar_produtos, _normalizar_produto
 
 load_dotenv(override=True)
 
@@ -41,6 +41,10 @@ PADROES_CATALOGO = (
     r"algo mais|mais alguma",
     r"disponivel|estoque",
 )
+
+
+def _norm_list(produtos: list[dict]) -> list[dict]:
+    return [_normalizar_produto(p) for p in produtos]
 
 
 def _consulta_catalogo(mensagem: str) -> bool:
@@ -343,10 +347,11 @@ def montar_contexto_catalogo(mensagem: str, historico_texto: str = "") -> dict:
                 fonte = "supabase"
 
     produtos = _deduplicar(produtos)[:LIMITE_CATALOGO]
+    produtos = _norm_list(produtos)
     if _usar_somente_supabase():
-        catalogo_base = _filtrar_produtos_locais(buscar_produtos())
+        catalogo_base = _norm_list(_filtrar_produtos_locais(buscar_produtos()))
     else:
-        catalogo_base = _catalogo_completo_mercos() or buscar_produtos()
+        catalogo_base = _norm_list(_catalogo_completo_mercos() or buscar_produtos())
 
     principal = produtos[0] if produtos else None
     similares: list[dict] = []

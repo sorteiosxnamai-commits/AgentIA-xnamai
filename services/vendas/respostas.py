@@ -120,7 +120,7 @@ def resposta_mostrar_catalogo(
     linhas = [f"Claro, {nome}! Olha o que temos agora:"]
     for produto in itens[:6]:
         nome_p = produto.get("nome", "Produto")
-        preco = produto.get("preco", "")
+        preco = produto.get("preco") or produto.get("preco_tabela") or ""
         if preco not in (None, ""):
             linhas.append(f"• {nome_p} — R$ {preco}")
         else:
