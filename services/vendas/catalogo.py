@@ -202,6 +202,8 @@ def _categoria_chave(produto: dict) -> str:
 def _preco_float(produto: dict) -> float:
     preco = produto.get("preco")
     if preco in (None, ""):
+        preco = produto.get("preco_tabela")
+    if preco in (None, ""):
         return 0.0
     try:
         return float(str(preco).replace(",", "."))
