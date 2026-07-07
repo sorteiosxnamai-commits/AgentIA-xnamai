@@ -393,7 +393,7 @@ def montar_catalogo_texto(produtos: list[dict]) -> str:
 
         catalogo += (
             f"Nome: {produto['nome']}\n"
-            f"Preço: R$ {produto['preco']}\n"
+            f"Preço: R$ {_valor_preco(produto)}\n"
             f"Estoque: {estoque_texto}\n"
             f"Categoria: {produto.get('categoria', '')}\n"
             f"Descrição: {descricao}\n\n"
