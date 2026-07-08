@@ -37,6 +37,7 @@ from services.conversa_service import (
     extrair_nome_do_historico,
     historico_recente,
     pedido_ja_encerrado,
+    resolver_resposta_pos_pedido,
     resposta_fechamento_pedido,
     resposta_pos_fechamento,
     _mensagem_tem_confirmacao,
@@ -70,7 +71,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-casual-msgs"
+CODE_VERSION = "2026-07-08-pos-venda"
 
 router = APIRouter()
 
@@ -166,19 +167,29 @@ def processar_mensagem(data: dict):
         # =========================
 
         nome_conversa = extrair_nome_do_historico(historico_texto, nome_cliente)
+        pedido_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto)
+
+        resposta_pos_venda = resolver_resposta_pos_pedido(
+            mensagem,
+            historico_texto,
+            ultima_resposta_ia,
+            nome_conversa,
+        )
+
         fechamento = eh_confirmacao_fechamento(
             mensagem, historico_texto, ultima_resposta_ia
         )
-        alteracao_pagamento = eh_alteracao_pagamento(mensagem, historico_texto)
+        alteracao_pagamento = eh_alteracao_pagamento(
+            mensagem, historico_texto, ultima_resposta_ia
+        )
         saudacao = eh_saudacao(mensagem, historico_texto)
 
-        if pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
-            if fechamento and not alteracao_pagamento:
-                fechamento = False
+        if pedido_encerrado:
+            fechamento = False
+            alteracao_pagamento = False
             if saudacao:
                 saudacao = False
 
-        pedido_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto)
         pular_catalogo = fechamento or alteracao_pagamento or saudacao
 
         contexto_venda = preparar_contexto_venda(
@@ -241,7 +252,9 @@ def processar_mensagem(data: dict):
             )
         )
 
-        if fechamento or alteracao_pagamento:
+        if resposta_pos_venda is not None:
+            resposta_ia = resposta_pos_venda
+        elif fechamento or alteracao_pagamento:
             frete_estimado = float(os.getenv("FRETE_ESTIMADO", "0") or "0")
             mercos_pedido = None
             ja_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto)
@@ -288,10 +301,6 @@ def processar_mensagem(data: dict):
             resposta_ia = resposta_ja_informado(com_foto[0])
         elif pediu_foto and com_foto:
             resposta_ia = resposta_com_foto(com_foto[0])
-        elif pedido_ja_encerrado(ultima_resposta_ia, historico_texto) and not (
-            fechamento or alteracao_pagamento or cliente_quer_novo_atendimento(mensagem)
-        ):
-            resposta_ia = resposta_pos_fechamento(nome_conversa)
         elif cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia):
             cat_geral = montar_catalogo_geral()
             produtos = cat_geral["produtos"]

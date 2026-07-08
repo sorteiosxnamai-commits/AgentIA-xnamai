@@ -340,7 +340,13 @@ def extrair_pagamento(
     return "a combinar"
 
 
-def eh_alteracao_pagamento(mensagem: str, historico_texto: str) -> bool:
+def eh_alteracao_pagamento(
+    mensagem: str,
+    historico_texto: str,
+    ultima_resposta_ia: str = "",
+) -> bool:
+    if pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
+        return False
     if not conversa_em_andamento(historico_texto):
         return False
     if _detectar_pagamento_linha(mensagem):
@@ -387,6 +393,154 @@ def resposta_pos_fechamento(nome: str = "") -> str:
         f"Oi, {tratamento}! Seu pedido já está registrado e nossa equipe "
         "finaliza com você em breve. Precisa de algo mais?"
     )
+
+
+PADROES_PAGAMENTO_INFORMADO = (
+    r"\bpaguei\b",
+    r"\bpagamento feito\b",
+    r"\bja paguei\b",
+    r"\bjá paguei\b",
+    r"\btransferi\b",
+    r"\bcomprovante\b",
+    r"\benviei o pix\b",
+    r"\bfiz o pix\b",
+    r"\bfiz pagamento\b",
+)
+
+PADROES_CONSULTA_STATUS = (
+    r"\bstatus\b",
+    r"\bconfirmad",
+    r"\bpendente\b",
+    r"\bpago ou pendente\b",
+    r"\bja estava pago\b",
+    r"\bjá estava pago\b",
+    r"\bfoi pago\b",
+    r"\bpagou\b",
+    r"\besta pago\b",
+    r"\bestá pago\b",
+)
+
+
+def cliente_informou_pagamento(mensagem: str) -> bool:
+    texto = _normalizar(mensagem)
+    return any(re.search(padrao, texto) for padrao in PADROES_PAGAMENTO_INFORMADO)
+
+
+def cliente_pergunta_status_pedido(mensagem: str) -> bool:
+    texto = _normalizar(mensagem)
+    if any(re.search(padrao, texto) for padrao in PADROES_CONSULTA_STATUS):
+        return True
+    return bool(re.search(r"\bpago\b", texto) and re.search(r"\b(pendente|status|pedido)\b", texto))
+
+
+def cliente_agradeceu_pos_venda(mensagem: str) -> bool:
+    texto = _normalizar(mensagem).rstrip("!?.,")
+    if re.search(r"\bobrigad", texto):
+        return True
+    return bool(re.match(r"^(valeu|obg|brigadao|brigada|thanks)\b", texto))
+
+
+def pagamento_ja_informado_no_historico(historico_texto: str) -> bool:
+    apos_fechamento = False
+    for linha in historico_texto.split("\n"):
+        if linha.startswith("IA:") and "pedido registrado" in linha.lower():
+            apos_fechamento = True
+            continue
+        if apos_fechamento and linha.startswith("Cliente:"):
+            msg = linha.replace("Cliente:", "").strip()
+            if cliente_informou_pagamento(msg):
+                return True
+    return False
+
+
+def _extrair_pagamento_do_resumo(historico_texto: str) -> str:
+    match = re.search(r"Pagamento:\s*(.+)", historico_texto, re.IGNORECASE)
+    if match:
+        return match.group(1).strip().split("\n")[0]
+    return extrair_pagamento(historico_texto)
+
+
+def resposta_comprovante_ou_pagamento(
+    nome: str,
+    historico_texto: str,
+    mensagem_atual: str = "",
+) -> str:
+    tratamento = nome or "Cliente"
+    pagamento = _extrair_pagamento_do_resumo(historico_texto)
+    pagamento_lower = (pagamento or "").lower()
+    ja_informou = pagamento_ja_informado_no_historico(historico_texto)
+
+    if ja_informou and not cliente_informou_pagamento(mensagem_atual):
+        return resposta_status_pedido(tratamento, historico_texto)
+
+    if "na entrega" in pagamento_lower:
+        return (
+            f"Perfeito, {tratamento}! Anotei aqui. "
+            f"Pagamento combinado: {pagamento}. "
+            "Seu pedido está confirmado e segue para separação — te avisamos sobre a entrega."
+        )
+
+    return (
+        f"Recebi, {tratamento}! Pagamento informado — nossa equipe confirma em breve. "
+        "Se ainda não enviou, pode mandar o comprovante aqui no chat."
+    )
+
+
+def resposta_status_pedido(nome: str, historico_texto: str) -> str:
+    tratamento = nome or "Cliente"
+    pagamento = _extrair_pagamento_do_resumo(historico_texto)
+    pagamento_lower = (pagamento or "").lower()
+    pago_informado = pagamento_ja_informado_no_historico(historico_texto)
+
+    if pago_informado:
+        if "na entrega" in pagamento_lower:
+            return (
+                f"{tratamento}, seu pedido está confirmado. "
+                f"Pagamento: {pagamento}. Status: aguardando entrega — equipe separando."
+            )
+        return (
+            f"{tratamento}, registramos seu pagamento. "
+            "Status: em confirmação pela equipe — te avisamos assim que validarmos."
+        )
+
+    if "na entrega" in pagamento_lower:
+        return (
+            f"{tratamento}, pedido confirmado. "
+            f"Pagamento: {pagamento}. Status: aguardando entrega."
+        )
+
+    return (
+        f"{tratamento}, pedido registrado. "
+        "Status: pagamento pendente — envie o comprovante aqui quando pagar."
+    )
+
+
+def resposta_agradecimento_pos_venda(nome: str = "") -> str:
+    tratamento = nome or "Cliente"
+    return f"Por nada, {tratamento}! Qualquer coisa estamos por aqui. 😊"
+
+
+def resolver_resposta_pos_pedido(
+    mensagem: str,
+    historico_texto: str,
+    ultima_resposta_ia: str,
+    nome: str,
+) -> str | None:
+    if not pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
+        return None
+    if cliente_quer_novo_atendimento(mensagem):
+        return None
+
+    if cliente_informou_pagamento(mensagem):
+        return resposta_comprovante_ou_pagamento(nome, historico_texto, mensagem)
+
+    if cliente_pergunta_status_pedido(mensagem):
+        return resposta_status_pedido(nome, historico_texto)
+
+    if cliente_agradeceu_pos_venda(mensagem):
+        return resposta_agradecimento_pos_venda(nome)
+
+    return resposta_pos_fechamento(nome)
 
 
 def historico_recente(historico_texto: str, max_linhas: int = 24) -> str:
