@@ -62,10 +62,13 @@ def cliente_quer_ver_catalogo(mensagem: str, ultima_resposta_ia: str = "") -> bo
 
     padroes_diretos = (
         r"mostra(r)? (o )?(catalogo|catálogo|produtos)",
-        r"o que (voce|voces|vocês) tem",
+        r"o que\s+.*(voce|voces|vocês|vc|vcs)\s+tem",
         r"quais produtos",
         r"me mostra",
         r"ver (o )?(catalogo|catálogo|produtos)",
+        r"produtos?\s+para\s+vender",
+        r"mais\s+de\s+produtos",
+        r"o\s+que\s+mais",
     )
     return any(re.search(p, texto) for p in padroes_diretos)
 

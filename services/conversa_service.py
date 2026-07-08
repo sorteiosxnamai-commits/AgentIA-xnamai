@@ -274,7 +274,9 @@ def extrair_endereco(historico_texto: str) -> str:
             continue
         if re.search(r"\b(rua|av\.?|avenida|travessa|rodovia)\b", texto, re.I):
             return texto
-        if re.search(r"\d{1,5}", texto) and len(texto) > 15:
+        if re.search(r"\d{1,5}", texto) and len(texto) > 15 and not re.search(
+            r"\b(monitor|mouse|produto|valor|preco|preço|quanto)\b", texto, re.I
+        ):
             return texto
     return ""
 
@@ -611,9 +613,14 @@ def resolver_resposta_pos_pedido(
     ultima_resposta_ia: str,
     nome: str,
 ) -> str | None:
-    if not pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
+    from services.vendas.respostas import cliente_quer_ver_catalogo
+
+    if cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia):
         return None
     if cliente_quer_novo_atendimento(mensagem):
+        return None
+
+    if not pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
         return None
 
     if cliente_informou_pagamento(mensagem):

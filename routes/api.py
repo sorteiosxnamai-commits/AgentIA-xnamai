@@ -81,7 +81,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-multi-pedidos"
+CODE_VERSION = "2026-07-08-catalog-fix"
 
 router = APIRouter()
 
@@ -333,6 +333,8 @@ def processar_mensagem(data: dict):
             resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos)
         elif (
             not pedido_encerrado
+            and not cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia)
+            and not cliente_quer_novo_atendimento(mensagem)
             and entrega_ja_informada(historico_texto)
             and (ia_ja_pediu_endereco(historico_texto) or extrair_preferencia_entrega(mensagem))
         ):
