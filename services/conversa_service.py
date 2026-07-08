@@ -767,7 +767,7 @@ def resposta_fechamento_pedido(
         numero = mercos_pedido.get("numero") or mercos_pedido["pedido_id"]
         if isinstance(numero, float) and numero.is_integer():
             numero = int(numero)
-        linhas.append(f"🧾 Pedido Mercos #{numero}")
+        linhas.append(f"🧾 Pedido #{numero}")
 
     linhas.append("Pedido registrado! Em breve nossa equipe finaliza com você.")
     return "\n".join(linhas)

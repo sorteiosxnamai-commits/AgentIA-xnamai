@@ -26,6 +26,10 @@ services:
         value: supabase
       - key: PULSEDESK_BRIDGE_ENABLED
         value: "true"
+      - key: PULSEDESK_PEDIDOS_ENABLED
+        value: "true"
+      - key: MERCOS_CRIAR_PEDIDO
+        value: "false"
       - key: WHATSAPP_PROVIDER
         value: zapi
       - key: ZAPI_INSTANCE_ID
