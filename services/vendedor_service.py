@@ -109,12 +109,16 @@ def processar_lead_e_notificar(
 
     notificar = False
 
-    if interesse == "intencao de compra":
-        notificar = True
-    elif not buscar_lead(cliente_id, interesse):
-        criar_lead(cliente_id, interesse)
-        print(f"LEAD SALVO: {interesse}")
-        notificar = True
+    try:
+        if interesse == "intencao de compra":
+            notificar = True
+        elif not buscar_lead(cliente_id, interesse):
+            criar_lead(cliente_id, interesse)
+            print(f"LEAD SALVO: {interesse}")
+            notificar = True
+    except Exception as erro:
+        print("AVISO: falha ao processar lead — fluxo continua:", erro)
+        notificar = interesse == "intencao de compra"
 
     if not notificar:
         return {"interesse": interesse, "notificado": False}

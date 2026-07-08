@@ -262,27 +262,41 @@ def sincronizar_produto_mercos(dados: dict) -> str:
 # =========================
 
 def criar_lead(cliente_id, interesse):
-    resultado = (
-        supabase.table("leads")
-        .insert({
-            "cliente_id": cliente_id,
-            "interesse": interesse,
-            "status": "novo"
-        })
-        .execute()
-    )
-
-    return resultado
+    try:
+        return _executar(
+            lambda: supabase.table("leads")
+            .insert({
+                "cliente_id": cliente_id,
+                "interesse": interesse,
+                "status": "novo",
+            })
+            .execute(),
+            "criar_lead",
+        )
+    except Exception as erro:
+        if "leads" in str(erro).lower():
+            print("AVISO: tabela leads indisponível — lead não salvo")
+            return None
+        raise
 
 
 def buscar_lead(cliente_id, interesse):
-    resultado = (
-        supabase.table("leads")
-        .select("*")
-        .eq("cliente_id", cliente_id)
-        .eq("interesse", interesse)
-        .execute()
-    )
+    try:
+        resultado = _executar(
+            lambda: (
+                supabase.table("leads")
+                .select("*")
+                .eq("cliente_id", cliente_id)
+                .eq("interesse", interesse)
+                .execute()
+            ),
+            "buscar_lead",
+        )
+    except Exception as erro:
+        if "leads" in str(erro).lower():
+            print("AVISO: tabela leads indisponível — lead ignorado")
+            return None
+        raise
 
     if resultado.data:
         return resultado.data[0]
