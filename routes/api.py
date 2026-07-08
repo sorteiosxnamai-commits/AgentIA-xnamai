@@ -55,8 +55,10 @@ from services.mercos_service import (
 )
 from services.pedido_mercos_service import criar_pedido_fechamento_mercos, mercos_criar_pedido_habilitado
 from services.pedido_pulsedesk_service import (
+    diagnosticar_pulsedesk_pedidos,
     pulsedesk_pedidos_habilitado,
     registrar_venda_pulsedesk,
+    registrar_venda_retroativa_por_telefone,
 )
 from services.supabase_service import (
     buscar_cliente,
@@ -74,7 +76,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-pulsedesk-pedidos"
+CODE_VERSION = "2026-07-08-pulsedesk-backfill"
 
 router = APIRouter()
 
@@ -446,6 +448,49 @@ async def teste_supabase_produtos():
             "total": len(produtos),
             "amostra": produtos[:3],
         }
+    except Exception as e:
+        import traceback
+        return {
+            "status": "erro",
+            "code_version": CODE_VERSION,
+            "mensagem": str(e),
+            "traceback": traceback.format_exc(),
+        }
+
+
+@router.get("/teste-pulsedesk-pedidos")
+async def teste_pulsedesk_pedidos(tel: str = "554396717931"):
+    """Diagnóstico — lê cliente/pedidos WhatsApp no Supabase PulseDesk."""
+    try:
+        return {
+            "status": "ok",
+            "code_version": CODE_VERSION,
+            "pulsedesk_pedidos": pulsedesk_pedidos_habilitado(),
+            **diagnosticar_pulsedesk_pedidos(tel),
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "status": "erro",
+            "code_version": CODE_VERSION,
+            "mensagem": str(e),
+            "traceback": traceback.format_exc(),
+        }
+
+
+@router.get("/registrar-pedido-pulsedesk")
+async def registrar_pedido_pulsedesk(tel: str = "", token: str = ""):
+    """Backfill — grava no PulseDesk pedido fechado no WhatsApp (histórico agent)."""
+    sync_token = os.getenv("SYNC_TOKEN", "").strip()
+    if sync_token and token != sync_token:
+        return {"status": "erro", "mensagem": "Token inválido"}
+
+    if not tel:
+        return {"status": "erro", "mensagem": "Informe ?tel=554396717931"}
+
+    try:
+        resultado = registrar_venda_retroativa_por_telefone(tel)
+        return {"code_version": CODE_VERSION, **resultado}
     except Exception as e:
         import traceback
         return {

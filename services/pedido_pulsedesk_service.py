@@ -53,6 +53,44 @@ def _buscar_cliente_pulsedesk_por_telefone(telefone: str) -> dict | None:
     return None
 
 
+def _pedido_whatsapp_ja_no_pulsedesk(telefone: str) -> bool:
+    cliente = _buscar_cliente_pulsedesk_por_telefone(telefone)
+    if not cliente or cliente.get("mercos_id") is None:
+        return False
+    resposta = (
+        supabase.table("pedidos")
+        .select("mercos_id,numero")
+        .eq("cliente_mercos_id", int(cliente["mercos_id"]))
+        .execute()
+    )
+    for row in resposta.data or []:
+        numero = str(row.get("numero") or "")
+        mercos_id = row.get("mercos_id")
+        if numero.startswith("WA-") or (mercos_id is not None and int(mercos_id) < 0):
+            return True
+    return False
+
+
+def diagnosticar_pulsedesk_pedidos(telefone: str) -> dict:
+    tel = (telefone or "").strip()
+    cliente = _buscar_cliente_pulsedesk_por_telefone(tel)
+    pedidos = []
+    if cliente and cliente.get("mercos_id") is not None:
+        resposta = (
+            supabase.table("pedidos")
+            .select("*")
+            .eq("cliente_mercos_id", int(cliente["mercos_id"]))
+            .execute()
+        )
+        pedidos = resposta.data or []
+    return {
+        "telefone": tel,
+        "cliente_pulsedesk": cliente,
+        "pedidos": pedidos,
+        "whatsapp_registrado": _pedido_whatsapp_ja_no_pulsedesk(tel),
+    }
+
+
 def upsert_cliente_pulsedesk(
     telefone: str,
     nome: str = "",
@@ -118,10 +156,20 @@ def criar_pedido_pulsedesk(
         "created_at": agora,
     }
 
-    _executar(
-        lambda: supabase.table("pedidos").upsert(dados, on_conflict="mercos_id").execute(),
-        "criar_pedido_pulsedesk",
-    )
+    try:
+        _executar(
+            lambda: supabase.table("pedidos").upsert(dados, on_conflict="mercos_id").execute(),
+            "criar_pedido_pulsedesk",
+        )
+    except Exception as exc:
+        if "created_at" in str(exc).lower():
+            dados.pop("created_at", None)
+            _executar(
+                lambda: supabase.table("pedidos").upsert(dados, on_conflict="mercos_id").execute(),
+                "criar_pedido_pulsedesk_sem_created_at",
+            )
+        else:
+            raise
     return {"pedido_id": pedido_id, "numero": numero, "cliente_id": cliente_mercos_id}
 
 
@@ -140,8 +188,10 @@ def registrar_venda_pulsedesk(
         return None
 
     if pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
-        print("PULSEDESK: pedido já registrado na conversa, ignorando duplicata")
-        return None
+        if _pedido_whatsapp_ja_no_pulsedesk(telefone):
+            print("PULSEDESK: pedido já existe no PulseDesk, ignorando duplicata")
+            return None
+        print("PULSEDESK: conversa fechada mas pedido ausente — registrando retroativo")
 
     nome = extrair_nome_do_historico(historico_texto, pushname)
     endereco = extrair_endereco(historico_texto)
@@ -188,5 +238,57 @@ def registrar_venda_pulsedesk(
         print("PULSEDESK PEDIDO CRIADO:", pedido)
         return pedido
     except Exception as exc:
+        import traceback
+
         print("PULSEDESK PEDIDO FALHOU:", exc)
+        traceback.print_exc()
         return {"erro": str(exc)}
+
+
+def registrar_venda_retroativa_por_telefone(telefone: str) -> dict:
+    """Reconstrói pedido a partir do histórico do agent (backfill manual)."""
+    from services.supabase_service import buscar_cliente, buscar_historico
+
+    tel = (telefone or "").strip().replace("+", "")
+    if not tel:
+        return {"erro": "telefone_obrigatorio"}
+
+    if _pedido_whatsapp_ja_no_pulsedesk(tel):
+        return {
+            "status": "ok",
+            "mensagem": "Pedido WhatsApp já registrado no PulseDesk",
+            **diagnosticar_pulsedesk_pedidos(tel),
+        }
+
+    cliente = buscar_cliente(tel)
+    if not cliente:
+        return {"erro": "cliente_agent_nao_encontrado", "telefone": tel}
+
+    historico = buscar_historico(cliente["id"])
+    historico_texto = ""
+    ultima_resposta_ia = ""
+    for msg in historico:
+        if msg["tipo"] == "cliente":
+            historico_texto += f"Cliente: {msg['mensagem']}\n"
+        else:
+            historico_texto += f"IA: {msg['mensagem']}\n"
+            ultima_resposta_ia = msg["mensagem"]
+
+    if "pedido registrado" not in historico_texto.lower():
+        return {"erro": "conversa_sem_fechamento", "telefone": tel}
+
+    resultado = registrar_venda_pulsedesk(
+        historico_texto=historico_texto,
+        cliente_supabase=cliente,
+        telefone=tel,
+        pushname=cliente.get("nome") or "",
+        ultima_resposta_ia=ultima_resposta_ia,
+    )
+    if resultado and resultado.get("erro"):
+        return {"status": "erro", **resultado}
+
+    return {
+        "status": "ok",
+        "resultado": resultado,
+        **diagnosticar_pulsedesk_pedidos(tel),
+    }
