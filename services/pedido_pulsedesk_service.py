@@ -42,6 +42,61 @@ def _id_sintetico(prefix: int, seed: str) -> int:
     return -(prefix * 1_000_000_000 + slot)
 
 
+def _upsert_seguro(tabela: str, dados: dict, *, conflito: str, rotulo: str) -> None:
+    """Upsert removendo colunas opcionais ausentes no schema Supabase."""
+    payload = dict(dados)
+    opcionais = (
+        "ultima_alteracao",
+        "created_at",
+        "data_pedido",
+        "quantidade_itens",
+        "endereco",
+        "razao_social",
+    )
+
+    while True:
+        try:
+            _executar(
+                lambda p=payload: supabase.table(tabela).upsert(p, on_conflict=conflito).execute(),
+                rotulo,
+            )
+            return
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "pgrst204" not in msg:
+                raise
+            removido = False
+            for campo in opcionais:
+                if campo in payload and campo in msg:
+                    payload.pop(campo, None)
+                    removido = True
+                    break
+            if not removido:
+                raise
+
+
+def _update_seguro(tabela: str, dados: dict, *, filtro: str, valor) -> None:
+    payload = dict(dados)
+    opcionais = ("ultima_alteracao", "endereco", "razao_social")
+
+    while True:
+        try:
+            supabase.table(tabela).update(payload).eq(filtro, valor).execute()
+            return
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "pgrst204" not in msg:
+                raise
+            removido = False
+            for campo in opcionais:
+                if campo in payload and campo in msg:
+                    payload.pop(campo, None)
+                    removido = True
+                    break
+            if not removido:
+                raise
+
+
 def _buscar_cliente_pulsedesk_por_telefone(telefone: str) -> dict | None:
     tel = (telefone or "").strip()
     if not tel:
@@ -105,11 +160,10 @@ def upsert_cliente_pulsedesk(
             "razao_social": nome or existente.get("razao_social") or existente.get("nome"),
             "telefone": telefone,
             "celular": telefone,
-            "ultima_alteracao": _agora_iso(),
         }
         if endereco:
             campos["endereco"] = endereco[:500]
-        supabase.table("clientes").update(campos).eq("mercos_id", mercos_id).execute()
+        _update_seguro("clientes", campos, filtro="mercos_id", valor=mercos_id)
         return mercos_id
 
     mercos_id = int(pulsedesk_id) if pulsedesk_id else _id_sintetico(91, telefone)
@@ -120,15 +174,11 @@ def upsert_cliente_pulsedesk(
         "razao_social": rotulo,
         "telefone": telefone,
         "celular": telefone,
-        "ultima_alteracao": _agora_iso(),
     }
     if endereco:
         dados["endereco"] = endereco[:500]
 
-    _executar(
-        lambda: supabase.table("clientes").upsert(dados, on_conflict="mercos_id").execute(),
-        "upsert_cliente_pulsedesk",
-    )
+    _upsert_seguro("clientes", dados, conflito="mercos_id", rotulo="upsert_cliente_pulsedesk")
     return mercos_id
 
 
@@ -156,20 +206,7 @@ def criar_pedido_pulsedesk(
         "created_at": agora,
     }
 
-    try:
-        _executar(
-            lambda: supabase.table("pedidos").upsert(dados, on_conflict="mercos_id").execute(),
-            "criar_pedido_pulsedesk",
-        )
-    except Exception as exc:
-        if "created_at" in str(exc).lower():
-            dados.pop("created_at", None)
-            _executar(
-                lambda: supabase.table("pedidos").upsert(dados, on_conflict="mercos_id").execute(),
-                "criar_pedido_pulsedesk_sem_created_at",
-            )
-        else:
-            raise
+    _upsert_seguro("pedidos", dados, conflito="mercos_id", rotulo="criar_pedido_pulsedesk")
     return {"pedido_id": pedido_id, "numero": numero, "cliente_id": cliente_mercos_id}
 
 

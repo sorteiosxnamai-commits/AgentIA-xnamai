@@ -76,7 +76,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-pulsedesk-backfill"
+CODE_VERSION = "2026-07-08-schema-safe"
 
 router = APIRouter()
 
