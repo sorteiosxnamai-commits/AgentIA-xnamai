@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 import asyncio
 import os
 import traceback
@@ -68,7 +68,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-zapi-whatsapp"
+CODE_VERSION = "2026-07-08-supabase-retry"
 
 router = APIRouter()
 
@@ -351,7 +351,7 @@ def processar_mensagem(data: dict):
         traceback.print_exc()
 
 
-async def receber_webhook(data: dict):
+async def receber_webhook(data: dict, background_tasks: BackgroundTasks | None = None):
 
     print("WEBHOOK RECEBIDO:")
     print(data)
@@ -361,15 +361,28 @@ async def receber_webhook(data: dict):
         print("WEBHOOK IGNORADO: formato não suportado ou evento descartado")
         return {"status": "ok", "ignorado": True}
 
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, processar_mensagem, payload)
+    if background_tasks is not None:
+        background_tasks.add_task(processar_mensagem, payload)
+    else:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, processar_mensagem, payload)
 
     return {"status": "ok"}
 
 
+@router.get("/webhook")
+async def webhook_info():
+    return {
+        "status": "ok",
+        "mensagem": "POST aqui para receber mensagens da Z-API",
+        "url": "https://agent-ia-xnamai.onrender.com/webhook",
+        "provider": provider_nome(),
+    }
+
+
 @router.post("/webhook")
-async def webhook(data: dict):
-    return await receber_webhook(data)
+async def webhook(data: dict, background_tasks: BackgroundTasks):
+    return await receber_webhook(data, background_tasks)
 
 
 @router.get("/status")

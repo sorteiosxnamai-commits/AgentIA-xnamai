@@ -1,6 +1,8 @@
 import os
+import time
 
 from dotenv import load_dotenv
+from httpx import ConnectError, ReadError, TimeoutException
 
 from database.supabase import supabase
 
@@ -8,6 +10,22 @@ load_dotenv(override=True)
 
 TABELA_CLIENTES = os.getenv("AGENT_CLIENTES_TABLE", "agent_clientes")
 TABELA_HISTORICO = os.getenv("AGENT_HISTORICO_TABLE", "agent_historico")
+
+_RETRIES = 3
+_RETRY_ERRORS = (ReadError, ConnectError, TimeoutException, OSError)
+
+
+def _executar(comando, rotulo: str = "supabase"):
+    for tentativa in range(1, _RETRIES + 1):
+        try:
+            return comando()
+        except _RETRY_ERRORS as erro:
+            if tentativa >= _RETRIES:
+                print(f"ERRO {rotulo} após {_RETRIES} tentativas:", erro)
+                raise
+            espera = 0.4 * tentativa
+            print(f"RETRY {rotulo} ({tentativa}/{_RETRIES}) em {espera:.1f}s:", erro)
+            time.sleep(espera)
 
 
 def _normalizar_produto(row: dict) -> dict:
@@ -33,11 +51,14 @@ def _normalizar_produto(row: dict) -> dict:
 # =========================
 
 def buscar_cliente(telefone):
-    resultado = (
-        supabase.table(TABELA_CLIENTES)
-        .select("*")
-        .eq("telefone", telefone)
-        .execute()
+    resultado = _executar(
+        lambda: (
+            supabase.table(TABELA_CLIENTES)
+            .select("*")
+            .eq("telefone", telefone)
+            .execute()
+        ),
+        "buscar_cliente",
     )
 
     if resultado.data:
@@ -51,10 +72,9 @@ def criar_cliente(telefone, nome=""):
     if nome:
         dados["nome"] = nome
 
-    resultado = (
-        supabase.table(TABELA_CLIENTES)
-        .insert(dados)
-        .execute()
+    resultado = _executar(
+        lambda: supabase.table(TABELA_CLIENTES).insert(dados).execute(),
+        "criar_cliente",
     )
 
     return resultado.data[0]
