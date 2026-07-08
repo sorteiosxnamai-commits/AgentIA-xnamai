@@ -31,6 +31,7 @@ from services.produto_imagem_service import (
 
 from services.conversa_service import (
     cliente_quer_novo_atendimento,
+    conversa_em_andamento,
     eh_alteracao_pagamento,
     eh_confirmacao_fechamento,
     extrair_nome_do_historico,
@@ -38,6 +39,7 @@ from services.conversa_service import (
     pedido_ja_encerrado,
     resposta_fechamento_pedido,
     resposta_pos_fechamento,
+    _mensagem_tem_confirmacao,
 )
 from services.webhook_normalizer import normalizar_webhook
 from services.webhook_service import evento_deve_ser_ignorado, marcar_evento_processado
@@ -68,7 +70,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-produto-fechamento"
+CODE_VERSION = "2026-07-08-fechamento-mercos"
 
 router = APIRouter()
 
@@ -242,8 +244,9 @@ def processar_mensagem(data: dict):
         if fechamento or alteracao_pagamento:
             frete_estimado = float(os.getenv("FRETE_ESTIMADO", "0") or "0")
             mercos_pedido = None
+            ja_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto)
 
-            if fechamento and not alteracao_pagamento:
+            if not ja_encerrado and (fechamento or alteracao_pagamento):
                 mercos_pedido = criar_pedido_fechamento_mercos(
                     historico_texto=historico_texto,
                     cliente_supabase=cliente,
@@ -294,7 +297,9 @@ def processar_mensagem(data: dict):
             produtos = cat_geral["produtos"]
             catalogo = cat_geral["catalogo"]
             resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos)
-        elif contexto_venda.sem_match:
+        elif contexto_venda.sem_match and not (
+            conversa_em_andamento(historico_texto) and _mensagem_tem_confirmacao(mensagem)
+        ):
             resposta_ia = resposta_fora_catalogo(
                 nome_cliente=nome_conversa,
                 termos=contexto_venda.termos_cliente,

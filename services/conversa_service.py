@@ -21,6 +21,23 @@ CONFIRMACOES = (
     "fechou",
 )
 
+PADROES_CONFIRMACAO_MSG = (
+    r"\bfechou\b",
+    r"\bfechado\b",
+    r"\bconfirmo\b",
+    r"\bcombinado\b",
+    r"\bpaguei\b",
+    r"\bfiz pagamento\b",
+    r"\bpagamento\b",
+    r"\bpix\b",
+    r"\bobrigad",
+    r"\bsim\b",
+    r"\bok\b",
+    r"\bbeleza\b",
+    r"\bshow\b",
+    r"\bperfeito\b",
+)
+
 SAUDACOES_INICIAIS = (
     r"^(oi|ola|olá|hey|eae|e ai|eai|bom dia|boa tarde|boa noite|hello|hi)\b",
 )
@@ -53,9 +70,14 @@ INDICIOS_FECHAMENTO = (
     "debito",
     "débito",
     "pagamento",
+    "pix",
+    "paguei",
     "separar",
     "fechar",
+    "fechou",
+    "reservo",
     "na entrega",
+    "r$",
 )
 
 
@@ -88,14 +110,46 @@ def eh_saudacao_inicial(mensagem: str, historico_texto: str = "") -> bool:
     return any(re.search(padrao, texto) for padrao in SAUDACOES_INICIAIS)
 
 
+def _mensagem_tem_confirmacao(mensagem: str) -> bool:
+    texto = _normalizar(mensagem).rstrip("!?.,")
+    if texto in CONFIRMACOES:
+        return True
+    return any(re.search(padrao, texto) for padrao in PADROES_CONFIRMACAO_MSG)
+
+
+def _historico_tem_negociacao(historico_texto: str) -> bool:
+    historico = _normalizar(historico_texto)
+    return any(
+        sinal in historico
+        for sinal in (
+            "r$",
+            "reservo",
+            "pagamento",
+            "pix",
+            "prefere pagar",
+            "endereco",
+            "entrega",
+            "monitor",
+            "mouse",
+            "notebook",
+            "produto",
+            "separar",
+            "preco",
+        )
+    )
+
+
 def eh_confirmacao_fechamento(
     mensagem: str,
     historico_texto: str,
     ultima_resposta_ia: str = "",
 ) -> bool:
-    texto = _normalizar(mensagem).rstrip("!?.")
-    if texto not in CONFIRMACOES:
+    if not _mensagem_tem_confirmacao(mensagem):
         return False
+    if not conversa_em_andamento(historico_texto):
+        return False
+    if _historico_tem_negociacao(historico_texto):
+        return True
 
     historico = _normalizar(historico_texto)
     if any(indicio in historico for indicio in INDICIOS_FECHAMENTO):
@@ -108,6 +162,10 @@ def eh_confirmacao_fechamento(
         "vou calcular",
         "te mando o total",
         "valor total",
+        "prefere pagar",
+        "endereco de entrega",
+        "pra fechar",
+        "reservo",
     )
     return any(p in ultima for p in promessas)
 
@@ -255,11 +313,12 @@ def extrair_pagamento(
 def eh_alteracao_pagamento(mensagem: str, historico_texto: str) -> bool:
     if not conversa_em_andamento(historico_texto):
         return False
-    if _detectar_pagamento_linha(mensagem) is None:
-        return False
-
-    historico = _normalizar(historico_texto)
-    return any(indicio in historico for indicio in INDICIOS_FECHAMENTO)
+    if _detectar_pagamento_linha(mensagem):
+        return True
+    texto = _normalizar(mensagem)
+    return _historico_tem_negociacao(historico_texto) and bool(
+        re.search(r"\b(pix|pagamento|paguei|debito|credito|cartao)\b", texto)
+    )
 
 
 def pedido_ja_encerrado(ultima_resposta_ia: str, historico_texto: str = "") -> bool:
