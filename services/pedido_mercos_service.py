@@ -7,6 +7,7 @@ from services.conversa_service import (
     extrair_endereco,
     extrair_nome_do_historico,
     extrair_pagamento,
+    _buscar_produto_do_historico,
     _extrair_nome_produto_historico,
     _extrair_preco_historico,
 )
@@ -52,13 +53,13 @@ def _mapear_condicao_pagamento(pagamento: str) -> str:
 
 
 def _resolver_produto_mercos(historico_texto: str) -> dict | None:
-    from services.produtos_service import buscar_produtos_para_atendimento
-
-    resultado = buscar_produtos_para_atendimento(historico_texto)
-    for item in resultado.get("produtos") or []:
-        mercos_id = item.get("mercos_id")
-        if mercos_id:
-            return {"id": mercos_id, "nome": item.get("nome"), "preco_tabela": item.get("preco")}
+    produto = _buscar_produto_do_historico(historico_texto)
+    if produto and produto.get("mercos_id"):
+        return {
+            "id": produto["mercos_id"],
+            "nome": produto.get("nome"),
+            "preco_tabela": produto.get("preco"),
+        }
 
     historico = historico_texto.lower()
     consultas = []
@@ -71,6 +72,8 @@ def _resolver_produto_mercos(historico_texto: str) -> dict | None:
         consultas.extend(["caixa de som bluetooth", "bluetooth", "caixa de som"])
 
     for consulta in consultas:
+        from services.produtos_service import buscar_produtos_para_atendimento
+
         resultado = buscar_produtos_para_atendimento(consulta)
         for item in resultado.get("produtos") or []:
             if item.get("mercos_id"):

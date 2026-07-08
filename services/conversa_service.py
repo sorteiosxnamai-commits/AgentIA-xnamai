@@ -178,6 +178,8 @@ def extrair_endereco(historico_texto: str) -> str:
         texto = linha.replace("Cliente:", "").strip()
         if _eh_dado_contato(texto):
             continue
+        if _eh_pergunta_produto(texto):
+            continue
         if re.search(r"\b(rua|av\.?|avenida|travessa|rodovia)\b", texto, re.I):
             return texto
         if re.search(r"\d{1,5}", texto) and len(texto) > 15:
@@ -305,18 +307,86 @@ def historico_recente(historico_texto: str, max_linhas: int = 24) -> str:
     return "\n".join(linhas[-max_linhas:])
 
 
+def _parse_preco(valor: str) -> float | None:
+    if valor in (None, ""):
+        return None
+    try:
+        return float(str(valor).replace(".", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extrair_oferta_ia(historico_texto: str) -> tuple[str, float | None]:
+    """Última oferta explícita da IA no histórico (nome + preço)."""
+    padroes = (
+        r"(?:reservo|separo|temos|olha|segue|fica)[^\n]{0,30}?\s*(?:1x\s*)?(.+?)\s+por\s+r\$\s*([\d.,]+)",
+        r"(.+?)\s*[—–-]\s*r\$\s*([\d.,]+)",
+        r"(.+?)\s+por\s+r\$\s*([\d.,]+)",
+    )
+    for linha in reversed(historico_texto.split("\n")):
+        if not linha.startswith("IA:"):
+            continue
+        texto = linha.replace("IA:", "").strip()
+        for padrao in padroes:
+            match = re.search(padrao, texto, re.I)
+            if not match:
+                continue
+            nome = re.sub(r"^[\W\d]+", "", match.group(1).strip(" .,!-"))
+            if 2 < len(nome) < 80:
+                return nome, _parse_preco(match.group(2))
+    return "", None
+
+
+def _buscar_produto_por_preco(preco: float) -> dict | None:
+    from services.supabase_service import buscar_produtos
+
+    for produto in buscar_produtos():
+        bruto = produto.get("preco") or produto.get("preco_tabela")
+        try:
+            if abs(float(bruto) - preco) < 0.05:
+                return produto
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _linhas_cliente_recentes(historico_texto: str, limite: int = 6) -> list[str]:
+    linhas = [
+        linha.replace("Cliente:", "").strip()
+        for linha in historico_texto.split("\n")
+        if linha.startswith("Cliente:")
+    ]
+    return linhas[-limite:]
+
+
+def _eh_pergunta_produto(texto: str) -> bool:
+    t = _normalizar(texto)
+    if "?" in texto:
+        return True
+    indicadores = (
+        "valor", "preco", "preço", "quanto", "custa", "tem ", "quero", "preciso",
+        "monitor", "mouse", "teclado", "notebook", "cabo", "fone", "produto",
+    )
+    return any(ind in t for ind in indicadores) and not re.search(
+        r"\b(rua|av\.?|avenida|travessa|rodovia|cep)\b", t, re.I
+    )
+
+
 def _extrair_preco_historico(historico_texto: str) -> float | None:
+    nome_oferta, preco_oferta = _extrair_oferta_ia(historico_texto)
+    if preco_oferta is not None:
+        return preco_oferta
     precos = re.findall(r"r\$\s*([\d.,]+)", historico_texto.lower())
     if not precos:
         return None
-    valor = precos[-1].replace(".", "").replace(",", ".")
-    try:
-        return float(valor)
-    except ValueError:
-        return None
+    return _parse_preco(precos[-1])
 
 
 def _extrair_nome_produto_historico(historico_texto: str) -> str:
+    nome_oferta, _ = _extrair_oferta_ia(historico_texto)
+    if nome_oferta:
+        return nome_oferta
+
     for linha in reversed(historico_texto.split("\n")):
         if not linha.startswith("IA:"):
             continue
@@ -335,6 +405,23 @@ def _extrair_nome_produto_historico(historico_texto: str) -> str:
 
 
 def _buscar_produto_do_historico(historico_texto: str) -> dict | None:
+    nome_oferta, preco_oferta = _extrair_oferta_ia(historico_texto)
+    if preco_oferta is not None:
+        por_preco = _buscar_produto_por_preco(preco_oferta)
+        if por_preco:
+            return por_preco
+
+    if nome_oferta:
+        resultado = buscar_produtos_para_atendimento(nome_oferta, historico_texto)
+        if resultado.get("produtos"):
+            return resultado["produtos"][0]
+
+    preco_hist = _extrair_preco_historico(historico_texto)
+    if preco_hist is not None:
+        por_preco = _buscar_produto_por_preco(preco_hist)
+        if por_preco:
+            return por_preco
+
     historico = _normalizar(historico_texto)
     termos = []
     for termo in re.findall(r"\b(lt\d+|rs\d+|hmaston)\b", historico):
@@ -346,9 +433,16 @@ def _buscar_produto_do_historico(historico_texto: str) -> dict | None:
         if resultado.get("produtos"):
             return resultado["produtos"][0]
 
-    resultado = buscar_produtos_para_atendimento(historico_texto)
-    if resultado.get("produtos"):
-        return resultado["produtos"][0]
+    linhas_cliente = [
+        linha for linha in _linhas_cliente_recentes(historico_texto)
+        if not _eh_pergunta_produto(linha) and not _detectar_pagamento_linha(linha)
+    ]
+    if linhas_cliente:
+        busca = " ".join(linhas_cliente[-3:])
+        resultado = buscar_produtos_para_atendimento(busca, historico_texto)
+        if resultado.get("produtos"):
+            return resultado["produtos"][0]
+
     return None
 
 

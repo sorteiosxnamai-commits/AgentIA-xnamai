@@ -68,7 +68,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-supabase-retry"
+CODE_VERSION = "2026-07-08-produto-fechamento"
 
 router = APIRouter()
 
