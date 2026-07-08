@@ -34,10 +34,14 @@ from services.conversa_service import (
     conversa_em_andamento,
     eh_alteracao_pagamento,
     eh_confirmacao_fechamento,
+    entrega_ja_informada,
     extrair_nome_do_historico,
+    extrair_preferencia_entrega,
     historico_recente,
+    ia_ja_pediu_endereco,
     pedido_ja_encerrado,
     resolver_resposta_pos_pedido,
+    resposta_entrega_ja_anotada,
     resposta_fechamento_pedido,
     resposta_pos_fechamento,
     _mensagem_tem_confirmacao,
@@ -76,7 +80,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-schema-safe"
+CODE_VERSION = "2026-07-08-no-repeat"
 
 router = APIRouter()
 
@@ -322,6 +326,12 @@ def processar_mensagem(data: dict):
             produtos = cat_geral["produtos"]
             catalogo = cat_geral["catalogo"]
             resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos)
+        elif (
+            not pedido_encerrado
+            and entrega_ja_informada(historico_texto)
+            and (ia_ja_pediu_endereco(historico_texto) or extrair_preferencia_entrega(mensagem))
+        ):
+            resposta_ia = resposta_entrega_ja_anotada(nome_conversa, historico_texto)
         elif contexto_venda.sem_match and not (
             conversa_em_andamento(historico_texto) and _mensagem_tem_confirmacao(mensagem)
         ):

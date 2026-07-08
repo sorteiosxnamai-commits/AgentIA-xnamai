@@ -260,6 +260,10 @@ def extrair_nome_do_historico(historico_texto: str, pushname: str = "") -> str:
 
 
 def extrair_endereco(historico_texto: str) -> str:
+    match = re.search(r"📍\s*Entrega:\s*(.+)", historico_texto, re.IGNORECASE)
+    if match:
+        return match.group(1).strip().split("\n")[0]
+
     for linha in reversed(historico_texto.split("\n")):
         if not linha.startswith("Cliente:"):
             continue
@@ -273,6 +277,65 @@ def extrair_endereco(historico_texto: str) -> str:
         if re.search(r"\d{1,5}", texto) and len(texto) > 15:
             return texto
     return ""
+
+
+def extrair_preferencia_entrega(historico_texto: str) -> str:
+    match = re.search(r"📍\s*Entrega:\s*(.+)", historico_texto, re.IGNORECASE)
+    if match:
+        return match.group(1).strip().split("\n")[0]
+
+    for linha in reversed(historico_texto.split("\n")):
+        if not linha.startswith("Cliente:"):
+            continue
+        texto = linha.replace("Cliente:", "").strip()
+        if _eh_dado_contato(texto) or _eh_pergunta_produto(texto):
+            continue
+        if re.search(
+            r"\b(entregar|entrega|dia\s+\d{1,2}|no dia\s+\d{1,2}|desse mes|deste mes)\b",
+            texto,
+            re.I,
+        ):
+            return texto
+    return ""
+
+
+def entrega_ja_informada(historico_texto: str) -> bool:
+    return bool(extrair_endereco(historico_texto) or extrair_preferencia_entrega(historico_texto))
+
+
+def ia_ja_pediu_endereco(historico_texto: str) -> bool:
+    padroes = (
+        r"endereco completo",
+        r"endereço completo",
+        r"me passa o endereco",
+        r"me passa o endereço",
+        r"rua.*numero",
+        r"rua.*número",
+    )
+    for linha in reversed(historico_texto.split("\n")):
+        if not linha.startswith("IA:"):
+            continue
+        texto = _normalizar(linha.replace("IA:", ""))
+        if any(re.search(padrao, texto) for padrao in padroes):
+            return True
+    return False
+
+
+def resposta_entrega_ja_anotada(nome: str, historico_texto: str) -> str:
+    tratamento = nome or "Cliente"
+    entrega = extrair_endereco(historico_texto) or extrair_preferencia_entrega(historico_texto)
+    pagamento = extrair_pagamento(historico_texto)
+
+    if pagamento and pagamento != "a combinar":
+        return (
+            f"Perfeito, {tratamento}! Anotei a entrega ({entrega}) e pagamento ({pagamento}). "
+            "Posso registrar seu pedido?"
+        )
+
+    return (
+        f"Anotei, {tratamento}! Entrega: {entrega}. "
+        "Me diz como prefere pagar — Pix, débito ou cartão na entrega?"
+    )
 
 
 def _eh_dado_contato(texto: str) -> bool:

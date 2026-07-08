@@ -5,6 +5,8 @@ from services.conversa_service import (
     conversa_em_andamento,
     extrair_endereco,
     extrair_pagamento,
+    entrega_ja_informada,
+    ia_ja_pediu_endereco,
 )
 
 OBJECOES = {
@@ -139,7 +141,7 @@ def inferir_estagio_aida(
     bant = analisar_bant(mensagem, historico_texto)
 
     if detectar_intencao_compra(mensagem, historico_texto):
-        if extrair_endereco(historico_texto) or extrair_pagamento(historico_texto) != "a combinar":
+        if entrega_ja_informada(historico_texto) or extrair_pagamento(historico_texto) != "a combinar":
             return "acao"
         return "desejo"
 

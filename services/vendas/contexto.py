@@ -9,6 +9,11 @@ from services.vendas.analise import (
     orientacao_spin,
 )
 from services.vendas.catalogo import montar_contexto_catalogo
+from services.conversa_service import (
+    entrega_ja_informada,
+    extrair_pagamento,
+    ia_ja_pediu_endereco,
+)
 
 
 @dataclass
@@ -91,11 +96,28 @@ def preparar_contexto_venda(
         orientacao_objecao(objecao),
     ]
 
-    if intencao:
-        partes.append(
-            "Sinal de compra detectado: conduza ao fechamento pedindo endereço "
-            "e forma de pagamento se ainda não tiver."
-        )
+    if intencao and not pedido_encerrado:
+        if entrega_ja_informada(historico_texto):
+            if extrair_pagamento(historico_texto) != "a combinar":
+                partes.append(
+                    "Cliente já informou entrega e pagamento. "
+                    "Convide ao fechamento — NÃO repita perguntas de endereço ou pagamento."
+                )
+            else:
+                partes.append(
+                    "Cliente já informou entrega/data. "
+                    "Peça SÓ a forma de pagamento — NÃO repita pedido de endereço."
+                )
+        elif ia_ja_pediu_endereco(historico_texto):
+            partes.append(
+                "Você já pediu endereço. Confirme o que o cliente disse ou aguarde — "
+                "NÃO pergunte endereço de novo."
+            )
+        else:
+            partes.append(
+                "Sinal de compra detectado: conduza ao fechamento pedindo endereço "
+                "e forma de pagamento se ainda não tiver."
+            )
 
     bant_faltando = []
     if not bant["need"]:
