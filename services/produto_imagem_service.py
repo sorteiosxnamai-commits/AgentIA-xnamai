@@ -2,7 +2,7 @@ import re
 import unicodedata
 
 from services.supabase_service import buscar_produtos
-from services.ultramsg_service import enviar_imagem
+from services.whatsapp_service import enviar_imagem
 
 PALAVRAS_FOTO = (
     "foto",

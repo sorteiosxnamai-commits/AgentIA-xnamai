@@ -26,6 +26,14 @@ services:
         value: supabase
       - key: PULSEDESK_BRIDGE_ENABLED
         value: "true"
+      - key: WHATSAPP_PROVIDER
+        value: zapi
+      - key: ZAPI_INSTANCE_ID
+        sync: false
+      - key: ZAPI_TOKEN
+        sync: false
+      - key: ZAPI_CLIENT_TOKEN
+        sync: false
       - key: ULTRAMSG_INSTANCE_ID
         sync: false
       - key: ULTRAMSG_TOKEN

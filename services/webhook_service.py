@@ -18,11 +18,20 @@ def _limpar_ids_antigos() -> None:
         _IDS_PROCESSADOS.pop(msg_id, None)
 
 
-def extrair_id_ultramsg(data: dict, evento: dict) -> str:
-    for valor in (evento.get("id"), data.get("id"), data.get("referenceId")):
+def extrair_id_mensagem(data: dict, evento: dict) -> str:
+    for valor in (
+        evento.get("id"),
+        data.get("id"),
+        data.get("referenceId"),
+        data.get("messageId"),
+    ):
         if valor:
             return str(valor).strip()
     return ""
+
+
+def extrair_id_ultramsg(data: dict, evento: dict) -> str:
+    return extrair_id_mensagem(data, evento)
 
 
 def evento_deve_ser_ignorado(data: dict) -> tuple[bool, str]:

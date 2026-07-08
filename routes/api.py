@@ -16,7 +16,12 @@ from services.vendas.respostas import (
     resposta_mostrar_catalogo,
 )
 from services.vendas.catalogo import montar_catalogo_geral
-from services.ultramsg_service import enviar_imagem, enviar_mensagem, ultramsg_configurado
+from services.whatsapp_service import (
+    enviar_imagem,
+    enviar_mensagem,
+    provider_nome,
+    whatsapp_configurado,
+)
 from services.produto_imagem_service import (
     cliente_pediu_foto,
     enviar_fotos_produtos,
@@ -34,6 +39,7 @@ from services.conversa_service import (
     resposta_fechamento_pedido,
     resposta_pos_fechamento,
 )
+from services.webhook_normalizer import normalizar_webhook
 from services.webhook_service import evento_deve_ser_ignorado, marcar_evento_processado
 from services.produtos_service import (
     buscar_produtos_para_atendimento,
@@ -62,7 +68,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-07-preco-pulsedesk"
+CODE_VERSION = "2026-07-08-zapi-whatsapp"
 
 router = APIRouter()
 
@@ -350,8 +356,13 @@ async def receber_webhook(data: dict):
     print("WEBHOOK RECEBIDO:")
     print(data)
 
+    payload = normalizar_webhook(data)
+    if not payload:
+        print("WEBHOOK IGNORADO: formato não suportado ou evento descartado")
+        return {"status": "ok", "ignorado": True}
+
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, processar_mensagem, data)
+    await loop.run_in_executor(None, processar_mensagem, payload)
 
     return {"status": "ok"}
 
@@ -365,7 +376,9 @@ async def webhook(data: dict):
 async def status():
     return {
         "status": "online",
-        "ultramsg_configurado": ultramsg_configurado(),
+        "whatsapp_provider": provider_nome(),
+        "whatsapp_configurado": whatsapp_configurado(),
+        "ultramsg_configurado": whatsapp_configurado(),
         "vendedor_configurado": vendedor_configurado(),
         "produtos_fonte": os.getenv("PRODUTOS_FONTE", "auto"),
         "mercos_configurado": mercos_configurado(),
@@ -473,48 +486,53 @@ async def teste_vendedor():
 
     return {
         "status": "ok" if resposta else "erro",
-        "resposta_ultramsg": resposta,
+        "resposta_whatsapp": resposta,
     }
 
 
 @router.get("/teste-imagem")
 async def teste_imagem(tel: str = "", url: str = ""):
-    """Envia imagem de teste via UltraMsg."""
+    """Envia imagem de teste via WhatsApp (Z-API ou UltraMsg)."""
     if not tel or not url:
         return {
             "status": "erro",
             "mensagem": "Informe ?tel=5543988601234&url=https://...jpg",
         }
 
-    if not ultramsg_configurado():
-        return {"status": "erro", "mensagem": "UltraMsg não configurada"}
+    if not whatsapp_configurado():
+        return {"status": "erro", "mensagem": "WhatsApp não configurado"}
 
     resposta = enviar_imagem(tel, url, "Teste de imagem — Xnamai")
 
     return {
         "status": "ok" if resposta else "erro",
-        "resposta_ultramsg": resposta,
+        "provider": provider_nome(),
+        "resposta_whatsapp": resposta,
     }
 
 
 @router.get("/teste-ultramsg")
-async def teste_ultramsg(tel: str = ""):
-    """Envia mensagem de teste direto pela UltraMsg (Render → WhatsApp)."""
+@router.get("/teste-zapi")
+@router.get("/teste-whatsapp")
+async def teste_whatsapp(tel: str = ""):
+    """Envia mensagem de teste direto pelo provedor WhatsApp configurado."""
     if not tel:
         return {"status": "erro", "mensagem": "Informe ?tel=5543988601234"}
 
-    if not ultramsg_configurado():
+    if not whatsapp_configurado():
         return {
             "status": "erro",
-            "mensagem": "Configure ULTRAMSG_INSTANCE_ID e ULTRAMSG_TOKEN no Render",
+            "mensagem": "Configure ZAPI_INSTANCE_ID e ZAPI_TOKEN no Render",
+            "provider": provider_nome(),
         }
 
     resposta = enviar_mensagem(
         tel,
-        "Teste do agente Xnamai no Render. Se chegou, a UltraMsg está ok.",
+        f"Teste do agente Xnamai ({provider_nome()}). Se chegou, o WhatsApp está ok.",
     )
 
     return {
         "status": "ok" if resposta else "erro",
-        "resposta_ultramsg": resposta,
+        "provider": provider_nome(),
+        "resposta_whatsapp": resposta,
     }

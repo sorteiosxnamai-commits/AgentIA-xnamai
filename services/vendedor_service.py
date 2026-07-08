@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 from services.vendas.analise import detectar_intencao_compra
 from services.supabase_service import buscar_lead, criar_lead
-from services.ultramsg_service import enviar_mensagem
+from services.whatsapp_service import enviar_mensagem
 
 load_dotenv(override=True)
 
