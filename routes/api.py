@@ -39,6 +39,7 @@ from services.conversa_service import (
     extrair_preferencia_entrega,
     historico_recente,
     ia_ja_pediu_endereco,
+    negociacao_nova_apos_fechamento,
     pedido_ja_encerrado,
     resolver_resposta_pos_pedido,
     resposta_entrega_ja_anotada,
@@ -80,7 +81,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-no-repeat"
+CODE_VERSION = "2026-07-08-multi-pedidos"
 
 router = APIRouter()
 
@@ -177,6 +178,9 @@ def processar_mensagem(data: dict):
 
         nome_conversa = extrair_nome_do_historico(historico_texto, nome_cliente)
         pedido_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto)
+        nova_venda = negociacao_nova_apos_fechamento(historico_texto, mensagem)
+        if nova_venda:
+            pedido_encerrado = False
 
         resposta_pos_venda = resolver_resposta_pos_pedido(
             mensagem,
@@ -266,7 +270,7 @@ def processar_mensagem(data: dict):
         elif fechamento or alteracao_pagamento:
             frete_estimado = float(os.getenv("FRETE_ESTIMADO", "0") or "0")
             pedido_registrado = None
-            ja_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto)
+            ja_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto) and not nova_venda
 
             if not ja_encerrado and (fechamento or alteracao_pagamento):
                 if pulsedesk_pedidos_habilitado():
@@ -278,6 +282,7 @@ def processar_mensagem(data: dict):
                         mensagem_atual=mensagem,
                         ultima_resposta_ia=ultima_resposta_ia,
                         frete_estimado=frete_estimado,
+                        nova_venda=nova_venda,
                     )
                 elif mercos_criar_pedido_habilitado():
                     pedido_registrado = criar_pedido_fechamento_mercos(

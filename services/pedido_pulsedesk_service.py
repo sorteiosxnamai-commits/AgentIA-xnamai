@@ -14,6 +14,7 @@ from services.conversa_service import (
     extrair_endereco,
     extrair_nome_do_historico,
     extrair_pagamento,
+    historico_desde_ultimo_fechamento,
     pedido_ja_encerrado,
 )
 from services.supabase_service import _executar, atualizar_cliente
@@ -218,25 +219,33 @@ def registrar_venda_pulsedesk(
     mensagem_atual: str = "",
     ultima_resposta_ia: str = "",
     frete_estimado: float = 0,
+    nova_venda: bool = False,
 ) -> dict | None:
     """Grava cliente + pedido no Supabase para o PulseDesk exibir sem sync Mercos."""
     if not pulsedesk_pedidos_habilitado():
         print("PULSEDESK: registro de pedidos desabilitado")
         return None
 
-    if pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
+    historico_efetivo = (
+        historico_desde_ultimo_fechamento(historico_texto)
+        if nova_venda
+        else historico_texto
+    )
+
+    if pedido_ja_encerrado(ultima_resposta_ia, historico_texto) and not nova_venda:
         if _pedido_whatsapp_ja_no_pulsedesk(telefone):
             print("PULSEDESK: pedido já existe no PulseDesk, ignorando duplicata")
             return None
         print("PULSEDESK: conversa fechada mas pedido ausente — registrando retroativo")
+        historico_efetivo = historico_texto
 
-    nome = extrair_nome_do_historico(historico_texto, pushname)
-    endereco = extrair_endereco(historico_texto)
-    extrair_pagamento(historico_texto, mensagem_atual, ultima_resposta_ia)
-    produto = _buscar_produto_do_historico(historico_texto) or {}
+    nome = extrair_nome_do_historico(historico_efetivo, pushname)
+    endereco = extrair_endereco(historico_efetivo) or extrair_endereco(historico_texto)
+    extrair_pagamento(historico_efetivo, mensagem_atual, ultima_resposta_ia)
+    produto = _buscar_produto_do_historico(historico_efetivo) or {}
     produto_nome = produto.get("nome") or "Produto WhatsApp"
 
-    preco = _extrair_preco_historico(historico_texto)
+    preco = _extrair_preco_historico(historico_efetivo)
     if preco is None:
         preco = produto.get("preco") or 0
 

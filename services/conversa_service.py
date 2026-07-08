@@ -446,8 +446,30 @@ def cliente_quer_novo_atendimento(mensagem: str) -> bool:
         "preco",
         "novo pedido",
         "outro",
+        "mais um",
     )
     return any(ind in texto for ind in indicadores)
+
+
+def historico_desde_ultimo_fechamento(historico_texto: str) -> str:
+    linhas = historico_texto.split("\n")
+    inicio = 0
+    for indice, linha in enumerate(linhas):
+        if linha.startswith("IA:") and "pedido registrado" in linha.lower():
+            inicio = indice + 1
+    if inicio > 0:
+        return "\n".join(linhas[inicio:])
+    return historico_texto
+
+
+def negociacao_nova_apos_fechamento(historico_texto: str, mensagem: str = "") -> bool:
+    if cliente_quer_novo_atendimento(mensagem):
+        return True
+    trecho = historico_desde_ultimo_fechamento(historico_texto)
+    if trecho == historico_texto:
+        return False
+    texto = _normalizar(trecho)
+    return bool(re.search(r"\b(quero|preciso|comprar|outro|novo|mais)\b", texto))
 
 
 def resposta_pos_fechamento(nome: str = "") -> str:
