@@ -30,7 +30,6 @@ PADROES_CONFIRMACAO_MSG = (
     r"\bfiz pagamento\b",
     r"\bpagamento\b",
     r"\bpix\b",
-    r"\bobrigad",
     r"\bsim\b",
     r"\bok\b",
     r"\bbeleza\b",
@@ -174,6 +173,10 @@ def eh_confirmacao_fechamento(
     historico_texto: str,
     ultima_resposta_ia: str = "",
 ) -> bool:
+    if cliente_agradeceu_pos_venda(mensagem):
+        return False
+    if pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
+        return False
     if not _mensagem_tem_confirmacao(mensagem):
         return False
     if not conversa_em_andamento(historico_texto):
@@ -422,17 +425,49 @@ def eh_alteracao_pagamento(
     )
 
 
+def _texto_indica_pedido_encerrado(texto: str) -> bool:
+    t = _normalizar(texto)
+    if not t:
+        return False
+    marcadores = (
+        "pedido registrado",
+        "pedido ja esta registrado",
+        "resumo do pedido",
+        "fechado,",
+        "precisa de algo mais",
+    )
+    if any(m in t for m in marcadores):
+        return True
+    return bool(re.search(r"pedido\s*#wa-", t))
+
+
 def pedido_ja_encerrado(ultima_resposta_ia: str, historico_texto: str = "") -> bool:
-    if ultima_resposta_ia and "pedido registrado" in ultima_resposta_ia.lower():
+    if ultima_resposta_ia and _texto_indica_pedido_encerrado(ultima_resposta_ia):
         return True
 
     for linha in reversed(historico_texto.split("\n")):
         if not linha.startswith("IA:"):
             continue
-        if "pedido registrado" in linha.lower():
+        if _texto_indica_pedido_encerrado(linha):
             return True
 
     return False
+
+
+def _mensagem_so_acolhe_pos_venda(mensagem: str) -> bool:
+    texto = _normalizar(mensagem).rstrip("!?.,")
+    return texto in (
+        "ok",
+        "okay",
+        "beleza",
+        "blz",
+        "show",
+        "certo",
+        "isso",
+        "sim",
+        "perfeito",
+        "combinado",
+    )
 
 
 def cliente_quer_novo_atendimento(mensagem: str) -> bool:
@@ -630,6 +665,12 @@ def resolver_resposta_pos_pedido(
         return resposta_status_pedido(nome, historico_texto)
 
     if cliente_agradeceu_pos_venda(mensagem):
+        return resposta_agradecimento_pos_venda(nome)
+
+    if _mensagem_so_acolhe_pos_venda(mensagem):
+        return resposta_agradecimento_pos_venda(nome)
+
+    if _texto_indica_pedido_encerrado(ultima_resposta_ia):
         return resposta_agradecimento_pos_venda(nome)
 
     return resposta_pos_fechamento(nome)

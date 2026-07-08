@@ -81,7 +81,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-catalog-fix"
+CODE_VERSION = "2026-07-08-pos-venda-fix"
 
 router = APIRouter()
 
@@ -378,10 +378,14 @@ def processar_mensagem(data: dict):
         # ENVIA WHATSAPP
         # =========================
 
-        enviar_mensagem(
+        envio = enviar_mensagem(
             numero,
             resposta_ia
         )
+        if isinstance(envio, dict) and not envio.get("ok"):
+            print("FALHA ENVIO WHATSAPP:", envio)
+        elif envio is None:
+            print("FALHA ENVIO WHATSAPP: resposta vazia da Z-API")
 
         if produtos and not saudacao:
             fotos_enviadas = enviar_fotos_produtos(numero, produtos, mensagem)
@@ -635,8 +639,10 @@ async def teste_whatsapp(tel: str = ""):
         f"Teste do agente Xnamai ({provider_nome()}). Se chegou, o WhatsApp está ok.",
     )
 
+    ok = isinstance(resposta, dict) and resposta.get("ok")
     return {
-        "status": "ok" if resposta else "erro",
+        "status": "ok" if ok else "erro",
         "provider": provider_nome(),
+        "zapi_client_token_configurado": bool(os.getenv("ZAPI_CLIENT_TOKEN", "").strip()),
         "resposta_whatsapp": resposta,
     }
