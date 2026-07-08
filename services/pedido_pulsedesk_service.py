@@ -51,6 +51,8 @@ def _upsert_seguro(tabela: str, dados: dict, *, conflito: str, rotulo: str) -> N
         "created_at",
         "data_pedido",
         "quantidade_itens",
+        "produto_nome",
+        "produto_codigo",
         "endereco",
         "razao_social",
     )
@@ -202,6 +204,7 @@ def criar_pedido_pulsedesk(
         "valor_total": round(float(valor_total), 2),
         "situacao": "2",
         "quantidade_itens": 1,
+        "produto_nome": (produto_nome or "Produto WhatsApp")[:255],
         "data_pedido": agora,
         "ultima_alteracao": agora,
         "created_at": agora,

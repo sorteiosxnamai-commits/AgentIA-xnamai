@@ -53,13 +53,13 @@ def _enviar(endpoint: str, payload: dict, log_tipo: str, log_conteudo: str):
         print("RESPOSTA:", response.text)
 
         if response.status_code != 200:
-            return None
+            return {"ok": False, "status_code": response.status_code, "body": response.text}
 
-        return response.text
+        return {"ok": True, "status_code": response.status_code, "body": response.text}
 
     except Exception as e:
         print("ERRO Z-API:", str(e))
-        return None
+        return {"ok": False, "error": str(e)}
 
 
 def enviar_mensagem(numero: str, mensagem: str):
