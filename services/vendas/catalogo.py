@@ -95,6 +95,8 @@ TERMOS_ESTETICOS = {
 TERMOS_NAO_PRODUTO = TERMOS_ESTETICOS | {
     "sim", "nao", "não", "ok", "tem", "catalogo", "nada", "disponivel",
     "claro", "pode", "hoje", "voce", "voces", "vcs", "vc", "ver",
+    "tudo", "bem", "meu", "minha", "amor", "vida", "carinho", "obrigado",
+    "obrigada", "valeu", "haha", "kkk", "kkkk", "faz", "nele", "nela",
 }
 
 

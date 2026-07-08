@@ -4,9 +4,22 @@ import time
 from dotenv import load_dotenv
 from httpx import ConnectError, ReadError, TimeoutException
 
+from postgrest.exceptions import APIError
+
 from database.supabase import supabase
 
 load_dotenv(override=True)
+
+
+def _leads_indisponivel(erro: Exception) -> bool:
+    if isinstance(erro, APIError):
+        payload = erro.args[0] if erro.args else {}
+        if isinstance(payload, dict):
+            if payload.get("code") == "PGRST205":
+                return True
+            if "leads" in str(payload.get("message", "")).lower():
+                return True
+    return "leads" in str(erro).lower()
 
 TABELA_CLIENTES = os.getenv("AGENT_CLIENTES_TABLE", "agent_clientes")
 TABELA_HISTORICO = os.getenv("AGENT_HISTORICO_TABLE", "agent_historico")
@@ -274,7 +287,7 @@ def criar_lead(cliente_id, interesse):
             "criar_lead",
         )
     except Exception as erro:
-        if "leads" in str(erro).lower():
+        if _leads_indisponivel(erro):
             print("AVISO: tabela leads indisponível — lead não salvo")
             return None
         raise
@@ -293,7 +306,7 @@ def buscar_lead(cliente_id, interesse):
             "buscar_lead",
         )
     except Exception as erro:
-        if "leads" in str(erro).lower():
+        if _leads_indisponivel(erro):
             print("AVISO: tabela leads indisponível — lead ignorado")
             return None
         raise

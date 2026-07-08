@@ -70,7 +70,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-leads-optional"
+CODE_VERSION = "2026-07-08-casual-msgs"
 
 router = APIRouter()
 

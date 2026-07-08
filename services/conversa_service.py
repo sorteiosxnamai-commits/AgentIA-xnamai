@@ -40,6 +40,22 @@ PADROES_CONFIRMACAO_MSG = (
 
 SAUDACOES_INICIAIS = (
     r"^(oi|ola|olá|hey|eae|e ai|eai|bom dia|boa tarde|boa noite|hello|hi)\b",
+    r"^tudo bem\b",
+    r"^(fala|salve|opa)\b",
+    r"\bcomo (vai|esta|está|vc|voce|você)\b",
+)
+
+CONVERSA_CASUAL = (
+    r"\btudo bem\b",
+    r"\bmeu amor\b",
+    r"\bminha vida\b",
+    r"\bte amo\b",
+    r"\bto bem\b",
+    r"\bestou bem\b",
+    r"\bobrigad",
+    r"\bvaleu\b",
+    r"\bkkk+\b",
+    r"\bhaha+\b",
 )
 
 INDICIOS_ANDAMENTO = (
@@ -107,7 +123,21 @@ def eh_saudacao_inicial(mensagem: str, historico_texto: str = "") -> bool:
     if not texto:
         return False
 
-    return any(re.search(padrao, texto) for padrao in SAUDACOES_INICIAIS)
+    if any(re.search(padrao, texto) for padrao in SAUDACOES_INICIAIS):
+        return True
+
+    return eh_conversa_casual(mensagem, historico_texto)
+
+
+def eh_conversa_casual(mensagem: str, historico_texto: str = "") -> bool:
+    if conversa_em_andamento(historico_texto):
+        return False
+
+    texto = _normalizar(mensagem)
+    if not texto:
+        return False
+
+    return any(re.search(padrao, texto) for padrao in CONVERSA_CASUAL)
 
 
 def _mensagem_tem_confirmacao(mensagem: str) -> bool:
