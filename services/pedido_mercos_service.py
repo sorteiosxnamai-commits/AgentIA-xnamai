@@ -169,14 +169,19 @@ def criar_pedido_fechamento_mercos(
         print("MERCOS: produto não encontrado para criar pedido")
         return {"erro": "produto_nao_encontrado"}
 
+    from services.conversa_service import _parse_preco
+
     preco = _extrair_preco_historico(historico_texto)
     if preco is None:
         preco = _valor_preco(produto_mercos)
 
-    try:
-        preco = float(str(preco).replace(",", "."))
-    except (TypeError, ValueError):
-        preco = 0.0
+    parsed = _parse_preco(str(preco)) if preco not in (None, "") else None
+    if parsed is None:
+        try:
+            parsed = float(preco)
+        except (TypeError, ValueError):
+            parsed = 0.0
+    preco = parsed
 
     if frete_estimado > 0:
         preco += frete_estimado

@@ -73,6 +73,18 @@ def cliente_quer_ver_catalogo(mensagem: str, ultima_resposta_ia: str = "") -> bo
     return any(re.search(p, texto) for p in padroes_diretos)
 
 
+def _fmt_preco_item(produto: dict) -> str:
+    preco = produto.get("preco")
+    if preco in (None, ""):
+        preco = produto.get("preco_tabela")
+    if preco in (None, ""):
+        return ""
+    try:
+        return f"R$ {float(preco):.2f}".replace(".", ",")
+    except (TypeError, ValueError):
+        return f"R$ {preco}"
+
+
 def resposta_fora_catalogo(
     nome_cliente: str = "",
     termos: list | None = None,
@@ -86,23 +98,18 @@ def resposta_fora_catalogo(
     if amostra:
         exemplos = [p.get("nome", "") for p in amostra[:3] if p.get("nome")]
         if len(exemplos) == 1:
-            linha_cat = f"Aqui trabalhamos com {exemplos[0]}, por exemplo."
+            linha_cat = f"Temos {exemplos[0]}, por exemplo."
         elif exemplos:
-            linha_cat = (
-                f"Aqui trabalhamos com {exemplos[0]} e {exemplos[1]}, entre outros."
-            )
+            linha_cat = f"Temos {exemplos[0]} e {exemplos[1]}, entre outros."
         else:
             linha_cat = ""
     else:
         linha_cat = ""
 
-    partes = [
-        f"{nome}, a gente não trabalha com {pedido} — não faz parte do nosso catálogo."
-    ]
+    partes = [f"{nome}, não trabalhamos com {pedido}."]
     if linha_cat:
         partes.append(linha_cat)
-    partes.append("Quer que eu te mostre o que temos disponível?")
-
+    partes.append("Quer ver o catálogo?")
     return " ".join(partes)
 
 
@@ -115,21 +122,15 @@ def resposta_mostrar_catalogo(
     itens = produtos or []
 
     if not itens:
-        return (
-            f"{nome}, no momento estou sem lista de produtos aqui. "
-            "Me diz o que você procura que eu te ajudo."
-        )
+        return f"{nome}, me diz o que você procura que eu te ajudo."
 
-    linhas = [f"Claro, {nome}! Olha o que temos agora:"]
+    linhas = [f"Olha o que temos, {nome}:"]
     for produto in itens[:6]:
         nome_p = produto.get("nome", "Produto")
-        preco = produto.get("preco") or produto.get("preco_tabela") or ""
-        if preco not in (None, ""):
-            linhas.append(f"• {nome_p} — R$ {preco}")
-        else:
-            linhas.append(f"• {nome_p}")
+        preco = _fmt_preco_item(produto)
+        linhas.append(f"• {nome_p}" + (f" — {preco}" if preco else ""))
 
-    linhas.append("Algum desses te interessa?")
+    linhas.append("Qual te interessa?")
     return "\n".join(linhas)
 
 
@@ -142,21 +143,13 @@ def resposta_abrir_nova_venda(
     itens = produtos or []
 
     if not itens:
-        return (
-            f"Perfeito, {nome}! Vamos abrir outro pedido. "
-            "Me diz o que você procura que eu te ajudo."
-        )
+        return f"Bora, {nome}! O que você quer pedir agora?"
 
-    linhas = [
-        f"Perfeito, {nome}! Vamos abrir outro pedido. Olha o que temos agora:"
-    ]
+    linhas = [f"Bora, {nome}! Olha o que temos:"]
     for produto in itens[:6]:
         nome_p = produto.get("nome", "Produto")
-        preco = produto.get("preco") or produto.get("preco_tabela") or ""
-        if preco not in (None, ""):
-            linhas.append(f"• {nome_p} — R$ {preco}")
-        else:
-            linhas.append(f"• {nome_p}")
+        preco = _fmt_preco_item(produto)
+        linhas.append(f"• {nome_p}" + (f" — {preco}" if preco else ""))
 
-    linhas.append("Qual desses você quer?")
+    linhas.append("Qual você quer?")
     return "\n".join(linhas)

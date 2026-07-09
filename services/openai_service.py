@@ -10,17 +10,18 @@ load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
+TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.3"))
 
 
 def resposta_saudacao(nome_cliente: str = "") -> str:
     if nome_cliente:
         return (
-            f"Oi, {nome_cliente}! Tudo bem? Sou da Xnamai 😊 "
-            "Me conta: você tá procurando algo específico ou quer dar uma olhada no que temos?"
+            f"Oi, {nome_cliente}! Sou da Xnamai. "
+            "Tá procurando algum produto ou quer ver o que temos?"
         )
     return (
-        "Oi! Tudo bem? Sou da Xnamai 😊 "
-        "Me conta: você tá procurando algo específico ou quer dar uma olhada no que temos?"
+        "Oi! Sou da Xnamai. "
+        "Tá procurando algum produto ou quer ver o que temos?"
     )
 
 
@@ -30,7 +31,7 @@ def resposta_sem_foto(produto: dict) -> str:
     if preco not in (None, ""):
         return (
             f"Ainda não tenho foto do {nome} aqui. "
-            f"O preço é R$ {preco}. Quer saber mais alguma coisa sobre ele?"
+            f"Sai por R$ {preco}. Fechamos 1 unidade?"
         )
     return f"Ainda não tenho foto do {nome} aqui. Quer que eu te passe os detalhes?"
 
@@ -39,14 +40,14 @@ def resposta_com_foto(produto: dict) -> str:
     nome = produto.get("nome", "produto")
     preco = produto.get("preco", "")
     if preco not in (None, ""):
-        return f"Segue a foto do {nome} — R$ {preco} 👇"
-    return f"Segue a foto do {nome} 👇"
+        return f"Segue a foto do {nome} — R$ {preco}"
+    return f"Segue a foto do {nome}"
 
 
 def resposta_ja_informado(produto: dict) -> str:
     nome = produto.get("nome", "produto")
     preco = produto.get("preco", "")
-    return f"Como te passei, o {nome} está R$ {preco}. Quer que eu separe pra você?"
+    return f"O {nome} está R$ {preco}. Fechamos?"
 
 
 def perguntar_ia(
@@ -73,10 +74,18 @@ def perguntar_ia(
         foto_automatica=foto_automatica,
     )
 
-    resposta = client.responses.create(
-        model=MODEL,
-        instructions=instrucoes,
-        input=entrada,
-    )
+    kwargs = {
+        "model": MODEL,
+        "instructions": instrucoes,
+        "input": entrada,
+    }
+    # Nem todos os modelos aceitam temperature no responses API
+    try:
+        resposta = client.responses.create(**kwargs, temperature=TEMPERATURE)
+    except TypeError:
+        resposta = client.responses.create(**kwargs)
+    except Exception:
+        # Fallback sem temperature se o modelo rejeitar
+        resposta = client.responses.create(**kwargs)
 
     return resposta.output_text

@@ -1,13 +1,7 @@
 import re
 import unicodedata
 
-from services.conversa_service import (
-    conversa_em_andamento,
-    extrair_endereco,
-    extrair_pagamento,
-    entrega_ja_informada,
-    ia_ja_pediu_endereco,
-)
+# Imports lazy dentro das funções para evitar ciclo conversa_service ↔ analise
 
 OBJECOES = {
     "preco": (
@@ -100,11 +94,21 @@ def detectar_intencao_compra(mensagem: str, historico_texto: str = "") -> bool:
     if _buscar_padroes(texto, INTENCAO_COMPRA):
         return True
 
-    historico = _normalizar(historico_texto)
-    return any(
-        p in historico
-        for p in ("separar", "fechar", "endereco", "endereço", "pagamento", "frete")
-    ) and _buscar_padroes(texto, (r"\bsim\b", r"\bok\b", r"\bbeleza\b", r"\bconfirmo\b"))
+    # ok/sim/beleza só contam se a última IA pediu fechamento (não qualquer histórico)
+    from services.conversa_service import ia_pediu_fechamento
+
+    ultima_ia = ""
+    for linha in reversed((historico_texto or "").split("\n")):
+        if linha.startswith("IA:"):
+            ultima_ia = linha.replace("IA:", "").strip()
+            break
+
+    if not ia_pediu_fechamento(ultima_ia):
+        return False
+
+    return _buscar_padroes(
+        texto, (r"\bsim\b", r"\bok\b", r"\bbeleza\b", r"\bconfirmo\b", r"\bfechamos\b")
+    )
 
 
 def analisar_bant(mensagem: str, historico_texto: str) -> dict:
@@ -131,6 +135,12 @@ def inferir_estagio_aida(
     produtos_encontrados: bool,
     pedido_encerrado: bool = False,
 ) -> str:
+    from services.conversa_service import (
+        conversa_em_andamento,
+        entrega_ja_informada,
+        extrair_pagamento,
+    )
+
     if pedido_encerrado:
         return "pos_venda"
 

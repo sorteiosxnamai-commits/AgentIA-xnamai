@@ -9,11 +9,6 @@ from services.vendas.analise import (
     orientacao_spin,
 )
 from services.vendas.catalogo import montar_contexto_catalogo
-from services.conversa_service import (
-    entrega_ja_informada,
-    extrair_pagamento,
-    ia_ja_pediu_endereco,
-)
 
 
 @dataclass
@@ -97,6 +92,12 @@ def preparar_contexto_venda(
     ]
 
     if intencao and not pedido_encerrado:
+        from services.conversa_service import (
+            entrega_ja_informada,
+            extrair_pagamento,
+            ia_ja_pediu_endereco,
+        )
+
         if entrega_ja_informada(historico_texto):
             if extrair_pagamento(historico_texto) != "a combinar":
                 partes.append(

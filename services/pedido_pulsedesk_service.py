@@ -264,14 +264,18 @@ def registrar_venda_pulsedesk(
     produto = _buscar_produto_do_historico(historico_efetivo) or {}
     produto_nome = produto.get("nome") or "Produto WhatsApp"
 
+    from services.conversa_service import _parse_preco
+
     preco = _extrair_preco_historico(historico_efetivo)
     if preco is None:
-        preco = produto.get("preco") or 0
+        preco = produto.get("preco") or produto.get("preco_tabela") or 0
 
-    try:
-        valor = float(str(preco).replace(",", "."))
-    except (TypeError, ValueError):
-        valor = 0.0
+    valor = _parse_preco(str(preco))
+    if valor is None:
+        try:
+            valor = float(preco)
+        except (TypeError, ValueError):
+            valor = 0.0
 
     valor += float(frete_estimado or 0)
 

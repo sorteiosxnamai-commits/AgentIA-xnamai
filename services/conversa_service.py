@@ -2,9 +2,9 @@ import re
 import unicodedata
 
 from services.pix_service import montar_mensagem_pix_exemplo
-from services.produtos_service import buscar_produtos_para_atendimento
 
-CONFIRMACOES = (
+# Confirmações fracas: só fecham se a IA pediu fechamento explicitamente
+CONFIRMACOES_FRACAS = (
     "beleza",
     "blz",
     "ok",
@@ -13,24 +13,42 @@ CONFIRMACOES = (
     "perfeito",
     "pode ser",
     "isso",
-    "fechado",
-    "confirmo",
     "sim",
     "certo",
     "combinado",
+)
+
+# Confirmações fortes: intenção clara de fechar
+CONFIRMACOES_FORTES = (
+    "fechado",
+    "confirmo",
     "fechou",
     "fechamos",
     "fechamos sim",
     "vamos fechar",
     "pode fechar",
+    "pode separar",
+    "separar",
+    "quero fechar",
+    "fecha",
+    "fechado sim",
 )
 
-PADROES_CONFIRMACAO_MSG = (
+CONFIRMACOES = CONFIRMACOES_FRACAS + CONFIRMACOES_FORTES
+
+PADROES_CONFIRMACAO_FORTE = (
     r"\bfechou\b",
     r"\bfechado\b",
     r"\bfechamos\b",
     r"\bfechar\b",
     r"\bconfirmo\b",
+    r"\bpode separar\b",
+    r"\bvou levar\b",
+    r"\bvamos fechar\b",
+    r"\bpode fechar\b",
+)
+
+PADROES_CONFIRMACAO_MSG = PADROES_CONFIRMACAO_FORTE + (
     r"\bcombinado\b",
     r"\bpaguei\b",
     r"\bfiz pagamento\b",
@@ -41,6 +59,18 @@ PADROES_CONFIRMACAO_MSG = (
     r"\bbeleza\b",
     r"\bshow\b",
     r"\bperfeito\b",
+)
+
+PADROES_IA_PEDIU_FECHAMENTO = (
+    r"\bfechamos\b",
+    r"\bfecha(mos)?\s+\d+\s+unidade",
+    r"\bquer(o)?\s+que\s+eu\s+separe\b",
+    r"\bseparo\s+pra\s+voce\b",
+    r"\bpra\s+fechar\b",
+    r"\bconfirmo\s+o\s+pedido\b",
+    r"\bposso\s+fechar\b",
+    r"\bfechamos\s+\d",
+    r"\bunidade\??\s*$",
 )
 
 SAUDACOES_INICIAIS = (
@@ -152,6 +182,30 @@ def _mensagem_tem_confirmacao(mensagem: str) -> bool:
     return any(re.search(padrao, texto) for padrao in PADROES_CONFIRMACAO_MSG)
 
 
+def _mensagem_confirmacao_forte(mensagem: str) -> bool:
+    texto = _normalizar(mensagem).rstrip("!?.,")
+    if texto in CONFIRMACOES_FORTES:
+        return True
+    return any(re.search(padrao, texto) for padrao in PADROES_CONFIRMACAO_FORTE)
+
+
+def _mensagem_confirmacao_fraca(mensagem: str) -> bool:
+    texto = _normalizar(mensagem).rstrip("!?.,")
+    return texto in CONFIRMACOES_FRACAS or bool(
+        re.match(r"^(sim|ok|okay|beleza|blz|show|perfeito|certo|isso)$", texto)
+    )
+
+
+def ia_pediu_fechamento(ultima_resposta_ia: str) -> bool:
+    """Última mensagem da IA convida a fechar (fechamos? / separo?)."""
+    if not ultima_resposta_ia:
+        return False
+    texto = _normalizar(ultima_resposta_ia)
+    if any(re.search(p, texto) for p in PADROES_IA_PEDIU_FECHAMENTO):
+        return True
+    return "fechamos" in texto or "unidade?" in texto or "separe" in texto
+
+
 def _historico_tem_negociacao(historico_texto: str) -> bool:
     historico = _normalizar(historico_texto)
     return any(
@@ -177,6 +231,80 @@ def _historico_tem_negociacao(historico_texto: str) -> bool:
             "unidade",
         )
     )
+
+
+def _ultima_oferta_fechamento_no_historico(historico_texto: str) -> str:
+    """Última fala da IA que cotou preço / pediu fechamento (ignora soft pós-venda)."""
+    for linha in reversed(historico_texto.split("\n")):
+        if not linha.startswith("IA:"):
+            continue
+        texto = linha.replace("IA:", "").strip()
+        t = _normalizar(texto)
+        if "precisa de algo mais" in t and "resumo do pedido" not in t:
+            continue
+        if "resumo do pedido" in t:
+            continue
+        if "r$" in t or ia_pediu_fechamento(texto):
+            return texto
+    return ""
+
+
+def fechamento_pronto(historico_texto: str, ultima_resposta_ia: str = "") -> bool:
+    """Checklist: produto + preço cotados; e (IA pediu fechar OU endereço/pagamento)."""
+    nome, preco = _extrair_oferta_ia(historico_texto)
+    tem_preco = preco is not None or _extrair_preco_historico(historico_texto) is not None
+    tem_produto = bool(nome) or bool(_extrair_nome_produto_historico(historico_texto))
+    if not (tem_preco and tem_produto):
+        return False
+
+    oferta = ultima_resposta_ia or _ultima_oferta_fechamento_no_historico(historico_texto)
+    if ia_pediu_fechamento(oferta):
+        return True
+    if entrega_ja_informada(historico_texto):
+        return True
+    if extrair_pagamento(historico_texto) != "a combinar":
+        return True
+    return False
+
+
+def resolver_estado_venda(
+    historico_texto: str,
+    mensagem: str = "",
+    ultima_resposta_ia: str = "",
+) -> str:
+    """Estado da venda atual: nova_venda | pos_venda | fechando | negociando."""
+    if cliente_quer_nova_venda(mensagem):
+        return "nova_venda"
+    if negociacao_nova_apos_fechamento(historico_texto, mensagem):
+        historico_venda = historico_desde_ultimo_fechamento(historico_texto)
+        if fechamento_pronto(historico_venda, ultima_resposta_ia) and (
+            _mensagem_confirmacao_forte(mensagem)
+            or (
+                _mensagem_confirmacao_fraca(mensagem)
+                and ia_pediu_fechamento(ultima_resposta_ia)
+            )
+        ):
+            return "fechando"
+        return "negociando"
+
+    soft = bool(ultima_resposta_ia) and (
+        "precisa de algo mais" in _normalizar(ultima_resposta_ia)
+        and "resumo do pedido" not in _normalizar(ultima_resposta_ia)
+    )
+    if pedido_ja_encerrado(ultima_resposta_ia, historico_texto) and not soft:
+        return "pos_venda"
+    if soft and not negociacao_nova_apos_fechamento(historico_texto, mensagem):
+        return "pos_venda"
+
+    if fechamento_pronto(historico_texto, ultima_resposta_ia) and (
+        _mensagem_confirmacao_forte(mensagem)
+        or (
+            _mensagem_confirmacao_fraca(mensagem)
+            and ia_pediu_fechamento(ultima_resposta_ia)
+        )
+    ):
+        return "fechando"
+    return "negociando"
 
 
 def eh_confirmacao_fechamento(
@@ -207,35 +335,29 @@ def eh_confirmacao_fechamento(
         return False
     if not conversa_em_andamento(historico_venda):
         return False
-    if _historico_tem_negociacao(historico_venda):
-        return True
 
-    historico = _normalizar(historico_venda)
-    if any(indicio in historico for indicio in INDICIOS_FECHAMENTO):
-        return True
+    # ok/sim/beleza só fecham se a IA pediu fechamento
+    if _mensagem_confirmacao_fraca(mensagem) and not _mensagem_confirmacao_forte(mensagem):
+        oferta = ultima_resposta_ia
+        if soft_pos:
+            oferta = _ultima_oferta_fechamento_no_historico(historico_venda)
+        if not ia_pediu_fechamento(oferta):
+            return False
 
-    ultima = ultima_norm
-    promessas = (
-        "total com frete",
-        "te passo o total",
-        "vou calcular",
-        "te mando o total",
-        "valor total",
-        "prefere pagar",
-        "endereco de entrega",
-        "pra fechar",
-        "reservo",
-        "fechamos",
-        "unidade",
-    )
-    # Se a última foi soft pós-venda, olha a penúltima oferta no histórico
-    if soft_pos:
-        for linha in reversed(historico_venda.split("\n")):
-            if linha.startswith("IA:") and "fechamos" in _normalizar(linha):
-                return True
-        return _historico_tem_negociacao(historico_venda)
+    if not fechamento_pronto(historico_venda, ultima_resposta_ia if not soft_pos else ""):
+        # Soft pós-venda: usa oferta anterior no histórico da venda
+        if soft_pos and fechamento_pronto(
+            historico_venda, _ultima_oferta_fechamento_no_historico(historico_venda)
+        ):
+            return _mensagem_confirmacao_forte(mensagem) or (
+                _mensagem_confirmacao_fraca(mensagem)
+                and ia_pediu_fechamento(
+                    _ultima_oferta_fechamento_no_historico(historico_venda)
+                )
+            )
+        return False
 
-    return any(p in ultima for p in promessas)
+    return True
 
 
 NOMES_IGNORAR = {
@@ -763,7 +885,7 @@ def _parse_preco(valor: str) -> float | None:
     """Aceita 249.9, 249,90, 1.249,90 e 1,249.90 sem transformar 249.9 em 2499."""
     if valor in (None, ""):
         return None
-    texto = str(valor).strip()
+    texto = str(valor).strip().rstrip(".,;:!?)")
     if not texto:
         return None
     try:
@@ -785,19 +907,32 @@ def _parse_preco(valor: str) -> float | None:
 def _extrair_oferta_ia(historico_texto: str) -> tuple[str, float | None]:
     """Última oferta explícita da IA no histórico (nome + preço)."""
     padroes = (
-        r"(?:reservo|separo|temos|olha|segue|fica)[^\n]{0,30}?\s*(?:1x\s*)?(.+?)\s+por\s+r\$\s*([\d.,]+)",
-        r"(.+?)\s*[—–-]\s*r\$\s*([\d.,]+)",
-        r"(.+?)\s+por\s+r\$\s*([\d.,]+)",
+        r"(?:reservo|separo|temos|olha|segue|fica)[^\n]{0,40}?\s*(?:1x\s*)?(.+?)\s+por\s+r\$\s*([\d]+(?:[.,]\d+)?)",
+        r"(.+?)\s*[—–-]\s*r\$\s*([\d]+(?:[.,]\d+)?)",
+        r"(.+?)\s+por\s+r\$\s*([\d]+(?:[.,]\d+)?)",
+        r"(.+?)\s+sai\s+por\s+r\$\s*([\d]+(?:[.,]\d+)?)",
+        r"(.+?)\s+fica\s+(?:por\s+)?r\$\s*([\d]+(?:[.,]\d+)?)",
+        r"preco\s+(?:do|da|de)\s+(.+?)\s*[:=]?\s*r\$\s*([\d]+(?:[.,]\d+)?)",
+        r"\b(headset\s+gamer|cabo\s+hdmi(?:\s*\d+m)?|hd\s+externo(?:\s*\d+\s*tb)?|"
+        r"monitor\s+led(?:\s*\d+)?|mouse\s+[^\n,]{0,30}|teclado\s+[^\n,]{0,30}|"
+        r"notebook\s+[^\n,]{0,40}|hub\s+usb[^\n,]{0,20}|ssd\s+[^\n,]{0,20}|"
+        r"webcam\s+[^\n,]{0,30})\b[^\n]{0,40}?r\$\s*([\d]+(?:[.,]\d+)?)",
     )
     for linha in reversed(historico_texto.split("\n")):
         if not linha.startswith("IA:"):
             continue
         texto = linha.replace("IA:", "").strip()
+        t = _normalizar(texto)
+        if "precisa de algo mais" in t and "resumo do pedido" not in t:
+            continue
         for padrao in padroes:
             match = re.search(padrao, texto, re.I)
             if not match:
                 continue
             nome = re.sub(r"^[\W\d]+", "", match.group(1).strip(" .,!-"))
+            # Evita capturar frases longas demais
+            if "—" in nome:
+                nome = nome.split("—")[0].strip()
             if 2 < len(nome) < 80:
                 return nome, _parse_preco(match.group(2))
     return "", None
@@ -809,7 +944,8 @@ def _buscar_produto_por_preco(preco: float) -> dict | None:
     for produto in buscar_produtos():
         bruto = produto.get("preco") or produto.get("preco_tabela")
         try:
-            if abs(float(bruto) - preco) < 0.05:
+            valor = _parse_preco(str(bruto))
+            if valor is not None and abs(valor - preco) < 0.05:
                 return produto
         except (TypeError, ValueError):
             continue
@@ -877,6 +1013,8 @@ def _buscar_produto_do_historico(historico_texto: str) -> dict | None:
         if por_preco:
             return por_preco
 
+    from services.produtos_service import buscar_produtos_para_atendimento
+
     if nome_oferta:
         resultado = buscar_produtos_para_atendimento(nome_oferta, historico_texto)
         if resultado.get("produtos"):
@@ -916,12 +1054,14 @@ def _formatar_preco(preco) -> str | None:
     if preco in (None, ""):
         return None
     if isinstance(preco, str):
-        preco = preco.replace(",", ".")
-        try:
-            preco = float(preco)
-        except ValueError:
+        parsed = _parse_preco(preco)
+        if parsed is None:
             return preco
-    return f"R$ {preco:.2f}".replace(".", ",")
+        preco = parsed
+    try:
+        return f"R$ {float(preco):.2f}".replace(".", ",")
+    except (TypeError, ValueError):
+        return str(preco)
 
 
 def resposta_fechamento_pedido(
@@ -940,7 +1080,14 @@ def resposta_fechamento_pedido(
         or produto.get("nome")
         or "produto"
     )
-    preco = preco_historico if preco_historico is not None else produto.get("preco")
+    preco_bruto = (
+        preco_historico
+        if preco_historico is not None
+        else produto.get("preco") or produto.get("preco_tabela")
+    )
+    preco = _parse_preco(str(preco_bruto)) if preco_bruto not in (None, "") else None
+    if preco is None and isinstance(preco_bruto, (int, float)):
+        preco = float(preco_bruto)
     preco_fmt = _formatar_preco(preco)
 
     endereco = extrair_endereco(historico_texto)

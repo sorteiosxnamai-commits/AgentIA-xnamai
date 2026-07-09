@@ -44,6 +44,7 @@ from services.conversa_service import (
     ia_ja_pediu_endereco,
     negociacao_nova_apos_fechamento,
     pedido_ja_encerrado,
+    resolver_estado_venda,
     resolver_resposta_pos_pedido,
     resposta_entrega_ja_anotada,
     resposta_fechamento_pedido,
@@ -84,7 +85,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-09-fechamento-nova-venda"
+CODE_VERSION = "2026-07-09-vendedor-estavel"
 
 router = APIRouter()
 
@@ -180,25 +181,36 @@ def processar_mensagem(data: dict):
         # =========================
 
         nome_conversa = extrair_nome_do_historico(historico_texto, nome_cliente)
-        pedido_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto)
-        nova_venda_explicita = cliente_quer_nova_venda(mensagem)
-        nova_venda = negociacao_nova_apos_fechamento(historico_texto, mensagem)
-        if nova_venda:
-            pedido_encerrado = False
+        estado_venda = resolver_estado_venda(
+            historico_texto, mensagem, ultima_resposta_ia
+        )
+        print("ESTADO VENDA:", estado_venda)
 
-        # Nova venda: ignora produtos/endereço do pedido já fechado
-        historico_venda = historico_texto
-        if nova_venda and pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
-            historico_venda = historico_desde_ultimo_fechamento(historico_texto)
-
-        resposta_pos_venda = resolver_resposta_pos_pedido(
-            mensagem,
-            historico_texto,
-            ultima_resposta_ia,
-            nome_conversa,
+        pedido_encerrado = estado_venda == "pos_venda"
+        nova_venda_explicita = cliente_quer_nova_venda(mensagem) or (
+            estado_venda == "nova_venda"
+        )
+        nova_venda = negociacao_nova_apos_fechamento(historico_texto, mensagem) or (
+            estado_venda == "nova_venda"
         )
 
-        fechamento = eh_confirmacao_fechamento(
+        # Após fechamento real: usa só o trecho da venda atual
+        historico_venda = historico_texto
+        if nova_venda or estado_venda in ("nova_venda", "negociando", "fechando"):
+            trecho = historico_desde_ultimo_fechamento(historico_texto)
+            if trecho != historico_texto:
+                historico_venda = trecho
+
+        resposta_pos_venda = None
+        if estado_venda == "pos_venda":
+            resposta_pos_venda = resolver_resposta_pos_pedido(
+                mensagem,
+                historico_texto,
+                ultima_resposta_ia,
+                nome_conversa,
+            )
+
+        fechamento = estado_venda == "fechando" or eh_confirmacao_fechamento(
             mensagem, historico_venda, ultima_resposta_ia
         )
         alteracao_pagamento = eh_alteracao_pagamento(
@@ -206,7 +218,7 @@ def processar_mensagem(data: dict):
         )
         saudacao = eh_saudacao(mensagem, historico_venda)
 
-        if pedido_encerrado:
+        if estado_venda == "pos_venda":
             fechamento = False
             alteracao_pagamento = False
             if saudacao:
@@ -218,6 +230,7 @@ def processar_mensagem(data: dict):
             or alteracao_pagamento
             or saudacao
             or nova_venda_explicita
+            or estado_venda == "nova_venda"
         )
 
         contexto_venda = preparar_contexto_venda(

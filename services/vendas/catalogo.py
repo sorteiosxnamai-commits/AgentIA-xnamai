@@ -101,6 +101,24 @@ TERMOS_NAO_PRODUTO = TERMOS_ESTETICOS | {
     "outra", "nova", "novo", "mais", "comprar", "preciso", "quero",
 }
 
+# Alias cliente → termos de busca no catálogo (evita sem_match falso)
+ALIASES_PRODUTO = {
+    "headset": ("headset", "fone", "gamer"),
+    "fone": ("fone", "headset"),
+    "hdmi": ("hdmi", "cabo"),
+    "cabo": ("cabo", "hdmi"),
+    "ssd": ("ssd",),
+    "hd": ("hd", "externo"),
+    "externo": ("externo", "hd"),
+    "mouse": ("mouse",),
+    "teclado": ("teclado",),
+    "monitor": ("monitor", "led"),
+    "notebook": ("notebook",),
+    "webcam": ("webcam",),
+    "hub": ("hub", "usb"),
+    "usb": ("usb", "hub"),
+}
+
 
 def termos_produto_relevantes(termos: list[str]) -> list[str]:
     return [t for t in termos if t not in TERMOS_NAO_PRODUTO and len(t) >= 3]
@@ -137,11 +155,45 @@ def _termos_do_cliente(mensagem: str, historico_texto: str = "") -> list[str]:
     return combinados or termos_hist
 
 
+def _expandir_aliases(termos: list[str]) -> list[str]:
+    expandidos: list[str] = []
+    for termo in termos:
+        t = _normalizar(termo)
+        if t not in expandidos:
+            expandidos.append(t)
+        for alias in ALIASES_PRODUTO.get(t, ()):
+            if alias not in expandidos:
+                expandidos.append(alias)
+    return expandidos
+
+
 def _mensagem_busca(mensagem: str, historico_texto: str = "") -> str:
-    termos = _termos_do_cliente(mensagem, historico_texto)
+    termos = _expandir_aliases(_termos_do_cliente(mensagem, historico_texto))
     if termos:
         return " ".join(termos)
     return mensagem.strip()
+
+
+def _score_produto(produto: dict, termos: list[str]) -> int:
+    """Pontua match: nome > codigo > categoria/descricao."""
+    nome = _normalizar(str(produto.get("nome") or ""))
+    codigo = _normalizar(str(produto.get("codigo") or ""))
+    resto = _normalizar(
+        f"{produto.get('categoria') or ''} {produto.get('descricao') or ''}"
+    )
+    score = 0
+    for t in termos:
+        if not t:
+            continue
+        if t in nome:
+            score += 10
+            if nome.startswith(t) or f" {t}" in f" {nome}":
+                score += 3
+        if t in codigo:
+            score += 6
+        if t in resto:
+            score += 2
+    return score
 
 
 def _buscar_mercos(mensagem: str, historico_texto: str = "") -> tuple[list[dict], str | None]:
@@ -154,11 +206,16 @@ def _buscar_mercos(mensagem: str, historico_texto: str = "") -> tuple[list[dict]
             return [normalizar_produto(p) for p in brutos], None
 
         busca = _mensagem_busca(mensagem, historico_texto)
-        termos = _extrair_termos(busca)
+        termos = _expandir_aliases(_extrair_termos(busca))
         if not termos:
             return [], None
 
         produtos = buscar_mercos_por_mensagem(busca)
+        if produtos:
+            ranqueados = sorted(
+                produtos, key=lambda p: _score_produto(p, termos), reverse=True
+            )
+            return [p for p in ranqueados if _score_produto(p, termos) > 0] or ranqueados, None
         return produtos, None
     except Exception as e:
         return [], str(e)
@@ -181,20 +238,20 @@ def _buscar_supabase(mensagem: str, historico_texto: str = "") -> list[dict]:
         return produtos[:LIMITE_CATALOGO]
 
     busca = _mensagem_busca(mensagem, historico_texto)
-    termos = _extrair_termos(busca)
+    termos = _expandir_aliases(
+        termos_produto_relevantes(_extrair_termos(busca)) or _extrair_termos(busca)
+    )
     if not termos:
         return []
 
-    encontrados = []
+    pontuados = []
     for produto in produtos:
-        texto = " ".join(
-            str(produto.get(c, "") or "")
-            for c in ("nome", "codigo", "categoria", "descricao")
-        ).lower()
-        if any(t in texto for t in termos):
-            encontrados.append(produto)
+        score = _score_produto(produto, termos)
+        if score > 0:
+            pontuados.append((score, produto))
 
-    return encontrados[:LIMITE_CATALOGO]
+    pontuados.sort(key=lambda x: x[0], reverse=True)
+    return [p for _, p in pontuados[:LIMITE_CATALOGO]]
 
 
 def _categoria_chave(produto: dict) -> str:
