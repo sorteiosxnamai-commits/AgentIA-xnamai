@@ -49,30 +49,36 @@ def extrair_preferencia_nf(historico_texto: str, mensagem: str = "") -> str | No
 
 
 def extrair_forma_envio(historico_texto: str, mensagem: str = "") -> str | None:
-    from services.conversa_service import extrair_endereco, extrair_preferencia_entrega
+    from services.conversa_service import extrair_endereco
+
+    padrao_retirada = (
+        r"\bretirada\b|\bretirar\b|\bretiro\b|\bbuscar\b|\bpego\b|\bretiro no local\b"
+    )
+    padrao_envio = (
+        r"\benvio\b|\benviar\b|\bfrete\b|\bcorreios\b|\btransportadora\b|"
+        r"\bentrega\b|\bmandar\b"
+    )
 
     if mensagem:
         t = _normalizar(mensagem)
-        if re.search(r"\bretirada\b|\bretiro\b|\bbuscar\b|\bretiro no local\b", t):
+        if re.search(padrao_retirada, t):
             return "retirada"
-        if re.search(r"\benvio\b|\bfrete\b|\bcorreios\b|\btransportadora\b|\bentrega\b", t):
-            end = extrair_endereco(mensagem) or extrair_preferencia_entrega(mensagem)
-            return end or "envio"
-
-    end = extrair_endereco(historico_texto) or extrair_preferencia_entrega(historico_texto)
-    if end:
-        if "retirada" in _normalizar(end):
-            return "retirada"
-        return end
+        if re.search(padrao_envio, t):
+            return "envio"
 
     for linha in reversed((historico_texto or "").split("\n")):
         if not linha.startswith("Cliente:"):
             continue
         t = _normalizar(linha)
-        if re.search(r"\bretirada\b|\bretiro\b", t):
+        if re.search(padrao_retirada, t):
             return "retirada"
-        if re.search(r"\benvio\b|\bfrete\b|\bcorreios\b", t):
+        if re.search(padrao_envio, t):
             return "envio"
+
+    # Só usa endereço real (rua/av) — nunca pergunta antiga de produto
+    end = extrair_endereco(historico_texto)
+    if end:
+        return end
     return None
 
 
@@ -194,7 +200,7 @@ def cliente_perguntou_como_trabalham(mensagem: str) -> bool:
 
 
 def mensagem_nao_e_busca_produto(mensagem: str) -> bool:
-    """Saudação, processo, estoque genérico — não dispara 'fora do catálogo'."""
+    """Saudação, processo, estoque, envio/retirada — não dispara 'fora do catálogo'."""
     t = _normalizar(mensagem).rstrip("!?.,")
     if not t:
         return True
@@ -211,6 +217,15 @@ def mensagem_nao_e_busca_produto(mensagem: str) -> bool:
         return True
     if re.search(
         r"\b(quero|queria|gostaria)\s+(fazer\s+)?(um\s+)?(pedido|compra)\b",
+        t,
+    ) and not re.search(
+        r"\b(headset|cabo|hdmi|mouse|monitor|notebook|webcam|ssd|hub|fone)\b",
+        t,
+    ):
+        return True
+    # Respostas de alinhamento (NF / envio / retirada)
+    if re.search(
+        r"\b(retirada|retirar|retiro|envio|enviar|sem\s*nf|com\s*nf|nota\s*fiscal)\b",
         t,
     ) and not re.search(
         r"\b(headset|cabo|hdmi|mouse|monitor|notebook|webcam|ssd|hub|fone)\b",

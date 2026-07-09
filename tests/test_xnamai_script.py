@@ -46,11 +46,28 @@ def test_headset_ainda_e_busca_produto():
     assert cliente_perguntou_como_trabalham("quero um headset gamer") is False
 
 
+def test_retirar_e_forma_envio_nao_produto():
+    assert extrair_forma_envio("", "retirar") == "retirada"
+    assert extrair_forma_envio("", "quero retirar") == "retirada"
+    assert mensagem_nao_e_busca_produto("retirar") is True
+    assert mensagem_nao_e_busca_produto("sem nf, retirar") is True
+
+
+def test_pergunta_monitor_nao_e_endereco():
+    from services.conversa_service import extrair_endereco, _parece_endereco_real
+
+    lixo = "o munitor led 24 qual e o valor ?"
+    assert _parece_endereco_real(lixo) is False
+    hist = f"Cliente: {lixo}\nIA: Monitor LED 24 por R$ 899.9\n"
+    assert extrair_endereco(hist) == ""
+
+
 def test_alinhamento_nf_e_envio():
     hist = "Cliente: quero headset\nIA: Fechamos?\n"
     assert extrair_preferencia_nf(hist, "sem nf") == "sem_nf"
     assert extrair_forma_envio(hist, "envio") == "envio"
     assert alinhamento_completo(hist, "sem nf, envio") is True
+    assert alinhamento_completo(hist, "sem nf, retirar") is True
 
 
 def test_alinhamento_incompleto():

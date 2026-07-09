@@ -89,7 +89,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-09-como-trabalham"
+CODE_VERSION = "2026-07-09-resumo-limpo"
 
 router = APIRouter()
 

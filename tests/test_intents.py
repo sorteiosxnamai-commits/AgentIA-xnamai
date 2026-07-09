@@ -22,6 +22,8 @@ def test_parse_preco_249_9_nao_vira_2499():
     assert _parse_preco("249,90") == 249.9
     assert _parse_preco("29.9") == 29.9
     assert _parse_preco("1.249,90") == 1249.9
+    assert _parse_preco("3.499") == 3499.0
+    assert _parse_preco("1.249") == 1249.0
 
 
 def test_quero_fazer_outro_pedido_e_nova_venda():

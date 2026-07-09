@@ -419,10 +419,33 @@ def extrair_nome_do_historico(historico_texto: str, pushname: str = "") -> str:
     return "Cliente"
 
 
+def _parece_endereco_real(texto: str) -> bool:
+    """Evita tratar pergunta de produto antiga como endereço de entrega."""
+    t = _normalizar(texto)
+    if not t or len(t) < 8:
+        return False
+    if _eh_pergunta_produto(texto) or "?" in texto:
+        return False
+    if re.search(
+        r"\b(monitor|munitor|mouse|headset|cabo|hdmi|notebook|webcam|produto|"
+        r"valor|preco|preço|quanto|qual e|qual é|quero|retirar|retirada|envio)\b",
+        t,
+    ):
+        return False
+    if re.search(r"\b(rua|av\.?|avenida|travessa|rodovia|bairro|cep)\b", t):
+        return True
+    # Número + texto longo só conta se parecer endereço (não pergunta)
+    if re.search(r"\d{1,5}", texto) and len(texto) > 20 and "valor" not in t:
+        return True
+    return False
+
+
 def extrair_endereco(historico_texto: str) -> str:
     match = re.search(r"📍\s*Entrega:\s*(.+)", historico_texto, re.IGNORECASE)
     if match:
-        return match.group(1).strip().split("\n")[0]
+        candidato = match.group(1).strip().split("\n")[0]
+        if _parece_endereco_real(candidato):
+            return candidato
 
     for linha in reversed(historico_texto.split("\n")):
         if not linha.startswith("Cliente:"):
@@ -430,30 +453,28 @@ def extrair_endereco(historico_texto: str) -> str:
         texto = linha.replace("Cliente:", "").strip()
         if _eh_dado_contato(texto):
             continue
-        if _eh_pergunta_produto(texto):
-            continue
-        if re.search(r"\b(rua|av\.?|avenida|travessa|rodovia)\b", texto, re.I):
-            return texto
-        if re.search(r"\d{1,5}", texto) and len(texto) > 15 and not re.search(
-            r"\b(monitor|mouse|produto|valor|preco|preço|quanto)\b", texto, re.I
-        ):
+        if _parece_endereco_real(texto):
             return texto
     return ""
 
 
 def extrair_preferencia_entrega(historico_texto: str) -> str:
-    match = re.search(r"📍\s*Entrega:\s*(.+)", historico_texto, re.IGNORECASE)
-    if match:
-        return match.group(1).strip().split("\n")[0]
-
+    """Data/preferência de entrega — não confundir com pergunta de produto."""
     for linha in reversed(historico_texto.split("\n")):
         if not linha.startswith("Cliente:"):
             continue
         texto = linha.replace("Cliente:", "").strip()
-        if _eh_dado_contato(texto) or _eh_pergunta_produto(texto):
+        if _eh_dado_contato(texto) or _eh_pergunta_produto(texto) or "?" in texto:
+            continue
+        t = _normalizar(texto)
+        if re.search(
+            r"\b(monitor|munitor|mouse|headset|cabo|hdmi|notebook|webcam|valor|preco|quanto)\b",
+            t,
+        ):
             continue
         if re.search(
-            r"\b(entregar|entrega|dia\s+\d{1,2}|no dia\s+\d{1,2}|desse mes|deste mes)\b",
+            r"\b(entregar|entrega|dia\s+\d{1,2}|no dia\s+\d{1,2}|desse mes|deste mes|"
+            r"retirada|retiro|envio)\b",
             texto,
             re.I,
         ):
@@ -882,7 +903,10 @@ def historico_recente(historico_texto: str, max_linhas: int = 24) -> str:
 
 
 def _parse_preco(valor: str) -> float | None:
-    """Aceita 249.9, 249,90, 1.249,90 e 1,249.90 sem transformar 249.9 em 2499."""
+    """Aceita 249.9, 249,90, 3.499, 1.249,90 e 1,249.90.
+
+    BR milhar sem centavos (3.499) vira 3499; decimal curto (249.9) permanece.
+    """
     if valor in (None, ""):
         return None
     texto = str(valor).strip().rstrip(".,;:!?)")
@@ -898,7 +922,16 @@ def _parse_preco(valor: str) -> float | None:
         elif "," in texto:
             # 249,9 ou 249,90
             texto = texto.replace(",", ".")
-        # só ponto: 249.9 / 249.90 — manter como decimal
+        elif "." in texto:
+            # 249.9 / 249.90 = decimal; 3.499 ou 1.249 = milhar BR (3 dígitos)
+            partes = texto.split(".")
+            if (
+                len(partes) >= 2
+                and all(p.isdigit() for p in partes)
+                and all(len(p) == 3 for p in partes[1:])
+            ):
+                texto = "".join(partes)
+            # senão: decimal (1–2 casas) — manter
         return float(texto)
     except (TypeError, ValueError):
         return None
@@ -912,6 +945,8 @@ def _extrair_oferta_ia(historico_texto: str) -> tuple[str, float | None]:
         r"(.+?)\s+por\s+r\$\s*([\d]+(?:[.,]\d+)?)",
         r"(.+?)\s+sai\s+por\s+r\$\s*([\d]+(?:[.,]\d+)?)",
         r"(.+?)\s+fica\s+(?:por\s+)?r\$\s*([\d]+(?:[.,]\d+)?)",
+        # "Notebook Intel i5 (R$ 3.499)" / "Notebook Intel i5 R$ 3.499"
+        r"(.+?)\s*\(?\s*r\$\s*([\d]+(?:[.,]\d+)?)\s*\)?",
         r"preco\s+(?:do|da|de)\s+(.+?)\s*[:=]?\s*r\$\s*([\d]+(?:[.,]\d+)?)",
         r"\b(headset\s+gamer|cabo\s+hdmi(?:\s*\d+m)?|hd\s+externo(?:\s*\d+\s*tb)?|"
         r"monitor\s+led(?:\s*\d+)?|mouse\s+[^\n,]{0,30}|teclado\s+[^\n,]{0,30}|"
@@ -1098,6 +1133,20 @@ def resposta_fechamento_pedido(
         ultima_resposta_ia=ultima_resposta_ia,
     )
 
+    # Se nome bate com catálogo e preço do histórico diverge, usa o do catálogo
+    preco_cat = produto.get("preco") or produto.get("preco_tabela")
+    if preco_cat not in (None, "") and produto.get("nome"):
+        preco_cat_f = _parse_preco(str(preco_cat))
+        nome_cat = _normalizar(str(produto.get("nome")))
+        nome_hist = _normalizar(nome_produto)
+        nomes_batem = bool(nome_cat and nome_hist) and (
+            nome_cat in nome_hist or nome_hist in nome_cat
+        )
+        if preco_cat_f is not None and nomes_batem:
+            if preco is None or abs(preco_cat_f - float(preco)) > 1:
+                preco = preco_cat_f
+                preco_fmt = _formatar_preco(preco)
+
     linhas = [f"Fechado, {nome}! Resumo do pedido:"]
     linhas.append(f"📦 {nome_produto}")
 
@@ -1106,7 +1155,7 @@ def resposta_fechamento_pedido(
 
     if frete_estimado > 0 and preco is not None:
         try:
-            valor_produto = float(str(preco).replace(",", "."))
+            valor_produto = float(preco)
             total = valor_produto + frete_estimado
             linhas.append(f"🚚 Frete estimado: R$ {frete_estimado:.2f}".replace(".", ","))
             linhas.append(f"✅ Total: R$ {total:.2f}".replace(".", ","))
@@ -1116,12 +1165,12 @@ def resposta_fechamento_pedido(
         linhas.append(f"✅ Total do produto: {preco_fmt}")
         linhas.append("🚚 Frete: nossa equipe confirma o valor com você.")
 
-    if endereco:
+    if endereco and _parece_endereco_real(endereco):
         linhas.append(f"📍 Entrega: {endereco}")
-    elif contato:
+    elif contato and not _eh_pergunta_produto(contato):
         linhas.append(f"📋 Dados: {contato}")
 
-    if pagamento:
+    if pagamento and pagamento != "a combinar":
         linhas.append(f"💳 Pagamento: {pagamento}")
 
     from services.xnamai_script import enriquecer_resumo_fechamento
