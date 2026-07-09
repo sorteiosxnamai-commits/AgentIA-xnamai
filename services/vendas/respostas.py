@@ -124,8 +124,9 @@ def resposta_mostrar_catalogo(
     if not itens:
         return f"{nome}, me diz o que você procura que eu te ajudo."
 
+    # Lista o catálogo completo (WhatsApp aguenta bem ~20–30 itens)
     linhas = [f"Olha o que temos, {nome}:"]
-    for produto in itens[:6]:
+    for produto in itens:
         nome_p = produto.get("nome", "Produto")
         preco = _fmt_preco_item(produto)
         linhas.append(f"• {nome_p}" + (f" — {preco}" if preco else ""))
@@ -146,7 +147,7 @@ def resposta_abrir_nova_venda(
         return f"Bora, {nome}! O que você quer pedir agora?"
 
     linhas = [f"Bora, {nome}! Olha o que temos:"]
-    for produto in itens[:6]:
+    for produto in itens:
         nome_p = produto.get("nome", "Produto")
         preco = _fmt_preco_item(produto)
         linhas.append(f"• {nome_p}" + (f" — {preco}" if preco else ""))
