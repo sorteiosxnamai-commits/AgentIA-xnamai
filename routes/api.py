@@ -85,7 +85,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-09-vendedor-estavel"
+CODE_VERSION = "2026-07-09-script-xnamai"
 
 router = APIRouter()
 
@@ -210,9 +210,30 @@ def processar_mensagem(data: dict):
                 nome_conversa,
             )
 
+        from services.xnamai_script import (
+            alinhamento_completo,
+            cliente_perguntou_estoque,
+            ia_pediu_alinhamento,
+            precisa_avisar_pedido_minimo,
+            resposta_alinhamento_pedido,
+            resposta_estoque_disponibilidade,
+            resposta_pedido_minimo,
+            valor_pedido_historico,
+        )
+
         fechamento = estado_venda == "fechando" or eh_confirmacao_fechamento(
             mensagem, historico_venda, ultima_resposta_ia
         )
+        # Cliente respondeu NF/envio após o alinhamento do script → segue para fechar
+        if (
+            not fechamento
+            and not pedido_encerrado
+            and ia_pediu_alinhamento(ultima_resposta_ia)
+            and alinhamento_completo(historico_venda, mensagem)
+        ):
+            fechamento = True
+            print("ALINHAMENTO XNAMAI completo — seguindo para fechamento")
+
         alteracao_pagamento = eh_alteracao_pagamento(
             mensagem, historico_venda, ultima_resposta_ia
         )
@@ -300,87 +321,106 @@ def processar_mensagem(data: dict):
             pedido_registrado = None
             ja_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto) and not nova_venda
 
-            if not ja_encerrado and (fechamento or alteracao_pagamento):
-                # 1) Mercos (pedido real no ERP) — se habilitado
-                pedido_mercos = None
-                if mercos_criar_pedido_habilitado():
-                    pedido_mercos = criar_pedido_fechamento_mercos(
-                        historico_texto=historico_texto,
-                        cliente_supabase=cliente,
-                        telefone=numero,
-                        pushname=nome_cliente,
-                        mensagem_atual=mensagem,
-                        ultima_resposta_ia=ultima_resposta_ia,
-                        frete_estimado=frete_estimado,
-                    )
-                    if pedido_mercos and pedido_mercos.get("pedido_id"):
-                        print("MERCOS PEDIDO CRIADO:", pedido_mercos)
-                        # Guarda ID real no cliente do agente para próximos pedidos
-                        try:
-                            from services.supabase_service import atualizar_cliente
-
-                            cliente_mercos_id = int(pedido_mercos["cliente_id"])
-                            atualizar_cliente(
-                                cliente["id"],
-                                mercos_cliente_id=cliente_mercos_id,
-                            )
-                            cliente["mercos_cliente_id"] = cliente_mercos_id
-                        except Exception as exc:
-                            print("AVISO: falha ao salvar mercos_cliente_id:", exc)
-                    elif pedido_mercos and pedido_mercos.get("erro"):
-                        print("MERCOS PEDIDO FALHOU:", pedido_mercos["erro"])
-
-                # 2) PulseDesk (Supabase) — sempre que habilitado, para aparecer no painel
-                if pulsedesk_pedidos_habilitado():
-                    pedido_registrado = registrar_venda_pulsedesk(
-                        historico_texto=historico_texto,
-                        cliente_supabase=cliente,
-                        telefone=numero,
-                        pushname=nome_cliente,
-                        mensagem_atual=mensagem,
-                        ultima_resposta_ia=ultima_resposta_ia,
-                        frete_estimado=frete_estimado,
-                        nova_venda=nova_venda,
-                    )
-                    # Prefere número Mercos na mensagem ao cliente, se existir
-                    if pedido_mercos and pedido_mercos.get("pedido_id"):
-                        pedido_registrado = {
-                            **(pedido_registrado or {}),
-                            "pedido_id": pedido_mercos.get("pedido_id"),
-                            "numero": pedido_mercos.get("numero")
-                            or pedido_mercos.get("pedido_id"),
-                            "origem": "mercos+pulsedesk",
-                        }
-                elif pedido_mercos:
-                    pedido_registrado = pedido_mercos
-                else:
-                    pedido_registrado = None
-
-            resposta_ia = resposta_fechamento_pedido(
-                historico_texto,
-                nome_cliente,
-                frete_estimado,
-                mensagem_atual=mensagem,
-                ultima_resposta_ia=ultima_resposta_ia,
-                mercos_pedido=pedido_registrado,
-            )
-            resultado_fechamento = buscar_produtos_para_atendimento(historico_texto)
-            if vendedor_configurado():
-                notificar_vendedor(
-                    numero_cliente=numero,
-                    nome_cliente=nome_conversa,
-                    interesse="pedido fechado",
-                    mensagem_cliente=mensagem,
-                    produtos=resultado_fechamento.get("produtos"),
+            # Script Xnamai: alinhar NF + envio antes de gravar o pedido
+            if (
+                not ja_encerrado
+                and fechamento
+                and not alinhamento_completo(historico_venda, mensagem)
+            ):
+                resposta_ia = resposta_alinhamento_pedido(nome_conversa)
+                print("ALINHAMENTO XNAMAI: pedindo NF e forma de envio")
+            elif (
+                not ja_encerrado
+                and fechamento
+                and precisa_avisar_pedido_minimo(historico_venda)
+            ):
+                resposta_ia = resposta_pedido_minimo(
+                    nome_conversa, valor_pedido_historico(historico_venda)
                 )
-                print("VENDEDOR NOTIFICADO: pedido fechado")
+                print("PEDIDO MINIMO XNAMAI: valor abaixo do mínimo")
+            else:
+                if not ja_encerrado and (fechamento or alteracao_pagamento):
+                    # 1) Mercos (pedido real no ERP) — se habilitado
+                    pedido_mercos = None
+                    if mercos_criar_pedido_habilitado():
+                        pedido_mercos = criar_pedido_fechamento_mercos(
+                            historico_texto=historico_venda,
+                            cliente_supabase=cliente,
+                            telefone=numero,
+                            pushname=nome_cliente,
+                            mensagem_atual=mensagem,
+                            ultima_resposta_ia=ultima_resposta_ia,
+                            frete_estimado=frete_estimado,
+                        )
+                        if pedido_mercos and pedido_mercos.get("pedido_id"):
+                            print("MERCOS PEDIDO CRIADO:", pedido_mercos)
+                            try:
+                                from services.supabase_service import atualizar_cliente
 
-            if pedido_registrado and pedido_registrado.get("pedido_id"):
-                print("PULSEDESK PEDIDO CRIADO:", pedido_registrado)
-            elif pedido_registrado and pedido_registrado.get("erro"):
-                print("PULSEDESK PEDIDO FALHOU:", pedido_registrado["erro"])
+                                cliente_mercos_id = int(pedido_mercos["cliente_id"])
+                                atualizar_cliente(
+                                    cliente["id"],
+                                    mercos_cliente_id=cliente_mercos_id,
+                                )
+                                cliente["mercos_cliente_id"] = cliente_mercos_id
+                            except Exception as exc:
+                                print("AVISO: falha ao salvar mercos_cliente_id:", exc)
+                        elif pedido_mercos and pedido_mercos.get("erro"):
+                            print("MERCOS PEDIDO FALHOU:", pedido_mercos["erro"])
+
+                    # 2) PulseDesk (Supabase)
+                    if pulsedesk_pedidos_habilitado():
+                        pedido_registrado = registrar_venda_pulsedesk(
+                            historico_texto=historico_venda,
+                            cliente_supabase=cliente,
+                            telefone=numero,
+                            pushname=nome_cliente,
+                            mensagem_atual=mensagem,
+                            ultima_resposta_ia=ultima_resposta_ia,
+                            frete_estimado=frete_estimado,
+                            nova_venda=nova_venda,
+                        )
+                        if pedido_mercos and pedido_mercos.get("pedido_id"):
+                            pedido_registrado = {
+                                **(pedido_registrado or {}),
+                                "pedido_id": pedido_mercos.get("pedido_id"),
+                                "numero": pedido_mercos.get("numero")
+                                or pedido_mercos.get("pedido_id"),
+                                "origem": "mercos+pulsedesk",
+                            }
+                    elif pedido_mercos:
+                        pedido_registrado = pedido_mercos
+                    else:
+                        pedido_registrado = None
+
+                resposta_ia = resposta_fechamento_pedido(
+                    historico_venda,
+                    nome_cliente,
+                    frete_estimado,
+                    mensagem_atual=mensagem,
+                    ultima_resposta_ia=ultima_resposta_ia,
+                    mercos_pedido=pedido_registrado,
+                )
+                resultado_fechamento = buscar_produtos_para_atendimento(historico_venda)
+                if vendedor_configurado():
+                    notificar_vendedor(
+                        numero_cliente=numero,
+                        nome_cliente=nome_conversa,
+                        interesse="pedido fechado",
+                        mensagem_cliente=mensagem,
+                        produtos=resultado_fechamento.get("produtos"),
+                    )
+                    print("VENDEDOR NOTIFICADO: pedido fechado")
+
+                if pedido_registrado and pedido_registrado.get("pedido_id"):
+                    print("PULSEDESK PEDIDO CRIADO:", pedido_registrado)
+                elif pedido_registrado and pedido_registrado.get("erro"):
+                    print("PULSEDESK PEDIDO FALHOU:", pedido_registrado["erro"])
         elif saudacao:
             resposta_ia = resposta_saudacao(nome_conversa)
+        elif cliente_perguntou_estoque(mensagem) and not pedido_encerrado:
+            resposta_ia = resposta_estoque_disponibilidade(nome_conversa)
+            print("SCRIPT XNAMAI: resposta de estoque/disponibilidade")
         elif nova_venda_explicita:
             cat_geral = montar_catalogo_geral()
             produtos = cat_geral["produtos"]

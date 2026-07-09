@@ -14,15 +14,9 @@ TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.3"))
 
 
 def resposta_saudacao(nome_cliente: str = "") -> str:
-    if nome_cliente:
-        return (
-            f"Oi, {nome_cliente}! Sou da Xnamai. "
-            "Tá procurando algum produto ou quer ver o que temos?"
-        )
-    return (
-        "Oi! Sou da Xnamai. "
-        "Tá procurando algum produto ou quer ver o que temos?"
-    )
+    from services.xnamai_script import resposta_saudacao_xnamai
+
+    return resposta_saudacao_xnamai(nome_cliente)
 
 
 def resposta_sem_foto(produto: dict) -> str:

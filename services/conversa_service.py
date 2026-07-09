@@ -1124,6 +1124,10 @@ def resposta_fechamento_pedido(
     if pagamento:
         linhas.append(f"💳 Pagamento: {pagamento}")
 
+    from services.xnamai_script import enriquecer_resumo_fechamento
+
+    linhas = enriquecer_resumo_fechamento(linhas, historico_texto, mensagem_atual)
+
     if pagamento and "pix" in pagamento.lower():
         try:
             valor_pix = float(str(preco).replace(",", ".")) if preco is not None else None
@@ -1139,5 +1143,8 @@ def resposta_fechamento_pedido(
             numero = int(numero)
         linhas.append(f"🧾 Pedido #{numero}")
 
-    linhas.append("Pedido registrado! Em breve nossa equipe finaliza com você.")
+    linhas.append(
+        "Pedido registrado! Em breve nossa equipe finaliza com você "
+        "(separação após confirmação do pagamento)."
+    )
     return "\n".join(linhas)
