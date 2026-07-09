@@ -19,11 +19,17 @@ CONFIRMACOES = (
     "certo",
     "combinado",
     "fechou",
+    "fechamos",
+    "fechamos sim",
+    "vamos fechar",
+    "pode fechar",
 )
 
 PADROES_CONFIRMACAO_MSG = (
     r"\bfechou\b",
     r"\bfechado\b",
+    r"\bfechamos\b",
+    r"\bfechar\b",
     r"\bconfirmo\b",
     r"\bcombinado\b",
     r"\bpaguei\b",
@@ -161,9 +167,14 @@ def _historico_tem_negociacao(historico_texto: str) -> bool:
             "monitor",
             "mouse",
             "notebook",
+            "headset",
+            "fone",
+            "cabo",
             "produto",
             "separar",
             "preco",
+            "fechamos",
+            "unidade",
         )
     )
 
@@ -175,20 +186,35 @@ def eh_confirmacao_fechamento(
 ) -> bool:
     if cliente_agradeceu_pos_venda(mensagem):
         return False
-    if pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
+
+    ultima_norm = _normalizar(ultima_resposta_ia or "")
+    soft_pos = bool(ultima_norm) and (
+        "precisa de algo mais" in ultima_norm
+        and "resumo do pedido" not in ultima_norm
+    )
+    # Fechamento REAL na última resposta → não fecha de novo
+    if ultima_norm and _texto_indica_pedido_encerrado(ultima_resposta_ia) and not soft_pos:
         return False
+    # Soft pós-venda só bloqueia se NÃO houver nova negociação
+    if soft_pos and not negociacao_nova_apos_fechamento(historico_texto, mensagem):
+        return False
+
+    historico_venda = historico_texto
+    if negociacao_nova_apos_fechamento(historico_texto, mensagem):
+        historico_venda = historico_desde_ultimo_fechamento(historico_texto)
+
     if not _mensagem_tem_confirmacao(mensagem):
         return False
-    if not conversa_em_andamento(historico_texto):
+    if not conversa_em_andamento(historico_venda):
         return False
-    if _historico_tem_negociacao(historico_texto):
+    if _historico_tem_negociacao(historico_venda):
         return True
 
-    historico = _normalizar(historico_texto)
+    historico = _normalizar(historico_venda)
     if any(indicio in historico for indicio in INDICIOS_FECHAMENTO):
         return True
 
-    ultima = _normalizar(ultima_resposta_ia)
+    ultima = ultima_norm
     promessas = (
         "total com frete",
         "te passo o total",
@@ -199,7 +225,16 @@ def eh_confirmacao_fechamento(
         "endereco de entrega",
         "pra fechar",
         "reservo",
+        "fechamos",
+        "unidade",
     )
+    # Se a última foi soft pós-venda, olha a penúltima oferta no histórico
+    if soft_pos:
+        for linha in reversed(historico_venda.split("\n")):
+            if linha.startswith("IA:") and "fechamos" in _normalizar(linha):
+                return True
+        return _historico_tem_negociacao(historico_venda)
+
     return any(p in ultima for p in promessas)
 
 
@@ -508,10 +543,23 @@ def cliente_quer_novo_atendimento(mensagem: str) -> bool:
 
 
 def historico_desde_ultimo_fechamento(historico_texto: str) -> str:
+    """Corta só após fechamento REAL (resumo), não após mensagem soft de pós-venda."""
     linhas = historico_texto.split("\n")
     inicio = 0
     for indice, linha in enumerate(linhas):
-        if linha.startswith("IA:") and "pedido registrado" in linha.lower():
+        if not linha.startswith("IA:"):
+            continue
+        texto = linha.lower()
+        # Soft pós-venda: "já está registrado" / "precisa de algo mais" — NÃO corta
+        if "precisa de algo mais" in texto and "resumo do pedido" not in texto:
+            continue
+        if "resumo do pedido" in texto or "pedido #" in texto:
+            inicio = indice + 1
+            continue
+        # Fechamento completo: "Pedido registrado!" com produto no resumo
+        if "pedido registrado" in texto and (
+            "resumo" in texto or "📦" in linha or "total" in texto
+        ):
             inicio = indice + 1
     if inicio > 0:
         return "\n".join(linhas[inicio:])
@@ -519,13 +567,17 @@ def historico_desde_ultimo_fechamento(historico_texto: str) -> str:
 
 
 def negociacao_nova_apos_fechamento(historico_texto: str, mensagem: str = "") -> bool:
-    if cliente_quer_novo_atendimento(mensagem):
+    if cliente_quer_nova_venda(mensagem):
         return True
+    if cliente_quer_novo_atendimento(mensagem) and not _mensagem_so_acolhe_pos_venda(mensagem):
+        # "quero headset" etc. — só conta se já houve fechamento antes
+        if pedido_ja_encerrado("", historico_texto):
+            return True
     trecho = historico_desde_ultimo_fechamento(historico_texto)
     if trecho == historico_texto:
         return False
     texto = _normalizar(trecho)
-    return bool(re.search(r"\b(quero|preciso|comprar|outro|novo|mais)\b", texto))
+    return bool(re.search(r"\b(quero|preciso|comprar|outro|novo|mais|headset|cabo|monitor)\b", texto))
 
 
 def resposta_pos_fechamento(nome: str = "") -> str:
@@ -672,6 +724,11 @@ def resolver_resposta_pos_pedido(
     if cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia):
         return None
     if cliente_quer_novo_atendimento(mensagem):
+        return None
+
+    # Já há negociação nova após o último fechamento — não engolir "fechamos"
+    # com a mensagem genérica de pós-venda do pedido antigo.
+    if negociacao_nova_apos_fechamento(historico_texto, mensagem):
         return None
 
     if not pedido_ja_encerrado(ultima_resposta_ia, historico_texto):

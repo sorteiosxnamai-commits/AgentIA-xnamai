@@ -8,7 +8,19 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-BASE_URL = os.getenv("MERCOS_BASE_URL", "https://sandbox.mercos.com/api").rstrip("/")
+def _sanitizar_base_url(url: str) -> str:
+    """Remove '=' acidental do Render e sufixo /v1|/v2 (paths já incluem a versão)."""
+    limpa = (url or "").strip().lstrip("=").rstrip("/")
+    for sufixo in ("/v1", "/v2"):
+        if limpa.lower().endswith(sufixo):
+            limpa = limpa[: -len(sufixo)]
+            break
+    return limpa or "https://sandbox.mercos.com/api"
+
+
+BASE_URL = _sanitizar_base_url(
+    os.getenv("MERCOS_BASE_URL", "https://sandbox.mercos.com/api")
+)
 LIMITE_CATALOGO = 20
 SANDBOX_APPLICATION_TOKEN = "7a1540f6-642c-11e8-a500-72dcfa7a7c91"
 CACHE_TTL_SEGUNDOS = int(os.getenv("MERCOS_CACHE_SEGUNDOS", "600"))

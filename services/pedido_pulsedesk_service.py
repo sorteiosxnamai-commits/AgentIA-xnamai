@@ -111,20 +111,43 @@ def _buscar_cliente_pulsedesk_por_telefone(telefone: str) -> dict | None:
     return None
 
 
-def _pedido_whatsapp_ja_no_pulsedesk(telefone: str) -> bool:
+def _pedido_whatsapp_ja_no_pulsedesk(
+    telefone: str,
+    produto_nome: str = "",
+    valor_total: float | None = None,
+) -> bool:
+    """Evita duplicata do MESMO pedido WA; permite outro produto/valor no mesmo cliente."""
     cliente = _buscar_cliente_pulsedesk_por_telefone(telefone)
     if not cliente or cliente.get("mercos_id") is None:
         return False
     resposta = (
         supabase.table("pedidos")
-        .select("mercos_id,numero")
+        .select("mercos_id,numero,produto_nome,valor_total")
         .eq("cliente_mercos_id", int(cliente["mercos_id"]))
         .execute()
     )
+    nome_ref = (produto_nome or "").strip().lower()
     for row in resposta.data or []:
         numero = str(row.get("numero") or "")
         mercos_id = row.get("mercos_id")
-        if numero.startswith("WA-") or (mercos_id is not None and int(mercos_id) < 0):
+        if not (numero.startswith("WA-") or (mercos_id is not None and int(mercos_id) < 0)):
+            continue
+        # Sem produto/valor: qualquer WA do cliente conta (backfill genérico)
+        if not nome_ref and valor_total is None:
+            return True
+        nome_row = str(row.get("produto_nome") or "").strip().lower()
+        try:
+            valor_row = float(row.get("valor_total") or 0)
+        except (TypeError, ValueError):
+            valor_row = 0.0
+        mesmo_produto = bool(nome_ref) and (
+            nome_ref in nome_row or (bool(nome_row) and nome_row in nome_ref)
+        )
+        if not mesmo_produto:
+            continue
+        if valor_total is None:
+            return True
+        if abs(valor_row - float(valor_total)) < 0.05:
             return True
     return False
 
@@ -235,13 +258,6 @@ def registrar_venda_pulsedesk(
         else historico_texto
     )
 
-    if pedido_ja_encerrado(ultima_resposta_ia, historico_texto) and not nova_venda:
-        if _pedido_whatsapp_ja_no_pulsedesk(telefone):
-            print("PULSEDESK: pedido já existe no PulseDesk, ignorando duplicata")
-            return None
-        print("PULSEDESK: conversa fechada mas pedido ausente — registrando retroativo")
-        historico_efetivo = historico_texto
-
     nome = extrair_nome_do_historico(historico_efetivo, pushname)
     endereco = extrair_endereco(historico_efetivo) or extrair_endereco(historico_texto)
     extrair_pagamento(historico_efetivo, mensagem_atual, ultima_resposta_ia)
@@ -262,6 +278,13 @@ def registrar_venda_pulsedesk(
     if valor <= 0:
         print("PULSEDESK: valor inválido, pedido não criado")
         return {"erro": "valor_invalido"}
+
+    if pedido_ja_encerrado(ultima_resposta_ia, historico_texto) and not nova_venda:
+        if _pedido_whatsapp_ja_no_pulsedesk(telefone, produto_nome, valor):
+            print("PULSEDESK: pedido já existe no PulseDesk, ignorando duplicata")
+            return None
+        print("PULSEDESK: conversa fechada mas pedido ausente — registrando retroativo")
+        historico_efetivo = historico_texto
 
     try:
         cliente_ref = cliente_supabase.get("mercos_cliente_id")
@@ -302,13 +325,6 @@ def registrar_venda_retroativa_por_telefone(telefone: str) -> dict:
     if not tel:
         return {"erro": "telefone_obrigatorio"}
 
-    if _pedido_whatsapp_ja_no_pulsedesk(tel):
-        return {
-            "status": "ok",
-            "mensagem": "Pedido WhatsApp já registrado no PulseDesk",
-            **diagnosticar_pulsedesk_pedidos(tel),
-        }
-
     cliente = buscar_cliente(tel)
     if not cliente:
         return {"erro": "cliente_agent_nao_encontrado", "telefone": tel}
@@ -323,8 +339,12 @@ def registrar_venda_retroativa_por_telefone(telefone: str) -> dict:
             historico_texto += f"IA: {msg['mensagem']}\n"
             ultima_resposta_ia = msg["mensagem"]
 
-    if "pedido registrado" not in historico_texto.lower():
+    if "pedido registrado" not in historico_texto.lower() and "fechamos" not in historico_texto.lower():
         return {"erro": "conversa_sem_fechamento", "telefone": tel}
+
+    # Preferir trecho da venda mais recente (após último resumo real)
+    historico_efetivo = historico_desde_ultimo_fechamento(historico_texto)
+    usar_nova = historico_efetivo != historico_texto and bool(historico_efetivo.strip())
 
     resultado = registrar_venda_pulsedesk(
         historico_texto=historico_texto,
@@ -332,9 +352,16 @@ def registrar_venda_retroativa_por_telefone(telefone: str) -> dict:
         telefone=tel,
         pushname=cliente.get("nome") or "",
         ultima_resposta_ia=ultima_resposta_ia,
+        nova_venda=usar_nova,
     )
     if resultado and resultado.get("erro"):
         return {"status": "erro", **resultado}
+    if resultado is None:
+        return {
+            "status": "ok",
+            "mensagem": "Pedido WhatsApp já registrado no PulseDesk (mesmo produto/valor)",
+            **diagnosticar_pulsedesk_pedidos(tel),
+        }
 
     return {
         "status": "ok",

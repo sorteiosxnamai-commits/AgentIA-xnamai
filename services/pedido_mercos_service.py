@@ -38,7 +38,12 @@ def pedido_mercos_ja_registrado(ultima_resposta_ia: str) -> bool:
     if not ultima_resposta_ia:
         return False
     ultima = ultima_resposta_ia.lower()
-    return "pedido mercos #" in ultima or "pedido registrado" in ultima
+    # Soft pós-venda não conta como pedido Mercos criado
+    if "precisa de algo mais" in ultima and "resumo do pedido" not in ultima:
+        return False
+    return "pedido mercos #" in ultima or (
+        "pedido registrado" in ultima and "resumo do pedido" in ultima
+    ) or "pedido #" in ultima
 
 
 def _mapear_condicao_pagamento(pagamento: str) -> str:
