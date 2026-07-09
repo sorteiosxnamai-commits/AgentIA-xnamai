@@ -246,27 +246,44 @@ def sincronizar_produto_mercos(dados: dict) -> str:
         if resultado.data:
             existente = resultado.data[0]
 
+    # Schema PulseDesk (ETL): preco_tabela / saldo_estoque — sem coluna categoria/preco/estoque
     campos = {
         "mercos_id": mercos_id,
         "nome": dados.get("nome"),
         "codigo": dados.get("codigo") or "",
-        "categoria": dados.get("categoria") or "",
-        "preco": dados.get("preco") or 0,
-        "estoque": dados.get("estoque") or 0,
         "descricao": dados.get("descricao") or "",
+        "preco_tabela": dados.get("preco_tabela", dados.get("preco") or 0),
+        "preco_minimo": dados.get("preco_minimo") or 0,
+        "saldo_estoque": dados.get("saldo_estoque", dados.get("estoque") or 0),
+        "ativo": dados.get("ativo", True),
     }
+    if dados.get("unidade") is not None:
+        campos["unidade"] = dados.get("unidade")
+    if dados.get("ultima_alteracao"):
+        campos["ultima_alteracao"] = dados["ultima_alteracao"]
 
     if dados.get("imagem_url"):
+        # Só grava se a coluna existir no projeto; ignora se falhar no insert/update
         campos["imagem_url"] = dados["imagem_url"]
+
+    def _sem_imagem(payload: dict) -> dict:
+        return {k: v for k, v in payload.items() if k != "imagem_url"}
 
     if existente:
         if mercos_id is not None and not existente.get("mercos_id"):
             campos["mercos_id"] = mercos_id
-
-        supabase.table("produtos").update(campos).eq("id", existente["id"]).execute()
+        try:
+            supabase.table("produtos").update(campos).eq("id", existente["id"]).execute()
+        except Exception:
+            supabase.table("produtos").update(_sem_imagem(campos)).eq(
+                "id", existente["id"]
+            ).execute()
         return "atualizado"
 
-    supabase.table("produtos").insert(campos).execute()
+    try:
+        supabase.table("produtos").insert(campos).execute()
+    except Exception:
+        supabase.table("produtos").insert(_sem_imagem(campos)).execute()
     return "criado"
 
 
