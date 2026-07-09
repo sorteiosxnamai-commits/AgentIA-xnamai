@@ -273,6 +273,36 @@ def processar_mensagem(data: dict):
             ja_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto) and not nova_venda
 
             if not ja_encerrado and (fechamento or alteracao_pagamento):
+                # 1) Mercos (pedido real no ERP) — se habilitado
+                pedido_mercos = None
+                if mercos_criar_pedido_habilitado():
+                    pedido_mercos = criar_pedido_fechamento_mercos(
+                        historico_texto=historico_texto,
+                        cliente_supabase=cliente,
+                        telefone=numero,
+                        pushname=nome_cliente,
+                        mensagem_atual=mensagem,
+                        ultima_resposta_ia=ultima_resposta_ia,
+                        frete_estimado=frete_estimado,
+                    )
+                    if pedido_mercos and pedido_mercos.get("pedido_id"):
+                        print("MERCOS PEDIDO CRIADO:", pedido_mercos)
+                        # Guarda ID real no cliente do agente para próximos pedidos
+                        try:
+                            from services.supabase_service import atualizar_cliente
+
+                            cliente_mercos_id = int(pedido_mercos["cliente_id"])
+                            atualizar_cliente(
+                                cliente["id"],
+                                mercos_cliente_id=cliente_mercos_id,
+                            )
+                            cliente["mercos_cliente_id"] = cliente_mercos_id
+                        except Exception as exc:
+                            print("AVISO: falha ao salvar mercos_cliente_id:", exc)
+                    elif pedido_mercos and pedido_mercos.get("erro"):
+                        print("MERCOS PEDIDO FALHOU:", pedido_mercos["erro"])
+
+                # 2) PulseDesk (Supabase) — sempre que habilitado, para aparecer no painel
                 if pulsedesk_pedidos_habilitado():
                     pedido_registrado = registrar_venda_pulsedesk(
                         historico_texto=historico_texto,
@@ -284,16 +314,19 @@ def processar_mensagem(data: dict):
                         frete_estimado=frete_estimado,
                         nova_venda=nova_venda,
                     )
-                elif mercos_criar_pedido_habilitado():
-                    pedido_registrado = criar_pedido_fechamento_mercos(
-                        historico_texto=historico_texto,
-                        cliente_supabase=cliente,
-                        telefone=numero,
-                        pushname=nome_cliente,
-                        mensagem_atual=mensagem,
-                        ultima_resposta_ia=ultima_resposta_ia,
-                        frete_estimado=frete_estimado,
-                    )
+                    # Prefere número Mercos na mensagem ao cliente, se existir
+                    if pedido_mercos and pedido_mercos.get("pedido_id"):
+                        pedido_registrado = {
+                            **(pedido_registrado or {}),
+                            "pedido_id": pedido_mercos.get("pedido_id"),
+                            "numero": pedido_mercos.get("numero")
+                            or pedido_mercos.get("pedido_id"),
+                            "origem": "mercos+pulsedesk",
+                        }
+                elif pedido_mercos:
+                    pedido_registrado = pedido_mercos
+                else:
+                    pedido_registrado = None
 
             resposta_ia = resposta_fechamento_pedido(
                 historico_texto,

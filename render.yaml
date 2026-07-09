@@ -29,7 +29,7 @@ services:
       - key: PULSEDESK_PEDIDOS_ENABLED
         value: "true"
       - key: MERCOS_CRIAR_PEDIDO
-        value: "false"
+        value: "true"
       - key: WHATSAPP_PROVIDER
         value: zapi
       - key: ZAPI_INSTANCE_ID

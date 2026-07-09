@@ -49,7 +49,7 @@ def _mapear_condicao_pagamento(pagamento: str) -> str:
         return "Débito na entrega"
     if "credito" in pagamento or "crédito" in pagamento:
         return "Cartão de crédito"
-    return pagamento or "A combinar"
+    return pagamento or "a vista"
 
 
 def _resolver_produto_mercos(historico_texto: str) -> dict | None:

@@ -354,25 +354,34 @@ def criar_pedido_mercos(
     payload = {
         "cliente_id": cliente_id,
         "data_emissao": date.today().isoformat(),
-        "condicao_pagamento": condicao_pagamento,
+        "condicao_pagamento": condicao_pagamento or "a vista",
         "observacoes": observacoes[:500],
         "itens": [
             {
                 "produto_id": produto_id,
                 "quantidade": quantidade,
-                "preco_bruto": round(float(preco_bruto), 2),
+                "preco_tabela": round(float(preco_bruto), 2),
             }
         ],
     }
 
-    resposta = _executar_requisicao_mercos("POST", "/v1/pedidos", json_body=payload)
+    # API v2 (mesma usada no PulseDesk / homologação)
+    resposta = _executar_requisicao_mercos("POST", "/v2/pedidos", json_body=payload)
 
     if resposta.status_code not in (200, 201):
         raise ValueError(
             f"Erro ao criar pedido Mercos ({resposta.status_code}): {resposta.text[:300]}"
         )
 
-    return resposta.json() if resposta.text.strip() else {}
+    body = resposta.json() if resposta.text.strip() else {}
+    pedido_id = (
+        body.get("id")
+        or resposta.headers.get("meuspedidosid")
+        or resposta.headers.get("MeusPedidosID")
+    )
+    if pedido_id is not None and "id" not in body:
+        body["id"] = int(pedido_id) if str(pedido_id).isdigit() else pedido_id
+    return body
 
 
 def montar_catalogo_texto(produtos: list[dict]) -> str:
