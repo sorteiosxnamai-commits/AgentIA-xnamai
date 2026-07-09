@@ -12,10 +12,10 @@ from services.openai_service import (
 )
 from services.vendas.respostas import (
     cliente_quer_ver_catalogo,
-    resposta_abrir_nova_venda,
     resposta_fora_catalogo,
     resposta_mostrar_catalogo,
 )
+from services.xnamai_script import resposta_abrir_espaco_pedido
 from services.vendas.catalogo import montar_catalogo_geral
 from services.whatsapp_service import (
     enviar_imagem,
@@ -85,7 +85,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-09-script-xnamai"
+CODE_VERSION = "2026-07-09-acolhimento"
 
 router = APIRouter()
 
@@ -422,11 +422,9 @@ def processar_mensagem(data: dict):
             resposta_ia = resposta_estoque_disponibilidade(nome_conversa)
             print("SCRIPT XNAMAI: resposta de estoque/disponibilidade")
         elif nova_venda_explicita:
-            cat_geral = montar_catalogo_geral()
-            produtos = cat_geral["produtos"]
-            catalogo = cat_geral["catalogo"]
-            resposta_ia = resposta_abrir_nova_venda(nome_conversa, produtos)
-            print("NOVA VENDA: reabrindo atendimento com catálogo")
+            # Não empurrar catálogo: deixa o cliente dizer o que quer
+            resposta_ia = resposta_abrir_espaco_pedido(nome_conversa)
+            print("NOVA VENDA: acolhimento sem oferecer produtos")
         elif pediu_foto and produtos and not com_foto:
             resposta_ia = resposta_sem_foto(produtos[0])
         elif pediu_foto and com_foto and repetindo:

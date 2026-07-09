@@ -5,6 +5,7 @@ from services.xnamai_script import (
     extrair_preferencia_nf,
     ia_pediu_alinhamento,
     precisa_avisar_pedido_minimo,
+    resposta_abrir_espaco_pedido,
     resposta_alinhamento_pedido,
     resposta_saudacao_xnamai,
 )
@@ -15,6 +16,16 @@ def test_saudacao_tom_consultora():
     assert "Tironi" in texto
     assert "xNaMai" in texto or "Xnamai" in texto.lower()
     assert "vendas" in texto.lower()
+    assert "R$" not in texto
+    assert "Webcam" not in texto
+
+
+def test_quero_pedido_nao_oferece_produto():
+    texto = resposta_abrir_espaco_pedido("Tironi")
+    assert "procurando" in texto.lower()
+    assert "R$" not in texto
+    assert "Webcam" not in texto
+    assert "HDMI" not in texto
 
 
 def test_alinhamento_nf_e_envio():

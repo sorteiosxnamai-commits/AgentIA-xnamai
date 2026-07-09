@@ -100,7 +100,6 @@ def ia_pediu_alinhamento(ultima_resposta_ia: str) -> bool:
 
 
 def resposta_saudacao_xnamai(nome_cliente: str = "") -> str:
-    nome = (nome_cliente or "").strip() or "tudo bem"
     if nome_cliente:
         return (
             f"Olá, {nome_cliente}! Como vai?\n\n"
@@ -111,6 +110,19 @@ def resposta_saudacao_xnamai(nome_cliente: str = "") -> str:
         f"Olá! Como vai?\n\n"
         f"Sou a {CONSULTORA}, do time de vendas da {NOME_MARCA}. "
         "No que posso te ajudar hoje?"
+    )
+
+
+def resposta_abrir_espaco_pedido(nome_cliente: str = "") -> str:
+    """Cliente quer pedir, mas ainda não disse o produto — não empurrar catálogo."""
+    if nome_cliente:
+        return (
+            f"Perfeito, {nome_cliente}! Pode me contar o que você está procurando?\n\n"
+            "Fico à disposição pra te ajudar com calma."
+        )
+    return (
+        "Perfeito! Pode me contar o que você está procurando?\n\n"
+        "Fico à disposição pra te ajudar com calma."
     )
 
 
