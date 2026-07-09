@@ -760,10 +760,24 @@ def historico_recente(historico_texto: str, max_linhas: int = 24) -> str:
 
 
 def _parse_preco(valor: str) -> float | None:
+    """Aceita 249.9, 249,90, 1.249,90 e 1,249.90 sem transformar 249.9 em 2499."""
     if valor in (None, ""):
         return None
+    texto = str(valor).strip()
+    if not texto:
+        return None
     try:
-        return float(str(valor).replace(".", "").replace(",", "."))
+        if "," in texto and "." in texto:
+            # BR: 1.249,90  |  US: 1,249.90
+            if texto.rfind(",") > texto.rfind("."):
+                texto = texto.replace(".", "").replace(",", ".")
+            else:
+                texto = texto.replace(",", "")
+        elif "," in texto:
+            # 249,9 ou 249,90
+            texto = texto.replace(",", ".")
+        # só ponto: 249.9 / 249.90 — manter como decimal
+        return float(texto)
     except (TypeError, ValueError):
         return None
 
