@@ -99,6 +99,12 @@ TERMOS_NAO_PRODUTO = TERMOS_ESTETICOS | {
     "obrigada", "valeu", "haha", "kkk", "kkkk", "faz", "nele", "nela",
     "pedido", "pedidos", "venda", "vendas", "fazer", "abrir", "outro",
     "outra", "nova", "novo", "mais", "comprar", "preciso", "quero",
+    # Envio / NF / confirmações — NUNCA tratar como produto
+    "retirar", "retirada", "retiro", "buscar", "pego", "envio", "enviar",
+    "frete", "correios", "entrega", "entregar", "mandar", "local",
+    "nota", "fiscal", "antecipado", "pagamento", "pix", "cartao",
+    "sei", "sabe", "acho", "mesmo", "tambem", "também", "ainda",
+    "qual", "quanto", "custa", "valor", "preco", "preço",
 }
 
 # Alias cliente → termos de busca no catálogo (evita sem_match falso)
@@ -125,8 +131,13 @@ def termos_produto_relevantes(termos: list[str]) -> list[str]:
 
 
 def _termos_do_cliente(mensagem: str, historico_texto: str = "") -> list[str]:
-    """Termos da mensagem atual + produto citado nas falas recentes do cliente."""
-    termos_atual = _extrair_termos(mensagem)
+    """Termos da mensagem atual + produto citado nas falas recentes do cliente.
+
+    Histórico só entra com termos de produto reais — nunca envio/NF/confirmação.
+    """
+    termos_atual = [
+        t for t in _extrair_termos(mensagem) if t not in TERMOS_NAO_PRODUTO
+    ]
 
     linhas_cliente: list[str] = []
     if historico_texto:
@@ -136,15 +147,18 @@ def _termos_do_cliente(mensagem: str, historico_texto: str = "") -> list[str]:
             if linha.startswith("Cliente:")
         ]
 
-    termos_hist: list[str] = []
+    produto_hist: list[str] = []
     for linha in linhas_cliente[-8:]:
         for termo in _extrair_termos(linha):
-            if termo not in termos_hist:
-                termos_hist.append(termo)
+            if termo in TERMOS_NAO_PRODUTO or termo in produto_hist:
+                continue
+            produto_hist.append(termo)
 
-    produto_hist = [t for t in termos_hist if t not in TERMOS_ESTETICOS]
+    # Mensagem só com estética/confirmação → usa produto do histórico
+    if not termos_atual:
+        return produto_hist
 
-    if termos_atual and all(t in TERMOS_ESTETICOS for t in termos_atual):
+    if all(t in TERMOS_ESTETICOS for t in termos_atual):
         return produto_hist or termos_atual
 
     combinados: list[str] = []
@@ -152,7 +166,7 @@ def _termos_do_cliente(mensagem: str, historico_texto: str = "") -> list[str]:
         if termo not in combinados:
             combinados.append(termo)
 
-    return combinados or termos_hist
+    return combinados
 
 
 def _expandir_aliases(termos: list[str]) -> list[str]:
@@ -393,7 +407,9 @@ def montar_contexto_catalogo(mensagem: str, historico_texto: str = "") -> dict:
     """Com PRODUTOS_FONTE=supabase lê só o ETL; senão Mercos primeiro."""
     consulta_ampla = _consulta_catalogo(mensagem)
     termos_cliente = _termos_do_cliente(mensagem, historico_texto)
-    consulta_especifica = bool(termos_cliente) and not consulta_ampla
+    # Fora do catálogo só se a MENSAGEM ATUAL pedir produto inexistente
+    termos_msg = termos_produto_relevantes(_extrair_termos(mensagem))
+    consulta_especifica = bool(termos_msg) and not consulta_ampla
 
     if _usar_somente_supabase():
         produtos = _buscar_supabase(mensagem, historico_texto)
@@ -468,10 +484,8 @@ def montar_contexto_catalogo(mensagem: str, historico_texto: str = "") -> dict:
         "fonte": fonte or "nenhum",
         "erro_mercos": erro_mercos,
         "consulta_especifica": consulta_especifica,
-        "termos_cliente": termos_cliente,
-        "sem_match": consulta_especifica
-        and not produtos
-        and bool(termos_produto_relevantes(termos_cliente)),
+        "termos_cliente": termos_msg or termos_produto_relevantes(termos_cliente),
+        "sem_match": consulta_especifica and not produtos and bool(termos_msg),
         "amostra_disponivel": _amostra_produtos_reais()
         if consulta_especifica and not produtos
         else [],

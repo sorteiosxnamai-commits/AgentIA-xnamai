@@ -9,6 +9,7 @@ TERMOS_IGNORAR_PEDIDO = {
     "rosto", "banho", "conjunto", "queria", "quero", "pra", "pro",
     "sim", "nao", "não", "ok", "tem", "catalogo", "catálogo", "nada",
     "disponivel", "disponível", "hoje", "voce", "voces", "vocês", "claro", "pode",
+    "retirar", "retirada", "retiro", "envio", "enviar", "frete", "sei",
 }
 
 
@@ -83,6 +84,71 @@ def _fmt_preco_item(produto: dict) -> str:
         return f"R$ {float(preco):.2f}".replace(".", ",")
     except (TypeError, ValueError):
         return f"R$ {preco}"
+
+
+def cliente_perguntou_preco(mensagem: str) -> bool:
+    """Pergunta genérica de preço — usa o produto em discussão no histórico."""
+    t = _normalizar(mensagem).rstrip("!?.,")
+    if not t:
+        return False
+    padroes = (
+        r"^(qual|quanto)\s+(e|é|eh)?\s*(o\s+)?(valor|preco|preço)$",
+        r"^(qual|quanto)\s+(e|é|eh)?\s*(o\s+)?(valor|preco|preço)\s+(dele|dela|disso|desse|dessa)?$",
+        r"^quanto\s+(custa|fica|sai)$",
+        r"^qual\s+o\s+valor$",
+        r"^e\s+o\s+valor\??$",
+        r"^valor\??$",
+        r"^preco\??$",
+        r"^preço\??$",
+    )
+    return any(re.match(p, t) for p in padroes)
+
+
+def resposta_preco_em_discussao(
+    historico_texto: str,
+    nome_cliente: str = "",
+    produtos: list | None = None,
+) -> str | None:
+    """Responde preço do item em discussão; None se não houver contexto."""
+    from services.conversa_service import (
+        _extrair_oferta_ia,
+        _extrair_preco_historico,
+        _formatar_preco,
+        _parse_preco,
+    )
+
+    nome = nome_cliente or "Cliente"
+    # Prioriza a última oferta da IA (evita trocar Headset por outro item de mesmo preço)
+    nome_oferta, preco_oferta = _extrair_oferta_ia(historico_texto)
+    nome_prod = nome_oferta or ""
+    preco = preco_oferta
+
+    if produtos and produtos[0].get("nome") and not nome_prod:
+        nome_prod = str(produtos[0].get("nome") or "")
+        bruto = produtos[0].get("preco") or produtos[0].get("preco_tabela")
+        if bruto not in (None, "") and preco is None:
+            preco = _parse_preco(str(bruto))
+
+    if preco is None:
+        preco = _extrair_preco_historico(historico_texto)
+
+    preco_fmt = _formatar_preco(preco) if preco is not None else None
+    if nome_prod and preco_fmt:
+        return (
+            f"{nome}, o {nome_prod} fica {preco_fmt}. "
+            "Quer que eu feche 1 unidade pra você?"
+        )
+    if preco_fmt:
+        return f"{nome}, fica {preco_fmt}. Quer fechar?"
+    if nome_prod:
+        return (
+            f"{nome}, sobre o {nome_prod}: me confirma o modelo/código "
+            "que eu te passo o valor certinho?"
+        )
+    return (
+        f"{nome}, me diz qual produto você quer o valor "
+        "(ex.: headset, cabo HDMI, monitor) que eu te passo."
+    )
 
 
 def resposta_fora_catalogo(

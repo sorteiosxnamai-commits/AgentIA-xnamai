@@ -11,9 +11,11 @@ from services.openai_service import (
     resposta_sem_foto,
 )
 from services.vendas.respostas import (
+    cliente_perguntou_preco,
     cliente_quer_ver_catalogo,
     resposta_fora_catalogo,
     resposta_mostrar_catalogo,
+    resposta_preco_em_discussao,
 )
 from services.xnamai_script import (
     mensagem_nao_e_busca_produto,
@@ -89,7 +91,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-09-resumo-limpo"
+CODE_VERSION = "2026-07-09-sem-loop-retirar"
 
 router = APIRouter()
 
@@ -444,6 +446,13 @@ def processar_mensagem(data: dict):
             produtos = cat_geral["produtos"]
             catalogo = cat_geral["catalogo"]
             resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos)
+        elif cliente_perguntou_preco(mensagem) and not pedido_encerrado:
+            resposta_ia = resposta_preco_em_discussao(
+                historico_venda,
+                nome_conversa,
+                produtos,
+            )
+            print("PRECO: resposta pelo produto em discussão")
         elif (
             not pedido_encerrado
             and not cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia)

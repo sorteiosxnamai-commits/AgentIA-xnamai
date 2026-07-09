@@ -98,3 +98,24 @@ def test_outro_pedido_nao_e_termo_produto():
     assert "pedido" not in relevantes
     assert "quero" not in relevantes
     assert "outro" not in relevantes
+
+
+def test_retirar_nao_vira_termo_produto():
+    from services.vendas.catalogo import _termos_do_cliente, montar_contexto_catalogo
+
+    hist = (
+        "Cliente: quero notebook\n"
+        "IA: Notebook Intel i5 por R$ 3499\n"
+        "Cliente: retirar\n"
+        "IA: Tironi, não trabalhamos com retirar...\n"
+    )
+    termos = _termos_do_cliente("qual o valor", hist)
+    assert "retirar" not in termos
+    assert "sei" not in termos
+
+    ctx = montar_contexto_catalogo("qual o valor", hist)
+    assert ctx["sem_match"] is False
+
+    ctx2 = montar_contexto_catalogo("eu sei que não", hist + "Cliente: eu sei que não\n")
+    assert ctx2["sem_match"] is False
+    assert "retirar" not in (ctx2.get("termos_cliente") or [])

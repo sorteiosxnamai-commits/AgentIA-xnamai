@@ -232,6 +232,19 @@ def mensagem_nao_e_busca_produto(mensagem: str) -> bool:
         t,
     ):
         return True
+    # Confirmação / reação curta — não é busca
+    if re.match(
+        r"^(eu\s+)?sei(\s+que\s+(nao|não))?$|^(ok|beleza|entendi|certo|ta|tá)$",
+        t,
+    ):
+        return True
+    # Pergunta genérica de preço (sem nome de produto)
+    if re.match(
+        r"^(qual|quanto)\s+(e|é|eh)?\s*(o\s+)?(valor|preco|preço)"
+        r"(\s+(dele|dela|disso))?$|^quanto\s+(custa|fica|sai)$|^valor\??$",
+        t,
+    ):
+        return True
     return False
 
 

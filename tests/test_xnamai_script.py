@@ -1,3 +1,4 @@
+from services.vendas.respostas import cliente_perguntou_preco, resposta_preco_em_discussao
 from services.xnamai_script import (
     PEDIDO_MINIMO,
     alinhamento_completo,
@@ -51,6 +52,20 @@ def test_retirar_e_forma_envio_nao_produto():
     assert extrair_forma_envio("", "quero retirar") == "retirada"
     assert mensagem_nao_e_busca_produto("retirar") is True
     assert mensagem_nao_e_busca_produto("sem nf, retirar") is True
+    assert mensagem_nao_e_busca_produto("qual o valor") is True
+    assert mensagem_nao_e_busca_produto("eu sei que não") is True
+
+
+def test_qual_o_valor_responde_produto_do_historico():
+    assert cliente_perguntou_preco("qual o valor") is True
+    hist = (
+        "Cliente: quero headset\n"
+        "IA: Headset Gamer por R$ 249.9 — temos disponível.\n"
+    )
+    texto = resposta_preco_em_discussao(hist, "Tironi")
+    assert texto is not None
+    assert "249" in texto
+    assert "Headset" in texto or "headset" in texto.lower()
 
 
 def test_pergunta_monitor_nao_e_endereco():
