@@ -171,6 +171,68 @@ def cliente_perguntou_estoque(mensagem: str) -> bool:
     )
 
 
+def cliente_perguntou_como_trabalham(mensagem: str) -> bool:
+    """Pergunta institucional — NÃO é busca de produto."""
+    t = _normalizar(mensagem)
+    padroes = (
+        r"como\s+(voces|vocês|vcs|vc|voce|você)?\s*trabalh",
+        r"como\s+funciona",
+        r"qual\s+(o\s+)?(processo|fluxo|procedimento)",
+        r"forma\s+de\s+(trabalho|atendimento|pagamento)",
+        r"trabalham\s+como",
+        r"quero\s+saber\s+como",
+        r"queria\s+saber\s+como",
+        r"me\s+explica\s+como",
+        r"politica\s+de\s+(venda|pagamento|envio)",
+        r"pagamento\s+antecipado",
+        r"preciso\s+de\s+nf\??$",
+        r"emitem\s+nf",
+        r"valor\s+minimo",
+        r"pedido\s+minimo",
+    )
+    return any(re.search(p, t) for p in padroes)
+
+
+def mensagem_nao_e_busca_produto(mensagem: str) -> bool:
+    """Saudação, processo, estoque genérico — não dispara 'fora do catálogo'."""
+    t = _normalizar(mensagem).rstrip("!?.,")
+    if not t:
+        return True
+    if cliente_perguntou_como_trabalham(mensagem):
+        return True
+    if cliente_perguntou_estoque(mensagem) and not re.search(
+        r"\b(headset|cabo|hdmi|mouse|monitor|notebook|webcam|ssd|hub)\b", t
+    ):
+        return True
+    if re.match(
+        r"^(oi|ola|olá|opa|eai|eae|bom dia|boa tarde|boa noite|tudo bem|td bem)$",
+        t,
+    ):
+        return True
+    if re.search(
+        r"\b(quero|queria|gostaria)\s+(fazer\s+)?(um\s+)?(pedido|compra)\b",
+        t,
+    ) and not re.search(
+        r"\b(headset|cabo|hdmi|mouse|monitor|notebook|webcam|ssd|hub|fone)\b",
+        t,
+    ):
+        return True
+    return False
+
+
+def resposta_como_trabalham(nome_cliente: str = "") -> str:
+    nome = nome_cliente or "Cliente"
+    return (
+        f"Claro, {nome}! Te explico rapidinho como trabalhamos:\n\n"
+        "• Você me conta o que precisa e eu te ajudo com os produtos\n"
+        "• Alinhamos NF (se precisar) e forma de envio ou retirada\n"
+        "• Preferimos pagamento antecipado pra agilizar separação e despacho "
+        "(não é obrigatório)\n"
+        "• Se na separação faltar algum item, fazemos crédito ou estorno no mesmo dia\n\n"
+        "O que você está procurando?"
+    )
+
+
 def valor_pedido_historico(historico_texto: str) -> float | None:
     from services.conversa_service import _extrair_preco_historico
 

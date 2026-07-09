@@ -1,12 +1,15 @@
 from services.xnamai_script import (
     PEDIDO_MINIMO,
     alinhamento_completo,
+    cliente_perguntou_como_trabalham,
     extrair_forma_envio,
     extrair_preferencia_nf,
     ia_pediu_alinhamento,
+    mensagem_nao_e_busca_produto,
     precisa_avisar_pedido_minimo,
     resposta_abrir_espaco_pedido,
     resposta_alinhamento_pedido,
+    resposta_como_trabalham,
     resposta_saudacao_xnamai,
 )
 
@@ -26,6 +29,21 @@ def test_quero_pedido_nao_oferece_produto():
     assert "R$" not in texto
     assert "Webcam" not in texto
     assert "HDMI" not in texto
+
+
+def test_como_trabalham_nao_e_produto():
+    msg = "queria saber como vocês trabalham ?"
+    assert cliente_perguntou_como_trabalham(msg) is True
+    assert mensagem_nao_e_busca_produto(msg) is True
+    texto = resposta_como_trabalham("Tironi")
+    assert "não trabalhamos com" not in texto.lower()
+    assert "pagamento antecipado" in texto.lower()
+    assert "Webcam" not in texto
+
+
+def test_headset_ainda_e_busca_produto():
+    assert mensagem_nao_e_busca_produto("quero um headset gamer") is False
+    assert cliente_perguntou_como_trabalham("quero um headset gamer") is False
 
 
 def test_alinhamento_nf_e_envio():

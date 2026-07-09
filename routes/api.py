@@ -15,7 +15,11 @@ from services.vendas.respostas import (
     resposta_fora_catalogo,
     resposta_mostrar_catalogo,
 )
-from services.xnamai_script import resposta_abrir_espaco_pedido
+from services.xnamai_script import (
+    mensagem_nao_e_busca_produto,
+    resposta_abrir_espaco_pedido,
+    resposta_como_trabalham,
+)
 from services.vendas.catalogo import montar_catalogo_geral
 from services.whatsapp_service import (
     enviar_imagem,
@@ -85,7 +89,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-09-acolhimento"
+CODE_VERSION = "2026-07-09-como-trabalham"
 
 router = APIRouter()
 
@@ -212,6 +216,7 @@ def processar_mensagem(data: dict):
 
         from services.xnamai_script import (
             alinhamento_completo,
+            cliente_perguntou_como_trabalham,
             cliente_perguntou_estoque,
             ia_pediu_alinhamento,
             precisa_avisar_pedido_minimo,
@@ -418,6 +423,9 @@ def processar_mensagem(data: dict):
                     print("PULSEDESK PEDIDO FALHOU:", pedido_registrado["erro"])
         elif saudacao:
             resposta_ia = resposta_saudacao(nome_conversa)
+        elif cliente_perguntou_como_trabalham(mensagem) and not pedido_encerrado:
+            resposta_ia = resposta_como_trabalham(nome_conversa)
+            print("SCRIPT XNAMAI: como trabalhamos (não é produto)")
         elif cliente_perguntou_estoque(mensagem) and not pedido_encerrado:
             resposta_ia = resposta_estoque_disponibilidade(nome_conversa)
             print("SCRIPT XNAMAI: resposta de estoque/disponibilidade")
@@ -444,8 +452,13 @@ def processar_mensagem(data: dict):
             and (ia_ja_pediu_endereco(historico_venda) or extrair_preferencia_entrega(mensagem))
         ):
             resposta_ia = resposta_entrega_ja_anotada(nome_conversa, historico_venda)
-        elif contexto_venda.sem_match and not (
-            conversa_em_andamento(historico_venda) and _mensagem_tem_confirmacao(mensagem)
+        elif (
+            contexto_venda.sem_match
+            and not mensagem_nao_e_busca_produto(mensagem)
+            and not (
+                conversa_em_andamento(historico_venda)
+                and _mensagem_tem_confirmacao(mensagem)
+            )
         ):
             resposta_ia = resposta_fora_catalogo(
                 nome_cliente=nome_conversa,
