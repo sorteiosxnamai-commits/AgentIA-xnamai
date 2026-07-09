@@ -12,6 +12,7 @@ from services.openai_service import (
 )
 from services.vendas.respostas import (
     cliente_quer_ver_catalogo,
+    resposta_abrir_nova_venda,
     resposta_fora_catalogo,
     resposta_mostrar_catalogo,
 )
@@ -30,6 +31,7 @@ from services.produto_imagem_service import (
 )
 
 from services.conversa_service import (
+    cliente_quer_nova_venda,
     cliente_quer_novo_atendimento,
     conversa_em_andamento,
     eh_alteracao_pagamento,
@@ -37,6 +39,7 @@ from services.conversa_service import (
     entrega_ja_informada,
     extrair_nome_do_historico,
     extrair_preferencia_entrega,
+    historico_desde_ultimo_fechamento,
     historico_recente,
     ia_ja_pediu_endereco,
     negociacao_nova_apos_fechamento,
@@ -81,7 +84,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-08-pos-venda-fix"
+CODE_VERSION = "2026-07-09-nova-venda"
 
 router = APIRouter()
 
@@ -178,9 +181,15 @@ def processar_mensagem(data: dict):
 
         nome_conversa = extrair_nome_do_historico(historico_texto, nome_cliente)
         pedido_encerrado = pedido_ja_encerrado(ultima_resposta_ia, historico_texto)
+        nova_venda_explicita = cliente_quer_nova_venda(mensagem)
         nova_venda = negociacao_nova_apos_fechamento(historico_texto, mensagem)
         if nova_venda:
             pedido_encerrado = False
+
+        # Nova venda: ignora produtos/endereço do pedido já fechado
+        historico_venda = historico_texto
+        if nova_venda and pedido_ja_encerrado(ultima_resposta_ia, historico_texto):
+            historico_venda = historico_desde_ultimo_fechamento(historico_texto)
 
         resposta_pos_venda = resolver_resposta_pos_pedido(
             mensagem,
@@ -190,12 +199,12 @@ def processar_mensagem(data: dict):
         )
 
         fechamento = eh_confirmacao_fechamento(
-            mensagem, historico_texto, ultima_resposta_ia
+            mensagem, historico_venda, ultima_resposta_ia
         )
         alteracao_pagamento = eh_alteracao_pagamento(
-            mensagem, historico_texto, ultima_resposta_ia
+            mensagem, historico_venda, ultima_resposta_ia
         )
-        saudacao = eh_saudacao(mensagem, historico_texto)
+        saudacao = eh_saudacao(mensagem, historico_venda)
 
         if pedido_encerrado:
             fechamento = False
@@ -203,21 +212,27 @@ def processar_mensagem(data: dict):
             if saudacao:
                 saudacao = False
 
-        pular_catalogo = fechamento or alteracao_pagamento or saudacao
+        # "Quero fazer outro pedido" não é busca de produto — abre catálogo direto
+        pular_catalogo = (
+            fechamento
+            or alteracao_pagamento
+            or saudacao
+            or nova_venda_explicita
+        )
 
         contexto_venda = preparar_contexto_venda(
             mensagem=mensagem,
-            historico_texto=historico_texto,
+            historico_texto=historico_venda,
             pedido_encerrado=pedido_encerrado,
             pular_catalogo=pular_catalogo,
         )
 
         if not pular_catalogo and cliente_pediu_foto(mensagem) and not contexto_venda.produtos:
-            busca_historico = extrair_busca_do_historico(historico_texto)
+            busca_historico = extrair_busca_do_historico(historico_venda)
             if busca_historico.strip():
                 contexto_venda = preparar_contexto_venda(
                     mensagem=busca_historico,
-                    historico_texto=historico_texto,
+                    historico_texto=historico_venda,
                     pedido_encerrado=pedido_encerrado,
                 )
 
@@ -353,6 +368,12 @@ def processar_mensagem(data: dict):
                 print("PULSEDESK PEDIDO FALHOU:", pedido_registrado["erro"])
         elif saudacao:
             resposta_ia = resposta_saudacao(nome_conversa)
+        elif nova_venda_explicita:
+            cat_geral = montar_catalogo_geral()
+            produtos = cat_geral["produtos"]
+            catalogo = cat_geral["catalogo"]
+            resposta_ia = resposta_abrir_nova_venda(nome_conversa, produtos)
+            print("NOVA VENDA: reabrindo atendimento com catálogo")
         elif pediu_foto and produtos and not com_foto:
             resposta_ia = resposta_sem_foto(produtos[0])
         elif pediu_foto and com_foto and repetindo:
@@ -368,12 +389,12 @@ def processar_mensagem(data: dict):
             not pedido_encerrado
             and not cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia)
             and not cliente_quer_novo_atendimento(mensagem)
-            and entrega_ja_informada(historico_texto)
-            and (ia_ja_pediu_endereco(historico_texto) or extrair_preferencia_entrega(mensagem))
+            and entrega_ja_informada(historico_venda)
+            and (ia_ja_pediu_endereco(historico_venda) or extrair_preferencia_entrega(mensagem))
         ):
-            resposta_ia = resposta_entrega_ja_anotada(nome_conversa, historico_texto)
+            resposta_ia = resposta_entrega_ja_anotada(nome_conversa, historico_venda)
         elif contexto_venda.sem_match and not (
-            conversa_em_andamento(historico_texto) and _mensagem_tem_confirmacao(mensagem)
+            conversa_em_andamento(historico_venda) and _mensagem_tem_confirmacao(mensagem)
         ):
             resposta_ia = resposta_fora_catalogo(
                 nome_cliente=nome_conversa,
@@ -381,12 +402,18 @@ def processar_mensagem(data: dict):
                 amostra=contexto_venda.amostra_disponivel,
             )
         else:
+            # Após reabrir venda, não reaproveita a última resposta do pedido fechado
+            ultima_para_ia = (
+                ""
+                if nova_venda_explicita or historico_venda != historico_texto
+                else ultima_resposta_ia
+            )
             resposta_ia = perguntar_ia(
                 mensagem=mensagem,
                 catalogo=catalogo,
-                historico_texto=historico_recente(historico_texto),
+                historico_texto=historico_recente(historico_venda),
                 nome_cliente=nome_conversa,
-                ultima_resposta_ia=ultima_resposta_ia,
+                ultima_resposta_ia=ultima_para_ia,
                 foto_automatica=bool(com_foto and pediu_foto),
                 contexto_venda=contexto_venda,
             )

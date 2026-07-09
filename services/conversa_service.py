@@ -470,7 +470,26 @@ def _mensagem_so_acolhe_pos_venda(mensagem: str) -> bool:
     )
 
 
+def cliente_quer_nova_venda(mensagem: str) -> bool:
+    """Intenção explícita de abrir outra venda (não é busca de produto)."""
+    texto = _normalizar(mensagem).rstrip("!?.,")
+    padroes = (
+        r"\b(quero|preciso|vamos|bora)\s+(fazer\s+)?(outro|mais\s+um|um\s+novo|novo)\s+pedido\b",
+        r"\b(fazer|abrir|iniciar|comecar|começar)\s+(outro|mais\s+um|um\s+novo|novo)\s+pedido\b",
+        r"\b(outro|mais\s+um|novo)\s+pedido\b",
+        r"\b(nova|outra)\s+venda\b",
+        r"\b(quero|preciso)\s+(comprar|pedir)\s+(de\s+novo|novamente|mais)\b",
+        r"\bfazer\s+(uma\s+)?nova\s+compra\b",
+        r"\bmais\s+um\s+pedido\b",
+        r"\bquero\s+pedir\s+(de\s+novo|novamente|outro)\b",
+    )
+    return any(re.search(p, texto) for p in padroes)
+
+
 def cliente_quer_novo_atendimento(mensagem: str) -> bool:
+    """Sai do modo pós-venda: nova venda explícita ou interesse em comprar/ver catálogo."""
+    if cliente_quer_nova_venda(mensagem):
+        return True
     texto = _normalizar(mensagem)
     indicadores = (
         "quero",

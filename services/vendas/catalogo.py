@@ -97,6 +97,8 @@ TERMOS_NAO_PRODUTO = TERMOS_ESTETICOS | {
     "claro", "pode", "hoje", "voce", "voces", "vcs", "vc", "ver",
     "tudo", "bem", "meu", "minha", "amor", "vida", "carinho", "obrigado",
     "obrigada", "valeu", "haha", "kkk", "kkkk", "faz", "nele", "nela",
+    "pedido", "pedidos", "venda", "vendas", "fazer", "abrir", "outro",
+    "outra", "nova", "novo", "mais", "comprar", "preciso", "quero",
 }
 
 

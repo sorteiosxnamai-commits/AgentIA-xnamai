@@ -131,3 +131,32 @@ def resposta_mostrar_catalogo(
 
     linhas.append("Algum desses te interessa?")
     return "\n".join(linhas)
+
+
+def resposta_abrir_nova_venda(
+    nome_cliente: str = "",
+    produtos: list | None = None,
+) -> str:
+    """Abre nova venda após pedido fechado — não trata a frase como nome de produto."""
+    nome = nome_cliente or "Cliente"
+    itens = produtos or []
+
+    if not itens:
+        return (
+            f"Perfeito, {nome}! Vamos abrir outro pedido. "
+            "Me diz o que você procura que eu te ajudo."
+        )
+
+    linhas = [
+        f"Perfeito, {nome}! Vamos abrir outro pedido. Olha o que temos agora:"
+    ]
+    for produto in itens[:6]:
+        nome_p = produto.get("nome", "Produto")
+        preco = produto.get("preco") or produto.get("preco_tabela") or ""
+        if preco not in (None, ""):
+            linhas.append(f"• {nome_p} — R$ {preco}")
+        else:
+            linhas.append(f"• {nome_p}")
+
+    linhas.append("Qual desses você quer?")
+    return "\n".join(linhas)
