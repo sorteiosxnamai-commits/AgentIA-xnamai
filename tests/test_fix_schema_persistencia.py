@@ -70,6 +70,7 @@ def _patch_basico(monkeypatch):
     monkeypatch.setattr(api_mod, "buscar_historico", lambda *_a, **_k: [])
     monkeypatch.setattr(api_mod, "espelhar_mensagem_cliente", lambda *_a, **_k: None)
     monkeypatch.setattr(api_mod, "espelhar_mensagem_agente", lambda *_a, **_k: None)
+    monkeypatch.setattr(api_mod, "atualizar_thread_conversa", lambda *_a, **_k: True)
     monkeypatch.setattr(api_mod, "enviar_mensagem", lambda *_a, **_k: {"ok": True})
     monkeypatch.setattr(api_mod, "processar_lead_e_notificar", lambda **_k: {"notificado": False})
     monkeypatch.setattr(api_mod, "resolver_estado_venda", lambda *_a, **_k: "negociando")
@@ -118,7 +119,7 @@ def test_persistir_true_salva_msgs_e_contexto(monkeypatch):
     _patch_basico(monkeypatch)
     calls = {"user": 0, "ia": 0, "ctx": 0}
 
-    def fake_salvar(cid, tipo, msg, message_id=None):
+    def fake_salvar(cid, tipo, msg, message_id=None, **_k):
         if tipo == "cliente":
             calls["user"] += 1
         else:
@@ -218,7 +219,7 @@ def test_falha_supabase_resposta_preenchida(monkeypatch):
 # 11
 def test_webhook_ok():
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-10-fix-schema-persistencia"
+    assert api_mod.CODE_VERSION == "2026-07-10-fix-conversas-thread"
 
 
 # 12+13

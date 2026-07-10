@@ -36,10 +36,19 @@ _RETRY_ERRORS = (ReadError, ConnectError, TimeoutException, OSError)
 _SCHEMA_FLAGS: dict[str, bool | None] = {
     "message_id": None,
     "contexto_venda": None,
+    # True = tabela CONVERSAS é thread/atendimento (PulseDesk)
+    # False = tabela legada de mensagens (cliente_id/tipo/mensagem)
+    "conversas_thread": None,
 }
 
 # Sentinel no JSON historico quando a coluna contexto_venda ainda não existe
 _HIST_CTX_ROLE = "_contexto_venda"
+
+# Colunas típicas de thread PulseDesk vs mensagens do agente
+_COLS_THREAD = frozenset({
+    "contact_phone", "last_message", "external_thread_id", "canal_id", "channel",
+})
+_COLS_MENSAGENS = frozenset({"cliente_id", "tipo", "mensagem"})
 
 
 def _executar(comando, rotulo: str = "supabase"):
@@ -83,6 +92,56 @@ def erro_coluna_ausente(exc: Exception, coluna: str | None = None) -> bool:
     return False
 
 
+def conversas_e_thread() -> bool:
+    """True se CONVERSAS_TABLE é schema de atendimento/thread (não mensagens)."""
+    flag = _SCHEMA_FLAGS.get("conversas_thread")
+    if flag is not None:
+        return bool(flag)
+    try:
+        r = supabase.table(TABELA_HISTORICO).select("*").limit(1).execute()
+        cols = set((r.data[0] if r.data else {}).keys())
+        # Se não há linhas, tenta insert probe via heurística de nomes conhecidos
+        if not cols:
+            # Assume thread se a tabela se chama conversas (PulseDesk) — confirma com select de colunas via erro
+            # Fallback: tenta filtrar por contact_phone (thread) vs cliente_id (mensagens)
+            try:
+                supabase.table(TABELA_HISTORICO).select("id").eq(
+                    "contact_phone", "__probe__"
+                ).limit(1).execute()
+                _SCHEMA_FLAGS["conversas_thread"] = True
+                return True
+            except Exception as exc:
+                if erro_coluna_ausente(exc, "contact_phone"):
+                    _SCHEMA_FLAGS["conversas_thread"] = False
+                    return False
+                # Outro erro — tenta cliente_id
+                try:
+                    supabase.table(TABELA_HISTORICO).select("id").eq(
+                        "cliente_id", "__probe__"
+                    ).limit(1).execute()
+                    _SCHEMA_FLAGS["conversas_thread"] = False
+                    return False
+                except Exception as exc2:
+                    if erro_coluna_ausente(exc2, "cliente_id"):
+                        _SCHEMA_FLAGS["conversas_thread"] = True
+                        return True
+                    _SCHEMA_FLAGS["conversas_thread"] = True  # seguro: não inserir campos errados
+                    return True
+        is_thread = bool(cols & _COLS_THREAD) and not bool(cols & _COLS_MENSAGENS)
+        is_msgs = bool(cols & _COLS_MENSAGENS)
+        if is_thread or (not is_msgs and ("last_message" in cols or "contact_phone" in cols)):
+            _SCHEMA_FLAGS["conversas_thread"] = True
+            _SCHEMA_FLAGS["message_id"] = "message_id" in cols
+            return True
+        _SCHEMA_FLAGS["conversas_thread"] = False
+        _SCHEMA_FLAGS["message_id"] = "message_id" in cols
+        return False
+    except Exception:
+        # Em dúvida, trata como thread para não inserir cliente_id/tipo/mensagem
+        _SCHEMA_FLAGS["conversas_thread"] = True
+        return True
+
+
 def schema_tem_message_id() -> bool | None:
     return _SCHEMA_FLAGS.get("message_id")
 
@@ -96,6 +155,7 @@ def diagnosticar_schema_persistencia() -> dict:
     out = {
         "clientes_tem_contexto_venda": False,
         "conversas_tem_message_id": False,
+        "conversas_modo": "desconhecido",
         "clientes_cols": [],
         "conversas_cols": [],
     }
@@ -113,6 +173,20 @@ def diagnosticar_schema_persistencia() -> dict:
         out["conversas_cols"] = cols
         out["conversas_tem_message_id"] = "message_id" in cols
         _SCHEMA_FLAGS["message_id"] = out["conversas_tem_message_id"]
+        cols_set = set(cols)
+        if cols_set & _COLS_THREAD and not (cols_set & _COLS_MENSAGENS):
+            out["conversas_modo"] = "thread"
+            _SCHEMA_FLAGS["conversas_thread"] = True
+        elif cols_set & _COLS_MENSAGENS:
+            out["conversas_modo"] = "mensagens"
+            _SCHEMA_FLAGS["conversas_thread"] = False
+        else:
+            # Heurística pelo nome / colunas parciais
+            if "last_message" in cols_set or "contact_phone" in cols_set:
+                out["conversas_modo"] = "thread"
+                _SCHEMA_FLAGS["conversas_thread"] = True
+            else:
+                out["conversas_modo"] = "desconhecido"
     except Exception as exc:
         out["conversas_erro"] = type(exc).__name__
     return out
@@ -245,25 +319,244 @@ def salvar_openai_thread_id(cliente_id, thread_id):
 # HISTÓRICO (agente)
 # =========================
 
-def salvar_mensagem(cliente_id, tipo, mensagem, message_id: str | None = None):
+def _mensagens_do_historico_json(historico_raw) -> list[dict]:
+    """Extrai lista de mensagens (sem sentinel de contexto) do JSON clientes.historico."""
+    if isinstance(historico_raw, dict):
+        msgs = historico_raw.get("mensagens") or historico_raw.get("messages") or []
+        if not isinstance(msgs, list):
+            msgs = []
+        return [
+            m
+            for m in msgs
+            if isinstance(m, dict) and m.get("role") != _HIST_CTX_ROLE
+        ]
+    if isinstance(historico_raw, list):
+        return [
+            m
+            for m in historico_raw
+            if isinstance(m, dict) and m.get("role") != _HIST_CTX_ROLE
+        ]
+    return []
+
+
+def _salvar_mensagem_no_historico_cliente(
+    cliente_id: str,
+    tipo: str,
+    mensagem: str,
+    message_id: str | None = None,
+) -> dict:
+    """Grava mensagem no JSON clientes.historico (modo thread / sem tabela de msgs)."""
+    from datetime import datetime, timezone
+
+    atual = (
+        supabase.table(TABELA_CLIENTES)
+        .select("historico")
+        .eq("id", cliente_id)
+        .limit(1)
+        .execute()
+    )
+    hist_raw = (atual.data[0].get("historico") if atual.data else None) or []
+    msgs = _mensagens_do_historico_json(hist_raw)
+    ctx = extrair_contexto_do_historico_json(hist_raw)
+
+    mid = (message_id or "").strip()
+    # Idempotência: message_id já no histórico
+    if mid:
+        for m in msgs:
+            if str(m.get("message_id") or "") == mid:
+                return {"ok": True, "duplicado": True, "modo": "historico_json"}
+
+    entry = {
+        "role": "user" if tipo == "cliente" else "assistant",
+        "content": mensagem,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if mid:
+        entry["message_id"] = mid
+    msgs.append(entry)
+
+    # Limita tamanho do JSON (últimas 80 mensagens)
+    if len(msgs) > 80:
+        msgs = msgs[-80:]
+
+    payload = anexar_contexto_no_historico_json(msgs, ctx) if (
+        ctx and _SCHEMA_FLAGS.get("contexto_venda") is not True
+    ) else msgs
+
+    # Se há coluna contexto_venda, não precisa do sentinel
+    if _SCHEMA_FLAGS.get("contexto_venda") is True:
+        payload = msgs
+
+    supabase.table(TABELA_CLIENTES).update({"historico": payload}).eq(
+        "id", cliente_id
+    ).execute()
+    return {"ok": True, "duplicado": False, "modo": "historico_json"}
+
+
+def atualizar_thread_conversa(
+    telefone: str,
+    nome: str,
+    mensagem: str,
+    *,
+    message_id: str | None = None,
+    inbound: bool = True,
+) -> bool:
+    """Atualiza thread PulseDesk em conversas (colunas existentes apenas). Opcional."""
+    from datetime import datetime, timezone
+
+    if not conversas_e_thread():
+        return True
+    tel = normalizar_telefone(telefone)
+    if not tel or not mensagem:
+        return False
+    agora = datetime.now(timezone.utc).isoformat()
+    try:
+        # Busca thread por telefone
+        row = None
+        for campo in ("contact_phone", "external_thread_id"):
+            try:
+                r = (
+                    supabase.table(TABELA_HISTORICO)
+                    .select("id,unread_count")
+                    .eq(campo, tel)
+                    .limit(1)
+                    .execute()
+                )
+                if r.data:
+                    row = r.data[0]
+                    break
+            except Exception as exc:
+                if erro_coluna_ausente(exc, campo):
+                    continue
+                raise
+
+        patch = {
+            "last_message": (mensagem or "")[:500],
+            "last_message_at": agora,
+            "status": "active",
+            "updated_at": agora,
+        }
+        # Só inclui colunas seguras
+        if nome:
+            patch["customer_name"] = nome
+        mid = (message_id or "").strip()
+        if mid and _SCHEMA_FLAGS.get("message_id") is not False:
+            patch["message_id"] = mid
+
+        if row:
+            unread = int(row.get("unread_count") or 0)
+            if inbound:
+                unread += 1
+            patch["unread_count"] = unread
+            try:
+                supabase.table(TABELA_HISTORICO).update(patch).eq(
+                    "id", row["id"]
+                ).execute()
+            except Exception as exc:
+                # Remove message_id se coluna sumiu
+                if "message_id" in patch and erro_coluna_ausente(exc, "message_id"):
+                    _SCHEMA_FLAGS["message_id"] = False
+                    patch.pop("message_id", None)
+                    supabase.table(TABELA_HISTORICO).update(patch).eq(
+                        "id", row["id"]
+                    ).execute()
+                else:
+                    raise
+            return True
+
+        # Cria thread mínima
+        insert = {
+            "contact_phone": tel,
+            "external_thread_id": tel,
+            "customer_name": nome or f"WhatsApp {tel[-4:]}",
+            "channel": "whatsapp",
+            "status": "active",
+            "last_message": (mensagem or "")[:500],
+            "last_message_at": agora,
+            "unread_count": 1 if inbound else 0,
+        }
+        if mid and _SCHEMA_FLAGS.get("message_id") is not False:
+            insert["message_id"] = mid
+        # canal_id opcional
+        canal = os.getenv("PULSEDESK_AGENT_CANAL_ID", "").strip()
+        if canal:
+            insert["canal_id"] = canal
+        try:
+            supabase.table(TABELA_HISTORICO).insert(insert).execute()
+        except Exception as exc:
+            # Remove campos opcionais que não existem
+            for campo in ("message_id", "canal_id", "external_thread_id", "unread_count"):
+                if campo in insert and erro_coluna_ausente(exc, campo):
+                    insert.pop(campo, None)
+                    if campo == "message_id":
+                        _SCHEMA_FLAGS["message_id"] = False
+            supabase.table(TABELA_HISTORICO).insert(insert).execute()
+        return True
+    except Exception as exc:
+        from services.webhook_guard import log_seguro
+
+        log_seguro(
+            "chat_aviso_persistencia",
+            etapa="atualizar_thread",
+            erro=type(exc).__name__,
+            detalhe=str(exc)[:120],
+        )
+        return False
+
+
+def salvar_mensagem(
+    cliente_id,
+    tipo,
+    mensagem,
+    message_id: str | None = None,
+    *,
+    telefone: str = "",
+    nome: str = "",
+):
+    """Persiste mensagem do turno.
+
+    - Se conversas é thread PulseDesk: grava em clientes.historico (essencial).
+    - Se conversas é tabela de mensagens legada: insert na tabela.
+    """
     from services.webhook_guard import log_seguro
 
+    mid = (message_id or "").strip()
+    log_seguro(
+        "salvar_mensagem_inicio",
+        tipo=tipo,
+        message_id=mid or "-",
+        chars=len(mensagem or ""),
+        modo="thread" if conversas_e_thread() else "mensagens",
+    )
+
+    # Modo thread: NÃO inserir cliente_id/tipo/mensagem em conversas
+    if conversas_e_thread():
+        try:
+            result = _salvar_mensagem_no_historico_cliente(
+                str(cliente_id), tipo, mensagem, mid or None
+            )
+            # Thread update é opcional — feito pelo caller se quiser
+            return result
+        except Exception as exc:
+            log_seguro(
+                "salvar_mensagem_erro",
+                tipo=tipo,
+                message_id=mid or "-",
+                erro=type(exc).__name__,
+                detalhe=str(exc)[:120],
+                modo="historico_json",
+            )
+            raise
+
+    # Modo legado: insert em tabela de mensagens
     payload = {
         "cliente_id": cliente_id,
         "tipo": tipo,
         "mensagem": mensagem,
     }
-    mid = (message_id or "").strip()
-    # Só envia message_id se a coluna existir (evita PGRST204)
     if mid and _SCHEMA_FLAGS.get("message_id") is not False:
         payload["message_id"] = mid
 
-    log_seguro(
-        "salvar_mensagem_inicio",
-        tipo=tipo,
-        message_id=mid if "message_id" in payload else "-",
-        chars=len(mensagem or ""),
-    )
     try:
         return (
             supabase.table(TABELA_HISTORICO)
@@ -279,37 +572,54 @@ def salvar_mensagem(cliente_id, tipo, mensagem, message_id: str | None = None):
             detalhe=str(exc)[:120],
         )
         text = _texto_erro(exc)
-        # Índice único em message_id — trata como duplicata (idempotente)
         if mid and ("duplicate" in text or "unique" in text or "23505" in text):
             print("AVISO: message_id já existe — insert ignorado")
             return None
-        # Coluna message_id ainda não migrada — grava sem o campo
         if "message_id" in payload and erro_coluna_ausente(exc, "message_id"):
             _SCHEMA_FLAGS["message_id"] = False
             payload.pop("message_id", None)
-            try:
-                return (
-                    supabase.table(TABELA_HISTORICO)
-                    .insert(payload)
-                    .execute()
-                )
-            except Exception as exc2:
-                log_seguro(
-                    "salvar_mensagem_erro",
-                    tipo=tipo,
-                    message_id="-",
-                    erro=type(exc2).__name__,
-                    detalhe=str(exc2)[:120],
-                )
-                raise
+            return (
+                supabase.table(TABELA_HISTORICO)
+                .insert(payload)
+                .execute()
+            )
+        # Se insert falhou por schema de thread detectado tarde
+        if erro_coluna_ausente(exc, "cliente_id") or erro_coluna_ausente(exc, "tipo"):
+            _SCHEMA_FLAGS["conversas_thread"] = True
+            return _salvar_mensagem_no_historico_cliente(
+                str(cliente_id), tipo, mensagem, mid or None
+            )
         raise
 
 
 def mensagem_ja_existe(message_id: str) -> bool:
-    """Fonte final de idempotência: message_id já gravado em conversas."""
+    """Idempotência: message_id na thread, no historico JSON ou na tabela de msgs."""
     mid = (message_id or "").strip()
     if not mid:
         return False
+
+    # Modo thread: checa coluna message_id da thread e/ou historico dos clientes
+    if conversas_e_thread():
+        if _SCHEMA_FLAGS.get("message_id") is not False:
+            try:
+                r = (
+                    supabase.table(TABELA_HISTORICO)
+                    .select("id")
+                    .eq("message_id", mid)
+                    .limit(1)
+                    .execute()
+                )
+                _SCHEMA_FLAGS["message_id"] = True
+                if r.data:
+                    return True
+            except Exception as exc:
+                if erro_coluna_ausente(exc, "message_id") or "pgrst" in _texto_erro(exc):
+                    _SCHEMA_FLAGS["message_id"] = False
+                else:
+                    raise
+        # Fallback: varre historico recente (limitado) — opcional, não bloqueia
+        return False
+
     if _SCHEMA_FLAGS.get("message_id") is False:
         return False
     try:
@@ -326,7 +636,6 @@ def mensagem_ja_existe(message_id: str) -> bool:
         _SCHEMA_FLAGS["message_id"] = True
         return bool(resultado.data)
     except Exception as exc:
-        # Coluna pode não existir ainda — não bloqueia o fluxo
         if erro_coluna_ausente(exc, "message_id") or "pgrst" in _texto_erro(exc):
             _SCHEMA_FLAGS["message_id"] = False
             print("AVISO: checagem message_id indisponível:", type(exc).__name__)
@@ -335,6 +644,36 @@ def mensagem_ja_existe(message_id: str) -> bool:
 
 
 def buscar_historico(cliente_id, limit: int | None = None):
+    """Retorna lista [{tipo, mensagem, criado_em}] para o fluxo do agente."""
+    # Modo thread / historico JSON em clientes
+    if conversas_e_thread():
+        try:
+            r = (
+                supabase.table(TABELA_CLIENTES)
+                .select("historico")
+                .eq("id", cliente_id)
+                .limit(1)
+                .execute()
+            )
+            hist_raw = (r.data[0].get("historico") if r.data else None) or []
+            msgs = _mensagens_do_historico_json(hist_raw)
+            out = []
+            for m in msgs:
+                role = (m.get("role") or "").lower()
+                tipo = "cliente" if role in ("user", "cliente") else "ia"
+                out.append({
+                    "tipo": tipo,
+                    "mensagem": m.get("content") or m.get("mensagem") or "",
+                    "criado_em": m.get("timestamp") or m.get("criado_em") or "",
+                    "message_id": m.get("message_id") or "",
+                })
+            if limit is not None and limit > 0 and len(out) > limit:
+                return out[-limit:]
+            return out
+        except Exception as exc:
+            print("AVISO buscar_historico (json):", type(exc).__name__, str(exc)[:120])
+            return []
+
     query = (
         supabase.table(TABELA_HISTORICO)
         .select("*")
@@ -349,7 +688,32 @@ def buscar_historico(cliente_id, limit: int | None = None):
 
 
 def atualizar_historico_json(cliente_id, contexto_extra: dict | None = None):
-    """Atualiza clientes.historico; preserva contexto embutido se coluna ausente."""
+    """Sincroniza clientes.historico.
+
+    Em modo thread o histórico já é gravado por salvar_mensagem — no-op seguro.
+    Em modo legado, reconstrói a partir da tabela de mensagens.
+    """
+    if conversas_e_thread():
+        # Já persistido em clientes.historico; opcionalmente anexa contexto
+        if contexto_extra and _SCHEMA_FLAGS.get("contexto_venda") is not True:
+            try:
+                atual = (
+                    supabase.table(TABELA_CLIENTES)
+                    .select("historico")
+                    .eq("id", cliente_id)
+                    .limit(1)
+                    .execute()
+                )
+                hist_raw = (atual.data[0].get("historico") if atual.data else None) or []
+                msgs = _mensagens_do_historico_json(hist_raw)
+                novo = anexar_contexto_no_historico_json(msgs, contexto_extra)
+                supabase.table(TABELA_CLIENTES).update({"historico": novo}).eq(
+                    "id", cliente_id
+                ).execute()
+            except Exception:
+                pass
+        return {"ok": True, "modo": "noop_thread"}
+
     historico = buscar_historico(cliente_id)
 
     historico_json = []
@@ -360,7 +724,6 @@ def atualizar_historico_json(cliente_id, contexto_extra: dict | None = None):
             "timestamp": str(msg.get("criado_em") or ""),
         })
 
-    # Preserva/atualiza contexto no JSON quando não há coluna contexto_venda
     ctx = contexto_extra
     if ctx is None and _SCHEMA_FLAGS.get("contexto_venda") is False:
         try:

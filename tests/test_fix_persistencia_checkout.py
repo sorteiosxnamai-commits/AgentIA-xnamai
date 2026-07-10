@@ -75,6 +75,7 @@ def _patch_fluxo_basico(monkeypatch, *, produtos=None):
     monkeypatch.setattr(api_mod, "buscar_historico", lambda *_a, **_k: [])
     monkeypatch.setattr(api_mod, "espelhar_mensagem_cliente", lambda *_a, **_k: None)
     monkeypatch.setattr(api_mod, "espelhar_mensagem_agente", lambda *_a, **_k: None)
+    monkeypatch.setattr(api_mod, "atualizar_thread_conversa", lambda *_a, **_k: True)
     monkeypatch.setattr(api_mod, "enviar_mensagem", lambda *_a, **_k: {"ok": True})
     monkeypatch.setattr(
         api_mod,
@@ -372,7 +373,7 @@ def test_lock_liberado_mesmo_com_exception():
 def test_webhook_continua():
     assert hasattr(api_mod, "receber_webhook")
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-10-fix-schema-persistencia"
+    assert api_mod.CODE_VERSION == "2026-07-10-fix-conversas-thread"
 
 
 def test_dry_run_nao_chama_bridge_cliente(monkeypatch):
