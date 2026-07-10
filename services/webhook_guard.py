@@ -1,0 +1,81 @@
+"""Idempotência de webhook e lock por telefone (concorrência)."""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections import defaultdict
+
+from services.config_tabelas import mascarar_telefone, normalizar_telefone
+from services.webhook_service import (
+    _IDS_PROCESSADOS,
+    _limpar_ids_antigos,
+    extrair_id_mensagem,
+)
+
+# msg_id -> "processing" | "done"
+_IDS_ESTADO: dict[str, str] = {}
+_IDS_LOCK = threading.Lock()
+
+# telefone -> lock
+_PHONE_LOCKS: dict[str, threading.Lock] = defaultdict(threading.Lock)
+_PHONE_META_LOCK = threading.Lock()
+
+
+def reclamar_mensagem(data: dict) -> tuple[bool, str]:
+    """
+    Tenta 'claim' do ID da mensagem antes de processar.
+    Retorna (ok, motivo). ok=False => duplicado ou já em processamento.
+    """
+    evento = data.get("data") or {}
+    msg_id = extrair_id_mensagem(data, evento)
+    if not msg_id:
+        return True, "sem_id"
+
+    with _IDS_LOCK:
+        _limpar_ids_antigos()
+        estado = _IDS_ESTADO.get(msg_id)
+        if estado == "done" or msg_id in _IDS_PROCESSADOS:
+            return False, f"duplicado id={msg_id}"
+        if estado == "processing":
+            return False, f"em_processamento id={msg_id}"
+        _IDS_ESTADO[msg_id] = "processing"
+        # Também marca no set legado para evento_deve_ser_ignorado
+        _IDS_PROCESSADOS[msg_id] = time.time()
+    return True, f"claim id={msg_id}"
+
+
+def finalizar_mensagem(data: dict, sucesso: bool = True) -> None:
+    evento = data.get("data") or {}
+    msg_id = extrair_id_mensagem(data, evento)
+    if not msg_id:
+        return
+    with _IDS_LOCK:
+        if sucesso:
+            _IDS_ESTADO[msg_id] = "done"
+            _IDS_PROCESSADOS[msg_id] = time.time()
+        else:
+            # Libera para retry em caso de falha dura
+            _IDS_ESTADO.pop(msg_id, None)
+            _IDS_PROCESSADOS.pop(msg_id, None)
+
+
+def lock_telefone(telefone: str) -> threading.Lock:
+    tel = normalizar_telefone(telefone)
+    with _PHONE_META_LOCK:
+        return _PHONE_LOCKS[tel]
+
+
+def log_seguro(evento: str, **campos) -> None:
+    partes = [f"EVT={evento}"]
+    for k, v in campos.items():
+        if k in ("token", "key", "api_key", "authorization"):
+            continue
+        if k == "telefone":
+            partes.append(f"tel={mascarar_telefone(str(v))}")
+        else:
+            val = str(v)
+            if len(val) > 160:
+                val = val[:160] + "…"
+            partes.append(f"{k}={val}")
+    print(" | ".join(partes))

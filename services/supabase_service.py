@@ -7,6 +7,7 @@ from httpx import ConnectError, ReadError, TimeoutException
 from postgrest.exceptions import APIError
 
 from database.supabase import supabase
+from services.config_tabelas import CLIENTES_TABLE, CONVERSAS_TABLE, normalizar_telefone
 
 load_dotenv(override=True)
 
@@ -21,8 +22,11 @@ def _leads_indisponivel(erro: Exception) -> bool:
                 return True
     return "leads" in str(erro).lower()
 
-TABELA_CLIENTES = os.getenv("AGENT_CLIENTES_TABLE", "agent_clientes")
-TABELA_HISTORICO = os.getenv("AGENT_HISTORICO_TABLE", "agent_historico")
+# Tabelas explícitas (CLIENTES_TABLE / CONVERSAS_TABLE) — sem fallback silencioso
+TABELA_CLIENTES = CLIENTES_TABLE
+TABELA_HISTORICO = CONVERSAS_TABLE
+# Alias legado (não usar em código novo)
+TABELA_CONVERSAS = CONVERSAS_TABLE
 
 _RETRIES = 3
 _RETRY_ERRORS = (ReadError, ConnectError, TimeoutException, OSError)
@@ -64,11 +68,15 @@ def _normalizar_produto(row: dict) -> dict:
 # =========================
 
 def buscar_cliente(telefone):
+    tel = normalizar_telefone(telefone)
+    if not tel:
+        return None
+
     resultado = _executar(
         lambda: (
             supabase.table(TABELA_CLIENTES)
             .select("*")
-            .eq("telefone", telefone)
+            .eq("telefone", tel)
             .execute()
         ),
         "buscar_cliente",
@@ -81,7 +89,8 @@ def buscar_cliente(telefone):
 
 
 def criar_cliente(telefone, nome=""):
-    dados = {"telefone": telefone}
+    tel = normalizar_telefone(telefone)
+    dados = {"telefone": tel}
     if nome:
         dados["nome"] = nome
 

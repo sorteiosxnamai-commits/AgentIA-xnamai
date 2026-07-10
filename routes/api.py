@@ -48,7 +48,6 @@ from services.conversa_service import (
     extrair_nome_do_historico,
     extrair_preferencia_entrega,
     historico_desde_ultimo_fechamento,
-    historico_recente,
     ia_ja_pediu_endereco,
     negociacao_nova_apos_fechamento,
     pedido_ja_encerrado,
@@ -59,8 +58,24 @@ from services.conversa_service import (
     resposta_pos_fechamento,
     _mensagem_tem_confirmacao,
 )
+from services.config_tabelas import (
+    normalizar_telefone,
+    status_validacao,
+    tabelas_configuradas,
+)
+from services.historico_service import (
+    montar_bloco_contexto_openai,
+    registrar_perguntas_respondidas,
+    sanitizar_resposta_anti_repeticao,
+)
+from services.webhook_guard import (
+    finalizar_mensagem,
+    lock_telefone,
+    log_seguro,
+    reclamar_mensagem,
+)
 from services.webhook_normalizer import normalizar_webhook
-from services.webhook_service import evento_deve_ser_ignorado, marcar_evento_processado
+from services.webhook_service import evento_deve_ser_ignorado, extrair_id_mensagem
 from services.produtos_service import (
     buscar_produtos_para_atendimento,
     eh_saudacao,
@@ -93,7 +108,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-criterio-categoria"
+CODE_VERSION = "2026-07-10-etapa2-historico"
 
 router = APIRouter()
 
@@ -120,6 +135,10 @@ def _bloqueio_diagnostico(token: str = "") -> dict | None:
 
 
 def processar_mensagem(data: dict, dry_run: bool = False):
+    inicio = __import__("time").time()
+    claim_ok = False
+    numero = ""
+    msg_id = ""
 
     try:
 
@@ -129,51 +148,101 @@ def processar_mensagem(data: dict, dry_run: bool = False):
 
         ignorar, motivo = evento_deve_ser_ignorado(data)
         if ignorar:
-            print("WEBHOOK IGNORADO:", motivo)
+            log_seguro("webhook_ignorado", motivo=motivo)
             return None
 
-        evento = data["data"]
+        ok_claim, motivo_claim = reclamar_mensagem(data)
+        if not ok_claim:
+            log_seguro("duplicidade_detectada", motivo=motivo_claim)
+            return None
+        claim_ok = True
 
-        if evento.get("fromMe"):
-            print("MENSAGEM PROPRIA IGNORADA")
+        evento = data["data"]
+        msg_id = extrair_id_mensagem(data, evento)
+
+        # Eco do bot: campos reais do payload (fromMe), não só texto
+        if evento.get("fromMe") is True:
+            log_seguro("eco_bot_ignorado", message_id=msg_id or "-")
+            finalizar_mensagem(data, sucesso=True)
             return None
 
         numero_raw = evento.get("from", "")
         if "@g.us" in numero_raw:
-            print("MENSAGEM DE GRUPO IGNORADA:", numero_raw)
+            log_seguro("grupo_ignorado", message_id=msg_id or "-")
+            finalizar_mensagem(data, sucesso=True)
             return None
 
-        numero = numero_raw.split("@")[0].replace("+", "").strip()
-        mensagem = evento.get("body")
+        numero = normalizar_telefone(numero_raw.split("@")[0])
+        mensagem = (evento.get("body") or "").strip()
         nome_cliente = evento.get("pushname") or ""
 
         if evento.get("type") and evento.get("type") != "chat":
-            print("TIPO IGNORADO:", evento.get("type"))
+            log_seguro("tipo_ignorado", tipo=evento.get("type"), message_id=msg_id or "-")
+            finalizar_mensagem(data, sucesso=True)
             return None
 
         if not numero or not mensagem:
-            print("SEM NUMERO OU MENSAGEM:", evento)
+            log_seguro(
+                "mensagem_vazia_ou_sem_telefone",
+                telefone=numero or "-",
+                message_id=msg_id or "-",
+            )
+            finalizar_mensagem(data, sucesso=True)
             return None
 
-        print("Número:", numero)
-        print("Mensagem:", mensagem)
+        # Concorrência: um processamento por telefone (preserva ordem)
+        with lock_telefone(numero):
+            return _processar_mensagem_locked(
+                data=data,
+                dry_run=dry_run,
+                numero=numero,
+                mensagem=mensagem,
+                nome_cliente=nome_cliente,
+                msg_id=msg_id,
+                inicio=inicio,
+            )
+
+    except Exception as e:
+        print("ERRO:")
+        print(str(e))
+        traceback.print_exc()
+        if claim_ok:
+            finalizar_mensagem(data, sucesso=False)
+        return None
+
+
+def _processar_mensagem_locked(
+    *,
+    data: dict,
+    dry_run: bool,
+    numero: str,
+    mensagem: str,
+    nome_cliente: str,
+    msg_id: str,
+    inicio: float,
+):
+    try:
+        log_seguro(
+            "processamento_inicio",
+            telefone=numero,
+            message_id=msg_id or "-",
+            etapa="inicio",
+        )
 
         # =========================
-        # CLIENTE
+        # CLIENTE (isolado por telefone normalizado)
         # =========================
 
         cliente = buscar_cliente(numero)
 
         if not cliente:
             cliente = criar_cliente(numero, nome=nome_cliente)
-            print("CLIENTE NOVO CADASTRADO:", numero)
+            log_seguro("cliente_novo", telefone=numero, message_id=msg_id or "-")
         elif nome_cliente and cliente.get("nome") != nome_cliente:
             atualizar_cliente(cliente_id=cliente["id"], nome=nome_cliente)
             cliente["nome"] = nome_cliente
 
         cliente_id = cliente["id"]
-
-        print("CLIENTE ID:", cliente_id)
 
         # =========================
         # SALVA MENSAGEM
@@ -205,6 +274,13 @@ def processar_mensagem(data: dict, dry_run: bool = False):
                 historico_texto += f"IA: {msg['mensagem']}\n"
                 ultima_resposta_ia = msg["mensagem"]
 
+        log_seguro(
+            "historico_carregado",
+            telefone=numero,
+            message_id=msg_id or "-",
+            linhas=historico_texto.count("\n"),
+        )
+
         # =========================
         # PRODUTOS
         # =========================
@@ -213,7 +289,12 @@ def processar_mensagem(data: dict, dry_run: bool = False):
         estado_venda = resolver_estado_venda(
             historico_texto, mensagem, ultima_resposta_ia
         )
-        print("ESTADO VENDA:", estado_venda)
+        log_seguro(
+            "estado_venda",
+            telefone=numero,
+            message_id=msg_id or "-",
+            etapa=estado_venda,
+        )
 
         pedido_encerrado = estado_venda == "pos_venda"
         nova_venda_explicita = cliente_quer_nova_venda(mensagem) or (
@@ -328,9 +409,27 @@ def processar_mensagem(data: dict, dry_run: bool = False):
             tom=detectar_tom(mensagem, historico_venda),
             intencao=detectar_modo_intencao(mensagem, historico_venda),
             nova_venda=False,
+            nome_cliente=nome_conversa or nome_cliente,
         )
+        sessao = registrar_perguntas_respondidas(sessao, mensagem)
         contexto_venda.memoria = sessao
         persistir_sessao(str(cliente_id), sessao)
+
+        historico_para_ia = montar_bloco_contexto_openai(
+            historico_texto=historico_venda,
+            mensagem_atual=mensagem,
+            contexto=sessao,
+            info_cliente=cliente,
+            max_linhas=16,
+        )
+        log_seguro(
+            "contexto_extraido",
+            telefone=numero,
+            message_id=msg_id or "-",
+            resumo=sessao.get("resumo_curto") or "-",
+            estagio=sessao.get("estagio_conversa") or "-",
+            cat=sessao.get("categoria_interesse") or "-",
+        )
 
         # MCP: tools necessárias → JSON → prompt (não altera fechamento)
         mcp_bloco = ""
@@ -555,7 +654,7 @@ def processar_mensagem(data: dict, dry_run: bool = False):
             resposta_ia = perguntar_ia(
                 mensagem=mensagem,
                 catalogo=catalogo,
-                historico_texto=historico_recente(historico_venda, max_linhas=12),
+                historico_texto=historico_para_ia,
                 nome_cliente=nome_conversa,
                 ultima_resposta_ia=ultima_para_ia,
                 foto_automatica=bool(com_foto and pediu_foto),
@@ -597,13 +696,27 @@ def processar_mensagem(data: dict, dry_run: bool = False):
             resposta_ia = perguntar_ia(
                 mensagem=mensagem,
                 catalogo=catalogo,
-                historico_texto=historico_recente(historico_venda, max_linhas=12),
+                historico_texto=historico_para_ia,
                 nome_cliente=nome_conversa,
                 ultima_resposta_ia=ultima_para_ia,
                 foto_automatica=bool(com_foto and pediu_foto),
                 contexto_venda=contexto_venda,
                 memoria_sessao=sessao,
                 mcp_enrichment=mcp_bloco,
+            )
+
+        resposta_ia, motivos_evitados = sanitizar_resposta_anti_repeticao(
+            resposta_ia,
+            historico_venda,
+            sessao,
+            mensagem,
+        )
+        if motivos_evitados:
+            log_seguro(
+                "pergunta_evitada",
+                telefone=numero,
+                message_id=msg_id or "-",
+                motivos=",".join(motivos_evitados),
             )
 
         print("RESPOSTA IA:")
@@ -623,13 +736,28 @@ def processar_mensagem(data: dict, dry_run: bool = False):
 
         atualizar_historico_json(cliente_id)
 
+        # Atualiza última pergunta do agente na sessão
+        from services.historico_service import extrair_ultima_pergunta_ia
+
+        sessao["ultima_pergunta_agente"] = extrair_ultima_pergunta_ia(
+            historico_venda + f"\nIA: {resposta_ia}\n"
+        ) or sessao.get("ultima_pergunta_agente") or ""
+        persistir_sessao(str(cliente_id), sessao)
+
         # =========================
         # ENVIA WHATSAPP
         # =========================
 
         if dry_run:
             print("DRY_RUN: WhatsApp não enviado")
-            marcar_evento_processado(data)
+            finalizar_mensagem(data, sucesso=True)
+            log_seguro(
+                "processamento_fim",
+                telefone=numero,
+                message_id=msg_id or "-",
+                etapa="dry_run",
+                ms=int((__import__("time").time() - inicio) * 1000),
+            )
             return resposta_ia
 
         envio = enviar_mensagem(
@@ -647,14 +775,21 @@ def processar_mensagem(data: dict, dry_run: bool = False):
                 print(f"FOTOS ENVIADAS: {fotos_enviadas}")
 
         print("PROCESSAMENTO CONCLUIDO")
-        marcar_evento_processado(data)
+        finalizar_mensagem(data, sucesso=True)
+        log_seguro(
+            "processamento_fim",
+            telefone=numero,
+            message_id=msg_id or "-",
+            etapa=sessao.get("estagio_conversa") or "fim",
+            ms=int((__import__("time").time() - inicio) * 1000),
+        )
         return resposta_ia
 
     except Exception as e:
-
         print("ERRO:")
         print(str(e))
         traceback.print_exc()
+        finalizar_mensagem(data, sucesso=False)
         return None
 
 
@@ -698,7 +833,9 @@ async def chat_teste(payload: dict):
     Teste local do agente sem enviar WhatsApp.
     Body: {"telefone": "5543999999999", "mensagem": "tem mais opções?", "nome": "Arthur"}
     """
-    telefone = str(payload.get("telefone") or payload.get("phone") or "").strip()
+    telefone = normalizar_telefone(
+        str(payload.get("telefone") or payload.get("phone") or "")
+    )
     mensagem = str(payload.get("mensagem") or payload.get("message") or "").strip()
     nome = str(payload.get("nome") or payload.get("name") or "Cliente").strip()
 
@@ -718,7 +855,7 @@ async def chat_teste(payload: dict):
             "pushname": nome,
             "fromMe": False,
             "type": "chat",
-            "id": f"chat-{telefone}-{abs(hash(mensagem)) % 10_000_000}",
+            "id": f"chat-{telefone}-{int(__import__('time').time()*1000)}-{abs(hash(mensagem)) % 10_000_000}",
             "time": __import__("time").time(),
         },
     }
@@ -756,6 +893,8 @@ async def status():
         "pulsedesk_bridge": os.getenv("PULSEDESK_BRIDGE_ENABLED", "true"),
         "mcp_enabled": os.getenv("MCP_ENABLED", "true"),
         "mcp_server_enabled": os.getenv("MCP_SERVER_ENABLED", "false"),
+        "tabelas": tabelas_configuradas(),
+        "tabelas_validacao": status_validacao(),
     }
 
 

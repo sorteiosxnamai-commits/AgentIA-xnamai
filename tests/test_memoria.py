@@ -77,6 +77,7 @@ def test_prompt_tem_anti_injection_e_delimitador():
     assert "MEMÓRIA ESTRUTURADA" in entrada
     assert "Headset Gamer" in entrada
     assert "ignore as regras" in entrada
+    assert "CONTEXTO / HISTÓRICO ÚTIL" in entrada or "HISTÓRICO" in entrada
 
 
 def test_instrucoes_incluem_briefing():

@@ -17,6 +17,18 @@ SESSAO_PADRAO: dict[str, Any] = {
     "tom": "neutro",
     "fatos": [],
     "resumo_curto": "",
+    # Etapa 2 — contexto estruturado
+    "nome_cliente": "",
+    "categoria_interesse": "",
+    "produto_mencionado": "",
+    "faixa_preco": "",
+    "orcamento": None,
+    "marca_preferida": "",
+    "caracteristicas": [],
+    "ultima_pergunta_agente": "",
+    "perguntas_respondidas": [],
+    "estagio_conversa": "abertura",
+    "ultima_recomendacao": "",
 }
 
 # Cache em processo (fallback se coluna contexto_venda não existir no Supabase)
@@ -83,6 +95,7 @@ def atualizar_sessao_turno(
     tom: str | None = None,
     intencao: str | None = None,
     nova_venda: bool = False,
+    nome_cliente: str = "",
 ) -> dict[str, Any]:
     """Atualiza memória com extractors existentes + catálogo do turno."""
     from services.conversa_service import (
@@ -90,17 +103,24 @@ def atualizar_sessao_turno(
         _extrair_preco_historico,
         extrair_pagamento,
     )
+    from services.historico_service import extrair_ultima_pergunta_ia
     from services.xnamai_script import extrair_forma_envio, extrair_preferencia_nf
 
     out = deepcopy(sessao) if sessao else sessao_vazia()
     if nova_venda:
         out = sessao_vazia()
 
+    if nome_cliente:
+        out["nome_cliente"] = nome_cliente.split()[0]
+
     nome_oferta, preco_oferta = _extrair_oferta_ia(historico_texto or "")
     if produtos:
         p0 = produtos[0] or {}
         if p0.get("nome"):
             out["produto_ativo"] = str(p0["nome"])
+            out["produto_mencionado"] = str(p0["nome"])
+            if p0.get("categoria"):
+                out["categoria_interesse"] = str(p0["categoria"])
             bruto = p0.get("preco") if p0.get("preco") not in (None, "") else p0.get("preco_tabela")
             try:
                 out["preco_cotado"] = float(bruto) if bruto not in (None, "") else out.get("preco_cotado")
@@ -109,6 +129,7 @@ def atualizar_sessao_turno(
             _adicionar_fato(out, f"Produto em discussão: {p0['nome']}")
     elif nome_oferta:
         out["produto_ativo"] = nome_oferta
+        out["produto_mencionado"] = nome_oferta
         if preco_oferta is not None:
             out["preco_cotado"] = preco_oferta
         _adicionar_fato(out, f"Oferta ativa: {nome_oferta}")
@@ -117,6 +138,49 @@ def atualizar_sessao_turno(
         preco_h = _extrair_preco_historico(historico_texto or "")
         if preco_h is not None:
             out["preco_cotado"] = preco_h
+
+    # Orçamento / faixa de preço na mensagem do cliente
+    msg_n = (mensagem or "").lower()
+    m_orc = re.search(
+        r"(?:orcamento|orçamento|ate|até|faixa|maximo|máximo).{0,24}?r?\$?\s*([\d.,]{2,})",
+        msg_n,
+    )
+    if not m_orc:
+        m_orc = re.search(r"r\$\s*([\d.,]{2,})", msg_n)
+    if m_orc:
+        try:
+            valor = float(m_orc.group(1).replace(".", "").replace(",", "."))
+            if valor > 20:
+                out["orcamento"] = valor
+                out["faixa_preco"] = f"até R$ {valor:.2f}".replace(".", ",")
+                _adicionar_fato(out, f"Orçamento: {out['faixa_preco']}")
+        except ValueError:
+            pass
+
+    # Marca preferida (só se citada)
+    for marca in ("hmaston", "lenovo", "jbl", "logitech", "samsung", "apple", "kimaster", "knup"):
+        if marca in msg_n:
+            out["marca_preferida"] = marca
+            _adicionar_fato(out, f"Marca: {marca}")
+            break
+
+    # Categoria por palavras-chave na mensagem
+    cats = {
+        "headset": "headset",
+        "fone": "fone",
+        "ssd": "armazenamento",
+        "hd": "armazenamento",
+        "cabo": "cabo",
+        "hdmi": "cabo",
+        "mouse": "mouse",
+        "monitor": "monitor",
+        "carregador": "carregador",
+        "celular": "celular",
+    }
+    for chave, cat in cats.items():
+        if re.search(rf"\b{chave}\b", msg_n):
+            out["categoria_interesse"] = cat
+            break
 
     nf = extrair_preferencia_nf(historico_texto or "", mensagem)
     if nf:
@@ -138,14 +202,39 @@ def atualizar_sessao_turno(
     if intencao:
         out["intencao"] = intencao
 
+    ultima_perg = extrair_ultima_pergunta_ia(historico_texto or "")
+    if ultima_perg:
+        out["ultima_pergunta_agente"] = ultima_perg
+
+    # Estágio simples
+    if out.get("pagamento") and out.get("envio"):
+        out["estagio_conversa"] = "fechamento"
+    elif out.get("produto_ativo") or out.get("produto_mencionado"):
+        out["estagio_conversa"] = "negociacao"
+    elif out.get("categoria_interesse"):
+        out["estagio_conversa"] = "descoberta"
+    else:
+        out["estagio_conversa"] = "abertura"
+
+    if out.get("produto_ativo"):
+        out["ultima_recomendacao"] = str(out["produto_ativo"])
+
     # Resumo curto (1 linha) para o prompt
     partes = []
+    if out.get("nome_cliente"):
+        partes.append(f"nome={out['nome_cliente']}")
+    if out.get("categoria_interesse"):
+        partes.append(f"cat={out['categoria_interesse']}")
     if out.get("produto_ativo"):
         preco = out.get("preco_cotado")
         if preco is not None:
             partes.append(f"{out['produto_ativo']} (R$ {preco})")
         else:
             partes.append(str(out["produto_ativo"]))
+    if out.get("faixa_preco"):
+        partes.append(f"orc={out['faixa_preco']}")
+    if out.get("marca_preferida"):
+        partes.append(f"marca={out['marca_preferida']}")
     if out.get("nf"):
         partes.append(f"NF={out['nf']}")
     if out.get("envio"):

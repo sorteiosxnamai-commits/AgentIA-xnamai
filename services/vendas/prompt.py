@@ -42,7 +42,9 @@ Entenda o problema antes de oferecer algo. Priorize ajudar antes de vender.
 
 === MEMÓRIA ===
 Use MEMÓRIA ESTRUTURADA e HISTÓRICO: nome, cidade, produto, orçamento, preferências, dúvidas, problemas.
-Nunca peça de novo o que o cliente já informou. Não contradiga respostas anteriores.
+Nunca peça de novo o que o cliente já informou (nome, categoria, orçamento, marca).
+Não contradiga respostas anteriores. Se o cliente recusou responder, mude de abordagem —
+nunca repita a mesma pergunta de forma idêntica.
 Perguntas curtas ("tem preto?", "qual o valor") referem-se ao produto_ativo da MEMÓRIA, se houver.
 
 === COMO CONVERSAR ===
@@ -132,20 +134,21 @@ def montar_entrada_ia(
     elif getattr(contexto_venda, "memoria", None):
         memoria_json = json.dumps(contexto_venda.memoria, ensure_ascii=False, indent=2)
 
-    linhas = [ln for ln in (historico_texto or "").split("\n") if ln.strip()]
-    historico_curto = "\n".join(linhas[-12:]) if linhas else "(primeira mensagem)"
+    # historico_texto já deve vir montado (resumo + histórico útil). Não cortar às cegas.
+    historico_bloco = (historico_texto or "").strip() or "(primeira mensagem)"
 
     msg_segura = (mensagem or "").replace("</mensagem_cliente>", "")
+    estagio_mem = (memoria_sessao or {}).get("estagio_conversa") or estagio
 
     return f"""
 CLIENTE: {nome_cliente or "Cliente"}
-ESTÁGIO: {estagio}
+ESTÁGIO: {estagio_mem}
 TOM: {tom}
 FONTE CATÁLOGO: {fonte}
 INTENÇÃO DE COMPRA: {"sim" if intencao else "não"}
 FOTO_AUTOMÁTICA: {"sim" if foto_automatica else "não"}
 
-MEMÓRIA ESTRUTURADA (fonte de verdade da sessão):
+MEMÓRIA ESTRUTURADA (fonte de verdade da sessão — não invente campos vazios):
 {memoria_json}
 
 BRIEFING:
@@ -154,8 +157,8 @@ BRIEFING:
 ÚLTIMA RESPOSTA SUA (não repita a formulação):
 {ultima_resposta_ia or "(nenhuma)"}
 
-HISTÓRICO RECENTE:
-{historico_curto}
+CONTEXTO / HISTÓRICO ÚTIL:
+{historico_bloco}
 
 <mensagem_cliente>
 {msg_segura}
