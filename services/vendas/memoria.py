@@ -30,6 +30,16 @@ SESSAO_PADRAO: dict[str, Any] = {
     "estagio_conversa": "abertura",
     "ultima_recomendacao": "",
     "ultima_intencao": "",
+    # Etapa 5 — checkout
+    "checkout_status": "nao_iniciado",
+    "produto_checkout": "",
+    "quantidade": None,
+    "forma_entrega": "",
+    "cidade": "",
+    "endereco": "",
+    "forma_pagamento": "",
+    "pedido_id": "",
+    "checkout_resumo": "",
 }
 
 # Cache em processo (fallback se coluna contexto_venda não existir no Supabase)

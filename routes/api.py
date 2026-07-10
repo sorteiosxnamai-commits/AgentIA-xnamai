@@ -96,12 +96,18 @@ from services.mercos_service import (
     mercos_ambiente_sandbox,
     mercos_configurado,
 )
-from services.pedido_mercos_service import criar_pedido_fechamento_mercos, mercos_criar_pedido_habilitado
+from services.pedido_mercos_service import mercos_criar_pedido_habilitado
 from services.pedido_pulsedesk_service import (
     diagnosticar_pulsedesk_pedidos,
     pulsedesk_pedidos_habilitado,
-    registrar_venda_pulsedesk,
     registrar_venda_retroativa_por_telefone,
+)
+from services.checkout_service import (
+    checkout_criar_pedido_habilitado,
+    checkout_habilitado,
+    intent_e_checkout,
+    processar_checkout_turno,
+    sanitizar_claims_checkout,
 )
 from services.supabase_service import (
     buscar_cliente,
@@ -119,7 +125,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-fix-estoque-reserva-fora"
+CODE_VERSION = "2026-07-10-etapa5-checkout"
 
 router = APIRouter()
 
@@ -660,70 +666,93 @@ def _processar_mensagem_locked(
                 )
                 print("PEDIDO MINIMO XNAMAI: valor abaixo do mínimo")
             else:
+                pedido_registrado = None
                 if not ja_encerrado and (fechamento or alteracao_pagamento):
-                    # 1) Mercos (pedido real no ERP) — se habilitado
-                    pedido_mercos = None
-                    if mercos_criar_pedido_habilitado():
-                        pedido_mercos = criar_pedido_fechamento_mercos(
-                            historico_texto=historico_venda,
-                            cliente_supabase=cliente,
-                            telefone=numero,
-                            pushname=nome_cliente,
-                            mensagem_atual=mensagem,
-                            ultima_resposta_ia=ultima_resposta_ia,
-                            frete_estimado=frete_estimado,
-                        )
-                        if pedido_mercos and pedido_mercos.get("pedido_id"):
-                            print("MERCOS PEDIDO CRIADO:", pedido_mercos)
-                            try:
-                                from services.supabase_service import atualizar_cliente
+                    # Etapa 5 — checkout seguro (respeita dry_run / persistir / flags)
+                    checkout_out = processar_checkout_turno(
+                        mensagem=mensagem,
+                        sessao=sessao,
+                        produtos=produtos,
+                        intent=intent_nome or "COMPRA",
+                        nome_cliente=nome_conversa,
+                        historico_texto=historico_venda,
+                        cliente_supabase=cliente,
+                        telefone=numero,
+                        pushname=nome_cliente,
+                        ultima_resposta_ia=ultima_resposta_ia,
+                        frete_estimado=frete_estimado,
+                        nova_venda=nova_venda,
+                        dry_run=dry_run,
+                        persistir=persistir,
+                        tentar_criar=True,
+                    )
+                    if checkout_out.get("sessao"):
+                        sessao.update(checkout_out["sessao"])
+                        contexto_venda.memoria = sessao
+                        if persistir:
+                            persistir_sessao(str(cliente_id), sessao)
 
-                                cliente_mercos_id = int(pedido_mercos["cliente_id"])
+                    pedido_registrado = checkout_out.get("pedido")
+                    if pedido_registrado and pedido_registrado.get("pedido_id"):
+                        print("CHECKOUT PEDIDO CRIADO:", pedido_registrado.get("pedido_id"))
+                        try:
+                            if pedido_registrado.get("cliente_id"):
+                                cliente_mercos_id = int(pedido_registrado["cliente_id"])
                                 atualizar_cliente(
                                     cliente["id"],
                                     mercos_cliente_id=cliente_mercos_id,
                                 )
                                 cliente["mercos_cliente_id"] = cliente_mercos_id
-                            except Exception as exc:
-                                print("AVISO: falha ao salvar mercos_cliente_id:", exc)
-                        elif pedido_mercos and pedido_mercos.get("erro"):
-                            print("MERCOS PEDIDO FALHOU:", pedido_mercos["erro"])
+                        except Exception as exc:
+                            print("AVISO: falha ao salvar mercos_cliente_id:", exc)
+                    elif dry_run or not persistir:
+                        print("CHECKOUT: dry_run/persistir=false — pedido não criado")
+                    elif checkout_out.get("needs_human"):
+                        print("CHECKOUT: humano necessário —", checkout_out.get("reason"))
 
-                    # 2) PulseDesk (Supabase)
-                    if pulsedesk_pedidos_habilitado():
-                        pedido_registrado = registrar_venda_pulsedesk(
-                            historico_texto=historico_venda,
-                            cliente_supabase=cliente,
-                            telefone=numero,
-                            pushname=nome_cliente,
+                    # Resposta: se checkout conduziu coleta, usa reply; senão script legado
+                    if checkout_out.get("reply") and (
+                        not checkout_out.get("ready")
+                        or checkout_out.get("needs_human")
+                        or dry_run
+                        or not persistir
+                        or not checkout_criar_pedido_habilitado()
+                    ):
+                        # Sem pedido real: nunca usar texto de "pedido criado" do script legado
+                        if pedido_registrado and pedido_registrado.get("pedido_id"):
+                            resposta_ia = resposta_fechamento_pedido(
+                                historico_venda,
+                                nome_cliente,
+                                frete_estimado,
+                                mensagem_atual=mensagem,
+                                ultima_resposta_ia=ultima_resposta_ia,
+                                mercos_pedido=pedido_registrado,
+                            )
+                        else:
+                            resposta_ia = checkout_out["reply"]
+                    else:
+                        resposta_ia = resposta_fechamento_pedido(
+                            historico_venda,
+                            nome_cliente,
+                            frete_estimado,
                             mensagem_atual=mensagem,
                             ultima_resposta_ia=ultima_resposta_ia,
-                            frete_estimado=frete_estimado,
-                            nova_venda=nova_venda,
+                            mercos_pedido=pedido_registrado,
                         )
-                        if pedido_mercos and pedido_mercos.get("pedido_id"):
-                            pedido_registrado = {
-                                **(pedido_registrado or {}),
-                                "pedido_id": pedido_mercos.get("pedido_id"),
-                                "numero": pedido_mercos.get("numero")
-                                or pedido_mercos.get("pedido_id"),
-                                "origem": "mercos+pulsedesk",
-                            }
-                    elif pedido_mercos:
-                        pedido_registrado = pedido_mercos
-                    else:
-                        pedido_registrado = None
+                else:
+                    resposta_ia = resposta_fechamento_pedido(
+                        historico_venda,
+                        nome_cliente,
+                        frete_estimado,
+                        mensagem_atual=mensagem,
+                        ultima_resposta_ia=ultima_resposta_ia,
+                        mercos_pedido=pedido_registrado,
+                    )
 
-                resposta_ia = resposta_fechamento_pedido(
-                    historico_venda,
-                    nome_cliente,
-                    frete_estimado,
-                    mensagem_atual=mensagem,
-                    ultima_resposta_ia=ultima_resposta_ia,
-                    mercos_pedido=pedido_registrado,
-                )
                 resultado_fechamento = buscar_produtos_para_atendimento(historico_venda)
-                if persistir and vendedor_configurado():
+                if persistir and vendedor_configurado() and (
+                    pedido_registrado and pedido_registrado.get("pedido_id")
+                ):
                     notificar_vendedor(
                         numero_cliente=numero,
                         nome_cliente=nome_conversa,
@@ -737,6 +766,41 @@ def _processar_mensagem_locked(
                     print("PULSEDESK PEDIDO CRIADO:", pedido_registrado)
                 elif pedido_registrado and pedido_registrado.get("erro"):
                     print("PULSEDESK PEDIDO FALHOU:", pedido_registrado["erro"])
+        elif (
+            checkout_habilitado()
+            and intent_e_checkout(intent.get("intent") or "")
+            and not pedido_encerrado
+        ):
+            # Etapa 5 — condução de compra (COMPRA / PAGAMENTO / ENTREGA)
+            checkout_out = processar_checkout_turno(
+                mensagem=mensagem,
+                sessao=sessao,
+                produtos=produtos,
+                intent=intent.get("intent") or "",
+                nome_cliente=nome_conversa,
+                historico_texto=historico_venda,
+                cliente_supabase=cliente,
+                telefone=numero,
+                pushname=nome_cliente,
+                ultima_resposta_ia=ultima_resposta_ia,
+                dry_run=dry_run,
+                persistir=persistir,
+                tentar_criar=False,
+            )
+            if checkout_out.get("sessao"):
+                sessao.update(checkout_out["sessao"])
+                contexto_venda.memoria = sessao
+                if persistir:
+                    persistir_sessao(str(cliente_id), sessao)
+            resposta_ia = checkout_out.get("reply") or (
+                "Posso te passar o próximo passo para compra."
+            )
+            log_seguro(
+                "fluxo_checkout",
+                intent=intent.get("intent"),
+                reason=checkout_out.get("reason") or "-",
+                telefone=numero,
+            )
         elif intent.get("intent") == "ATENDIMENTO_HUMANO":
             resposta_ia = resposta_atendimento_humano(nome_conversa)
             log_seguro("fluxo_intent", intent="ATENDIMENTO_HUMANO", telefone=numero)
@@ -893,6 +957,12 @@ def _processar_mensagem_locked(
             )
         resposta_ia = sanitizar_frases_comerciais(
             resposta_ia, stock_confirmed=stock_ok
+        )
+        pedido_real = bool(sessao.get("pedido_id"))
+        resposta_ia = sanitizar_claims_checkout(
+            resposta_ia,
+            pedido_criado=pedido_real,
+            pix_gerado=False,
         )
 
         log_seguro(
@@ -1134,6 +1204,8 @@ async def status():
         "mercos_sandbox": mercos_ambiente_sandbox(),
         "mercos_criar_pedido": mercos_criar_pedido_habilitado(),
         "pulsedesk_pedidos": pulsedesk_pedidos_habilitado(),
+        "checkout_enabled": checkout_habilitado(),
+        "checkout_create_order": checkout_criar_pedido_habilitado(),
         "mercos_base_url": os.getenv("MERCOS_BASE_URL", ""),
         "vendas_consultivas": True,
         "code_version": CODE_VERSION,

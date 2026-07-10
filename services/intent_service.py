@@ -283,7 +283,8 @@ def classificar_intencao(
     if re.search(
         r"\b(quero\s+comprar|vou\s+levar|fechamos|fecha\s+pra\s+mim|pode\s+fechar|"
         r"quero\s+esse|quero\s+essa|fechado|manda\s+o\s+pix|pode\s+mandar\s+o\s+pix|"
-        r"quero\s+fechar|vamos\s+fechar)\b",
+        r"quero\s+fechar|vamos\s+fechar|quero\s+finalizar|pode\s+finalizar|"
+        r"vou\s+querer\s+esse|vou\s+querer\s+essa)\b",
         t,
     ):
         return _resultado(
