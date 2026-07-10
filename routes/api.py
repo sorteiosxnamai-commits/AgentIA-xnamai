@@ -93,7 +93,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-etapa1-opcoes"
+CODE_VERSION = "2026-07-10-criterio-categoria"
 
 router = APIRouter()
 
@@ -517,13 +517,9 @@ def processar_mensagem(data: dict, dry_run: bool = False):
             resposta_ia = resposta_ja_informado(com_foto[0])
         elif pediu_foto and com_foto:
             resposta_ia = resposta_com_foto(com_foto[0])
-        elif cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia):
-            cat_geral = montar_catalogo_geral()
-            produtos = cat_geral["produtos"]
-            catalogo = cat_geral["catalogo"]
-            resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos)
         elif cliente_pediu_mais_opcoes(mensagem) and not pedido_encerrado:
             # "tem mais opções?" — NUNCA cair em "não trabalhamos com opções produtos"
+            # Avaliado ANTES de cliente_quer_ver_catalogo para não perder "me mostra outros"
             cat_geral = montar_catalogo_geral()
             produtos_op = cat_geral.get("produtos") or produtos
             resposta_ia = resposta_mais_opcoes(
@@ -532,6 +528,11 @@ def processar_mensagem(data: dict, dry_run: bool = False):
                 produtos=produtos_op,
             )
             print("MAIS OPCOES: resposta consultiva (sem fora_catalogo)")
+        elif cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia):
+            cat_geral = montar_catalogo_geral()
+            produtos = cat_geral["produtos"]
+            catalogo = cat_geral["catalogo"]
+            resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos)
         elif cliente_perguntou_preco(mensagem) and not pedido_encerrado:
             resposta_ia = resposta_preco_em_discussao(
                 historico_venda,

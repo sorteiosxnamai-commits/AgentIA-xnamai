@@ -79,18 +79,71 @@ def cliente_quer_ver_catalogo(mensagem: str, ultima_resposta_ia: str = "") -> bo
 
 
 def cliente_pediu_mais_opcoes(mensagem: str) -> bool:
-    """'tem mais opções?', 'outras opções' — não é nome de produto."""
+    """Cliente pede outras opções/alternativas — não é nome de produto.
+
+    Evita falsos positivos como:
+    - 'qual é a melhor opção?'
+    - 'esse produto tem opções de cor?'
+    - 'não quero mais opções'
+    """
     texto = _normalizar(mensagem)
+
+    # Negação explícita → não é pedido de mais opções
+    if re.search(
+        r"\b(nao|não)\s+(quero|preciso|precisa|quero ver|mostra|mostrar)\b"
+        r".*\b(mais\s+)?(opcoes|opções|outros|outras)\b"
+        r"|\b(nao|não)\s+(quero|precisa)\s+mais\s+(opcoes|opções)\b"
+        r"|\bnão\s+precisa\s+mostrar\b"
+        r"|\bnao\s+precisa\s+mostrar\b",
+        texto,
+    ):
+        return False
+
+    # Atributos do produto atual (cor/tamanho) — não é catálogo genérico
+    if re.search(
+        r"opcoes?\s+de\s+(cor|cores|tamanho|tamanhos|voltagem|capacidade)"
+        r"|opções?\s+de\s+(cor|cores|tamanho|tamanhos|voltagem|capacidade)",
+        texto,
+    ):
+        return False
+
+    # Pedido de recomendação da opção atual (singular) — não é "mais opções"
+    if re.search(
+        r"\b(qual|quais)\s+(e|é|eh)?\s*(a\s+)?melhor\s+opcao\b"
+        r"|\bmelhor\s+opcao\b(?!\s+(de|entre|dentre))",
+        texto,
+    ) and not re.search(r"\b(mais|outras|outros|alternativas)\b", texto):
+        return False
+
+    # "produto com várias opções" descreve o item — não pede catálogo
+    if re.search(r"\b(com|tem)\s+(varias|várias|muitas)\s+opcoes\b", texto):
+        return False
+
     padroes = (
-        r"tem\s+mais\s+(opcoes|opções|produtos|itens)",
-        r"mais\s+(opcoes|opções)(\s+de\s+produtos?)?",
-        r"(outras|mais)\s+(opcoes|opções)",
-        r"tem\s+(outras|mais)\s+(opcoes|opções)",
-        r"quais\s+(outras\s+)?(opcoes|opções)",
-        r"tem\s+opcoes|tem\s+opções",
-        r"outras\s+opcoes|outras\s+opções",
-        r"mais\s+produtos",
-        r"tem\s+mais\s*\??$",
+        # opções / alternativas
+        r"\b(tem|têm|temos|voce tem|voces tem|vocês têm)\s+(outras|mais)\s+(opcoes|opções|alternativas)\b",
+        r"\b(outras|mais)\s+(opcoes|opções|alternativas)\b",
+        r"\bquais\s+(outras\s+)?(opcoes|opções|alternativas)\b",
+        r"\bquero\s+ver\s+mais\s+(opcoes|opções)\b",
+        r"\btem\s+mais\s+(opcoes|opções|produtos|itens)\b",
+        r"\bmais\s+(opcoes|opções)(\s+de\s+produtos?)?\b",
+        # modelos / marcas / alternativas
+        r"\b(tem|têm|temos)\s+(mais\s+)?(modelos|alternativas)\b",
+        r"\bmais\s+modelos\b",
+        r"\boutras?\s+alternativas?\b",
+        r"\b(tem|têm)\s+de\s+outra\s+marca\b",
+        r"\boutra\s+marca\b",
+        # mais barato / melhor (comparação dentro da linha)
+        r"\btem\s+(outro|outra|algum|alguma)\s+(mais\s+)?(barato|barata|bom|boa|melhor)\b",
+        r"\btem\s+algum\s+melhor\b",
+        r"\btem\s+outro\s+mais\s+barato\b",
+        # genéricos
+        r"\btem\s+mais\s+alguma\s+coisa\b",
+        r"\bmais\s+alguma\s+coisa\b",
+        r"\bme\s+mostra\s+outros?\b",
+        r"\bmostra\s+outros?\b",
+        r"\btem\s+mais\s*\??$",
+        r"\bmais\s+produtos\b",
     )
     return any(re.search(p, texto) for p in padroes)
 
@@ -106,12 +159,171 @@ def _categoria_no_historico(historico_texto: str) -> str | None:
     categorias = (
         "headset", "fone", "cabo", "hdmi", "mouse", "teclado", "monitor",
         "notebook", "webcam", "ssd", "hd", "hub", "carregador", "caixa",
+        "celular", "smartphone", "mesa", "cadeira", "movel", "móvel",
     )
     texto = _normalizar(historico_texto or "")
     for cat in categorias:
         if cat in texto:
             return cat
     return None
+
+
+def _familia_categoria(chave: str) -> str:
+    """Agrupa termo/produto em família para critério de pergunta."""
+    t = _normalizar(chave or "")
+    if any(x in t for x in ("headset", "fone", "earbud", "audio", "áudio", "microfone")):
+        return "headset"
+    if any(x in t for x in ("ssd", "hd ", "hd externo", "externo", "pendrive", "armazen", "disco")):
+        return "armazenamento"
+    if any(x in t for x in ("celular", "smartphone", "iphone", "galaxy")):
+        return "celular"
+    if any(x in t for x in ("mesa", "cadeira", "movel", "móvel", "armario", "armário", "estante")):
+        return "moveis"
+    if any(x in t for x in ("cabo", "hdmi", "carregador", "fonte", "hub", "suporte", "pelicula", "película", "capa")):
+        return "simples"
+    if any(x in t for x in ("mouse", "teclado", "webcam", "monitor", "notebook")):
+        return "periferico"
+    if any(x in t for x in ("caixa", "som", "jbl")):
+        return "audio_caixa"
+    return "geral"
+
+
+def _atributos_disponiveis_catalogo(produtos: list | None) -> set[str]:
+    """Lê só o que existe de fato nos produtos (não inventa atributo)."""
+    attrs: set[str] = set()
+    itens = produtos or []
+    if not itens:
+        return attrs
+
+    precos = []
+    for p in itens:
+        nome = _normalizar(str(p.get("nome") or ""))
+        desc = _normalizar(str(p.get("descricao") or ""))
+        cat = _normalizar(str(p.get("categoria") or ""))
+        texto = f"{nome} {desc} {cat}"
+        preco = p.get("preco")
+        if preco in (None, ""):
+            preco = p.get("preco_tabela")
+        try:
+            if preco not in (None, ""):
+                precos.append(float(preco))
+        except (TypeError, ValueError):
+            pass
+
+        if re.search(r"\b(gamer|jogo|jogos|rgb)\b", texto):
+            attrs.add("uso_jogos")
+        if re.search(r"\b(trabalho|escritorio|escritório|home\s*office)\b", texto):
+            attrs.add("uso_trabalho")
+        if re.search(r"\b(chamada|microfone|mic|call)\b", texto):
+            attrs.add("uso_chamadas")
+        if re.search(r"\b(\d+\s*(gb|tb)|capacidade)\b", texto):
+            attrs.add("capacidade")
+        if re.search(r"\b(usb\s*3|nvme|sata|velocidade|rapido|rápido)\b", texto):
+            attrs.add("velocidade")
+        if re.search(r"\b(portatil|portátil|externo|compacto)\b", texto):
+            attrs.add("portabilidade")
+        if re.search(r"\b(camera|câmera|mp|megapixel)\b", texto):
+            attrs.add("camera")
+        if re.search(r"\b(bateria|mah|autonomia)\b", texto):
+            attrs.add("bateria")
+        if re.search(r"\b(desempenho|ram|processador|snapdragon|helio)\b", texto):
+            attrs.add("desempenho")
+        if re.search(r"\b(\d+\s*x\s*\d+|cm|medida|largura|altura)\b", texto):
+            attrs.add("medidas")
+        if re.search(r"\b(madeira|mdp|mdf|metal|tecido|material)\b", texto):
+            attrs.add("material")
+        if re.search(r"\b(acabamento|verniz|laca|fosco|brilhante)\b", texto):
+            attrs.add("acabamento")
+        if re.search(r"\b(marca|hmaston|lenovo|jbl|samsung|apple|logitech)\b", texto):
+            attrs.add("marca")
+
+    if len(precos) >= 2 and (max(precos) - min(precos)) >= 10:
+        attrs.add("preco")
+    elif precos:
+        attrs.add("preco")
+
+    return attrs
+
+
+def criterio_util_por_categoria(
+    categoria: str | None,
+    produtos: list | None = None,
+) -> str | None:
+    """
+    Próximo critério útil para perguntar, conforme família do produto
+    e atributos realmente presentes no catálogo.
+
+    Retorna:
+    - pergunta específica, ou
+    - None = produto simples / sem pergunta (só mostrar opções), ou
+    - pergunta neutra se não houver critério confiável.
+    """
+    familia = _familia_categoria(categoria or "")
+    attrs = _atributos_disponiveis_catalogo(produtos)
+    neutra = "Você tem alguma preferência de preço, marca ou característica?"
+
+    if familia == "simples":
+        # Cabo, carregador, suporte etc. — não perguntar à toa
+        return None
+
+    if familia == "headset":
+        usos = {"uso_jogos", "uso_trabalho", "uso_chamadas"} & attrs
+        if usos:
+            return "Você usa mais para jogos, trabalho ou chamadas?"
+        # Catálogo sem indício de uso → não inventa; pergunta neutra
+        return neutra
+
+    if familia == "armazenamento":
+        partes = []
+        if "capacidade" in attrs:
+            partes.append("capacidade")
+        if "velocidade" in attrs:
+            partes.append("velocidade")
+        if "portabilidade" in attrs:
+            partes.append("portabilidade")
+        if len(partes) >= 2:
+            return f"Você prioriza {', '.join(partes[:-1])} ou {partes[-1]}?"
+        if len(partes) == 1:
+            return f"Quer que eu filtre mais por {partes[0]}?"
+        return neutra
+
+    if familia == "celular":
+        partes = []
+        if "camera" in attrs:
+            partes.append("câmera")
+        if "bateria" in attrs:
+            partes.append("bateria")
+        if "desempenho" in attrs:
+            partes.append("desempenho")
+        if "preco" in attrs:
+            partes.append("orçamento")
+        if len(partes) >= 2:
+            return f"O que pesa mais pra você: {', '.join(partes[:-1])} ou {partes[-1]}?"
+        return neutra
+
+    if familia == "moveis":
+        partes = []
+        if "medidas" in attrs:
+            partes.append("medidas")
+        if "material" in attrs:
+            partes.append("material")
+        if "acabamento" in attrs:
+            partes.append("acabamento")
+        if "preco" in attrs:
+            partes.append("preço")
+        if len(partes) >= 2:
+            return f"Quer filtrar por {', '.join(partes[:-1])} ou {partes[-1]}?"
+        return neutra
+
+    if familia in ("periferico", "audio_caixa"):
+        if "preco" in attrs and "marca" in attrs:
+            return neutra
+        if "preco" in attrs:
+            return "Quer ver opções mais em conta ou com mais recursos?"
+        return neutra
+
+    # Família desconhecida / geral → nunca forçar critério inventado
+    return neutra
 
 
 def resposta_mais_opcoes(
@@ -122,36 +334,63 @@ def resposta_mais_opcoes(
     """Resposta natural quando o cliente pede mais opções."""
     nome = nome_cliente or "Cliente"
     categoria = _categoria_no_historico(historico_texto)
+    itens = produtos or []
 
-    if categoria:
-        # Já há contexto de categoria/produto
-        itens = produtos or []
-        similares = [
-            p for p in itens
-            if _normalizar(str(p.get("nome") or "")).find(_normalizar(categoria)[:4]) >= 0
-        ][:4]
-
-        if similares and len(similares) >= 2:
-            linhas = [
-                f"Temos sim, {nome}. Nessa linha há outras opções:"
-            ]
-            for p in similares[:4]:
-                nome_p = p.get("nome", "Produto")
-                preco = _fmt_preco_item(p)
-                linhas.append(f"• {nome_p}" + (f" — {preco}" if preco else ""))
-            linhas.append(
-                "Você prefere algo mais econômico ou com melhor desempenho?"
-            )
-            return "\n".join(linhas)
-
+    if not categoria:
         return (
-            f"Temos sim, {nome}. Nessa categoria há outras opções. "
-            "Você prefere algo mais econômico ou com melhor desempenho?"
+            f"Temos sim, {nome}. Qual tipo de produto você está procurando? "
+            "Assim consigo mostrar opções que realmente façam sentido para você."
         )
 
+    # Filtra similares da mesma linha
+    chave = _normalizar(categoria)
+    similares = [
+        p for p in itens
+        if chave[:4] in _normalizar(str(p.get("nome") or ""))
+        or chave[:4] in _normalizar(str(p.get("categoria") or ""))
+        or _familia_categoria(str(p.get("nome") or "")) == _familia_categoria(categoria)
+    ][:4]
+
+    if not similares and itens:
+        # Sem match estreito: usa amostra da família se possível
+        familia = _familia_categoria(categoria)
+        similares = [
+            p for p in itens
+            if _familia_categoria(
+                f"{p.get('nome') or ''} {p.get('categoria') or ''}"
+            ) == familia
+        ][:4]
+
+    pergunta = criterio_util_por_categoria(categoria, similares or itens)
+
+    if similares and len(similares) >= 2:
+        linhas = [f"Temos sim, {nome}. Nessa linha há outras opções:"]
+        for p in similares[:4]:
+            nome_p = p.get("nome", "Produto")
+            preco = _fmt_preco_item(p)
+            linhas.append(f"• {nome_p}" + (f" — {preco}" if preco else ""))
+        if pergunta:
+            linhas.append(pergunta)
+        return "\n".join(linhas)
+
+    if similares:
+        linhas = [f"Temos sim, {nome}. Olha essa opção:"]
+        p = similares[0]
+        preco = _fmt_preco_item(p)
+        linhas.append(f"• {p.get('nome', 'Produto')}" + (f" — {preco}" if preco else ""))
+        if pergunta:
+            linhas.append(pergunta)
+        return "\n".join(linhas)
+
+    # Tem categoria no histórico, mas sem itens similares no catálogo enviado
+    if pergunta:
+        return (
+            f"Temos sim, {nome}. Nessa categoria posso te mostrar outras opções. "
+            f"{pergunta}"
+        )
     return (
-        f"Temos sim, {nome}. Qual tipo de produto você está procurando? "
-        "Assim consigo mostrar opções que realmente façam sentido para você."
+        f"Temos sim, {nome}. Me confirma o modelo ou a faixa que você quer "
+        "que eu te mostro as opções disponíveis."
     )
 
 
