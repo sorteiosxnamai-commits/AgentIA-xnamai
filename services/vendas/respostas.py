@@ -250,148 +250,126 @@ def criterio_util_por_categoria(
     produtos: list | None = None,
 ) -> str | None:
     """
-    Próximo critério útil para perguntar, conforme família do produto
-    e atributos realmente presentes no catálogo.
-
-    Retorna:
-    - pergunta específica, ou
-    - None = produto simples / sem pergunta (só mostrar opções), ou
-    - pergunta neutra se não houver critério confiável.
+    Próximo critério útil — no máximo UMA pergunta simples (2 opções).
+    Nunca lista 3+ critérios na mesma frase.
     """
     familia = _familia_categoria(categoria or "")
     attrs = _atributos_disponiveis_catalogo(produtos)
-    neutra = "Você tem alguma preferência de preço, marca ou característica?"
 
     if familia == "simples":
-        # Cabo, carregador, suporte etc. — não perguntar à toa
         return None
 
     if familia == "headset":
         usos = {"uso_jogos", "uso_trabalho", "uso_chamadas"} & attrs
+        if "uso_jogos" in usos and "uso_chamadas" in usos:
+            return "Você pretende usar mais para jogos ou chamadas?"
+        if "uso_jogos" in usos and "uso_trabalho" in usos:
+            return "Você quer priorizar jogos ou trabalho?"
         if usos:
-            return "Você usa mais para jogos, trabalho ou chamadas?"
-        # Catálogo sem indício de uso → não inventa; pergunta neutra
-        return neutra
+            return "Você pretende usar mais para jogos ou chamadas?"
+        return "Você tem alguma preferência de faixa de preço?"
 
     if familia == "armazenamento":
-        partes = []
+        if "capacidade" in attrs and "velocidade" in attrs:
+            return "Você prioriza capacidade ou velocidade?"
         if "capacidade" in attrs:
-            partes.append("capacidade")
-        if "velocidade" in attrs:
-            partes.append("velocidade")
-        if "portabilidade" in attrs:
-            partes.append("portabilidade")
-        if len(partes) >= 2:
-            return f"Você prioriza {', '.join(partes[:-1])} ou {partes[-1]}?"
-        if len(partes) == 1:
-            return f"Quer que eu filtre mais por {partes[0]}?"
-        return neutra
+            return "Quer que eu filtre mais por capacidade?"
+        if "preco" in attrs:
+            return "Prefere algo mais em conta ou com mais desempenho?"
+        return "Você tem alguma preferência de capacidade?"
 
     if familia == "celular":
-        partes = []
-        if "camera" in attrs:
-            partes.append("câmera")
-        if "bateria" in attrs:
-            partes.append("bateria")
-        if "desempenho" in attrs:
-            partes.append("desempenho")
+        if "camera" in attrs and "bateria" in attrs:
+            return "O que pesa mais pra você: câmera ou bateria?"
         if "preco" in attrs:
-            partes.append("orçamento")
-        if len(partes) >= 2:
-            return f"O que pesa mais pra você: {', '.join(partes[:-1])} ou {partes[-1]}?"
-        return neutra
+            return "Quer priorizar desempenho ou orçamento?"
+        return "Você tem alguma preferência de uso principal?"
 
     if familia == "moveis":
-        partes = []
-        if "medidas" in attrs:
-            partes.append("medidas")
-        if "material" in attrs:
-            partes.append("material")
-        if "acabamento" in attrs:
-            partes.append("acabamento")
+        if "medidas" in attrs and "material" in attrs:
+            return "Quer filtrar por medidas ou material?"
         if "preco" in attrs:
-            partes.append("preço")
-        if len(partes) >= 2:
-            return f"Quer filtrar por {', '.join(partes[:-1])} ou {partes[-1]}?"
-        return neutra
+            return "Prefere focar em preço ou acabamento?"
+        return None
 
     if familia in ("periferico", "audio_caixa"):
-        if "preco" in attrs and "marca" in attrs:
-            return neutra
         if "preco" in attrs:
             return "Quer ver opções mais em conta ou com mais recursos?"
-        return neutra
+        return "Você tem alguma preferência de marca?"
 
-    # Família desconhecida / geral → nunca forçar critério inventado
-    return neutra
+    return "Você tem alguma preferência de faixa de preço?"
 
 
 def resposta_mais_opcoes(
     nome_cliente: str = "",
     historico_texto: str = "",
     produtos: list | None = None,
+    categoria: str = "",
 ) -> str:
-    """Resposta natural quando o cliente pede mais opções."""
-    nome = nome_cliente or "Cliente"
-    categoria = _categoria_no_historico(historico_texto)
-    itens = produtos or []
+    """Resposta natural quando o cliente pede mais opções (via Product Service)."""
+    from services.product_service import buscar_mais_opcoes, normalizar_produto_servico
 
-    if not categoria:
+    nome = nome_cliente or "Cliente"
+    cat = (categoria or _categoria_no_historico(historico_texto) or "").strip()
+
+    if produtos:
+        itens = []
+        for p in produtos:
+            if p.get("name"):
+                itens.append(p)
+            else:
+                np = normalizar_produto_servico(p)
+                if np:
+                    itens.append(np)
+        resultado = {
+            "found": bool(itens),
+            "category": cat,
+            "products": itens,
+        }
+    else:
+        resultado = buscar_mais_opcoes(
+            categoria=cat,
+            historico_texto=historico_texto,
+            mensagem="",
+            limite=6,
+        )
+        cat = resultado.get("category") or cat
+        itens = resultado.get("products") or []
+
+    if not cat:
         return (
             f"Temos sim, {nome}. Qual tipo de produto você está procurando? "
             "Assim consigo mostrar opções que realmente façam sentido para você."
         )
 
-    # Filtra similares da mesma linha
-    chave = _normalizar(categoria)
-    similares = [
-        p for p in itens
-        if chave[:4] in _normalizar(str(p.get("nome") or ""))
-        or chave[:4] in _normalizar(str(p.get("categoria") or ""))
-        or _familia_categoria(str(p.get("nome") or "")) == _familia_categoria(categoria)
-    ][:4]
-
-    if not similares and itens:
-        # Sem match estreito: usa amostra da família se possível
-        familia = _familia_categoria(categoria)
-        similares = [
-            p for p in itens
-            if _familia_categoria(
-                f"{p.get('nome') or ''} {p.get('categoria') or ''}"
-            ) == familia
-        ][:4]
-
-    pergunta = criterio_util_por_categoria(categoria, similares or itens)
-
-    if similares and len(similares) >= 2:
-        linhas = [f"Temos sim, {nome}. Nessa linha há outras opções:"]
-        for p in similares[:4]:
-            nome_p = p.get("nome", "Produto")
-            preco = _fmt_preco_item(p)
-            linhas.append(f"• {nome_p}" + (f" — {preco}" if preco else ""))
-        if pergunta:
-            linhas.append(pergunta)
-        return "\n".join(linhas)
-
-    if similares:
-        linhas = [f"Temos sim, {nome}. Olha essa opção:"]
-        p = similares[0]
-        preco = _fmt_preco_item(p)
-        linhas.append(f"• {p.get('nome', 'Produto')}" + (f" — {preco}" if preco else ""))
-        if pergunta:
-            linhas.append(pergunta)
-        return "\n".join(linhas)
-
-    # Tem categoria no histórico, mas sem itens similares no catálogo enviado
-    if pergunta:
+    if not resultado.get("found") or not itens:
         return (
-            f"Temos sim, {nome}. Nessa categoria posso te mostrar outras opções. "
-            f"{pergunta}"
+            f"{nome}, no momento não encontrei mais opções de {cat} no catálogo. "
+            "Quer que eu te mostre outra categoria que trabalhamos?"
         )
-    return (
-        f"Temos sim, {nome}. Me confirma o modelo ou a faixa que você quer "
-        "que eu te mostro as opções disponíveis."
-    )
+
+    pergunta = criterio_util_por_categoria(cat, itens)
+    linhas = [f"Temos sim, {nome}! Olha outras opções de {cat}:"]
+    for p in itens[:4]:
+        nome_p = p.get("name") or p.get("nome") or "Produto"
+        preco = p.get("price")
+        if preco is None:
+            preco = p.get("preco")
+        if preco is not None:
+            try:
+                preco_fmt = f"R$ {float(preco):.2f}".replace(".", ",")
+                linhas.append(f"• {nome_p} — {preco_fmt}")
+            except (TypeError, ValueError):
+                linhas.append(f"• {nome_p}")
+        else:
+            linhas.append(f"• {nome_p}")
+
+    if pergunta:
+        if pergunta.count("?") > 1:
+            pergunta = pergunta.split("?")[0].strip() + "?"
+        linhas.append("")
+        linhas.append(pergunta)
+    return "\n".join(linhas)
 
 
 def _fmt_preco_item(produto: dict) -> str:

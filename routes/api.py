@@ -75,6 +75,10 @@ from services.intent_service import (
     resposta_sac,
     sanitizar_frases_comerciais,
 )
+from services.product_service import (
+    aplicar_resultado_no_contexto,
+    buscar_por_intencao,
+)
 from services.webhook_guard import (
     finalizar_mensagem,
     lock_telefone,
@@ -115,7 +119,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-estoque-real"
+CODE_VERSION = "2026-07-10-etapa4-product-service"
 
 router = APIRouter()
 
@@ -483,13 +487,67 @@ def _processar_mensagem_locked(
             reason=intent.get("reason") or "-",
         )
 
+        # =========================
+        # ETAPA 4 — Product Service (antes da resposta comercial)
+        # =========================
+        resultado_produtos = None
+        intent_nome = (intent.get("intent") or "").upper()
+        if (
+            not pular_catalogo
+            and not pedido_encerrado
+            and intent_nome
+            in (
+                "BUSCA_PRODUTO",
+                "MAIS_OPCOES",
+                "PRECO",
+                "COMPARACAO",
+                "COMPRA",
+                "DUVIDA_PRODUTO",
+            )
+        ):
+            resultado_produtos = buscar_por_intencao(
+                mensagem=mensagem,
+                intent=intent_nome,
+                historico_texto=historico_venda,
+                categoria_ativa=str(
+                    sessao.get("categoria_interesse") or intent.get("category") or ""
+                ),
+                produto_ativo=str(sessao.get("produto_ativo") or ""),
+                product_query=str(intent.get("product_query") or mensagem),
+            )
+            aplicar_resultado_no_contexto(contexto_venda, resultado_produtos)
+            produtos = contexto_venda.produtos
+            catalogo = contexto_venda.catalogo
+            if resultado_produtos.get("category") and not sessao.get("categoria_interesse"):
+                sessao["categoria_interesse"] = resultado_produtos["category"]
+            if resultado_produtos.get("found") and produtos:
+                p0 = produtos[0]
+                if p0.get("name"):
+                    sessao["produto_ativo"] = p0["name"]
+                    sessao["produto_mencionado"] = p0["name"]
+                if p0.get("price") is not None:
+                    sessao["preco_cotado"] = p0["price"]
+            contexto_venda.memoria = sessao
+            if persistir:
+                persistir_sessao(str(cliente_id), sessao)
+            log_seguro(
+                "product_service",
+                telefone=numero,
+                message_id=msg_id or "-",
+                found=resultado_produtos.get("found"),
+                qtd=len(resultado_produtos.get("products") or []),
+                category=resultado_produtos.get("category") or "-",
+                msg=(resultado_produtos.get("message") or "")[:80],
+            )
+
         # Briefing leve para a OpenAI com a intenção (sem responder no classificador)
         if intent.get("intent") and intent["intent"] != "INDEFINIDO":
             contexto_venda.briefing = (
                 (contexto_venda.briefing or "")
                 + f"\nINTENÇÃO DETECTADA: {intent['intent']} "
                 f"(confiança {intent.get('confidence')}). "
-                "Use para conduzir o fluxo; não mencione a classificação ao cliente."
+                "Use para conduzir o fluxo; não mencione a classificação ao cliente. "
+                "Só fale de produtos que vieram do PRODUCT SERVICE / CATÁLOGO."
             ).strip()
 
         historico_para_ia = montar_bloco_contexto_openai(
@@ -710,16 +768,26 @@ def _processar_mensagem_locked(
             intent.get("intent") == "MAIS_OPCOES"
             or cliente_pediu_mais_opcoes(mensagem)
         ) and not pedido_encerrado:
-            # "tem mais opções?" — NUNCA cair em "não trabalhamos com opções produtos"
-            # Avaliado ANTES de cliente_quer_ver_catalogo para não perder "me mostra outros"
-            cat_geral = montar_catalogo_geral()
-            produtos_op = cat_geral.get("produtos") or produtos
+            # Fluxo especial MAIS_OPCOES — Product Service por baixo
+            produtos_op = produtos
+            if resultado_produtos and resultado_produtos.get("products"):
+                produtos_op = resultado_produtos["products"]
+            elif not produtos_op:
+                from services.vendas.catalogo import montar_catalogo_geral
+
+                cat_geral = montar_catalogo_geral()
+                produtos_op = cat_geral.get("produtos") or []
             resposta_ia = resposta_mais_opcoes(
                 nome_cliente=nome_conversa,
                 historico_texto=historico_venda,
                 produtos=produtos_op,
+                categoria=str(
+                    sessao.get("categoria_interesse")
+                    or (resultado_produtos or {}).get("category")
+                    or ""
+                ),
             )
-            print("MAIS OPCOES: resposta consultiva (sem fora_catalogo)")
+            print("MAIS OPCOES: resposta consultiva (Product Service)")
         elif cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia):
             cat_geral = montar_catalogo_geral()
             produtos = cat_geral["produtos"]

@@ -5,7 +5,7 @@ from services.vendas.respostas import (
     resposta_mais_opcoes,
 )
 
-NEUTRA = "Você tem alguma preferência de preço, marca ou característica?"
+NEUTRA = "Você tem alguma preferência de faixa de preço?"
 
 
 def test_headset_com_atributo_de_uso():
