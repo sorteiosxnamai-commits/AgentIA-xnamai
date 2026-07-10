@@ -116,6 +116,7 @@ from services.supabase_service import (
     salvar_mensagem,
     buscar_historico,
     atualizar_historico_json,
+    diagnosticar_schema_persistencia,
 )
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
@@ -125,7 +126,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-fix-persistencia-checkout"
+CODE_VERSION = "2026-07-10-fix-schema-persistencia"
 
 
 def _resposta_texto(resultado) -> str | None:
@@ -266,12 +267,22 @@ def _processar_mensagem_locked(
     persistencia_ok = True
     resposta_ia = None
 
-    def _tentar_persistir(etapa: str, fn):
+    def _tentar_persistir(etapa: str, fn, *, ok_se_truthy: bool = False):
         nonlocal persistencia_ok
         if not persistir:
             return None
         try:
-            return fn()
+            result = fn()
+            if ok_se_truthy and not result:
+                persistencia_ok = False
+                log_seguro(
+                    "chat_erro_persistencia",
+                    telefone=numero,
+                    message_id=msg_id or "-",
+                    etapa=etapa,
+                    erro="persistencia_retornou_falso",
+                )
+            return result
         except Exception as exc:
             persistencia_ok = False
             log_seguro(
@@ -301,7 +312,6 @@ def _processar_mensagem_locked(
         try:
             cliente = buscar_cliente(numero)
         except Exception as exc:
-            persistencia_ok = False
             cliente = None
             log_seguro(
                 "chat_erro_persistencia",
@@ -561,6 +571,7 @@ def _processar_mensagem_locked(
             _tentar_persistir(
                 'atualizar_contexto',
                 lambda: persistir_sessao(str(cliente_id), sessao),
+                ok_se_truthy=True,
             )
 
         log_seguro(
@@ -620,6 +631,7 @@ def _processar_mensagem_locked(
                 _tentar_persistir(
                     "atualizar_contexto",
                     lambda: persistir_sessao(str(cliente_id), sessao),
+                    ok_se_truthy=True,
                 )
             log_seguro(
                 "product_service",
@@ -680,6 +692,7 @@ def _processar_mensagem_locked(
                     _tentar_persistir(
                         "atualizar_contexto",
                         lambda: persistir_sessao(str(cliente_id), sessao),
+                        ok_se_truthy=True,
                     )
         except Exception as mcp_exc:
             print("MCP enrich falhou (seguindo sem MCP):", type(mcp_exc).__name__, str(mcp_exc)[:120])
@@ -791,6 +804,7 @@ def _processar_mensagem_locked(
                             _tentar_persistir(
                                 "atualizar_contexto",
                                 lambda: persistir_sessao(str(cliente_id), sessao),
+                                ok_se_truthy=True,
                             )
 
                     pedido_registrado = checkout_out.get("pedido")
@@ -895,6 +909,7 @@ def _processar_mensagem_locked(
                     _tentar_persistir(
                         "atualizar_contexto",
                         lambda: persistir_sessao(str(cliente_id), sessao),
+                        ok_se_truthy=True,
                     )
             resposta_ia = checkout_out.get("reply") or (
                 "Posso te passar o próximo passo para compra."
@@ -1111,6 +1126,7 @@ def _processar_mensagem_locked(
             _tentar_persistir(
                 "atualizar_contexto",
                 lambda: persistir_sessao(str(cliente_id), sessao),
+                ok_se_truthy=True,
             )
         elif persistir:
             # ephemeral: só cache local
@@ -1376,6 +1392,7 @@ async def status():
         "mcp_server_enabled": os.getenv("MCP_SERVER_ENABLED", "false"),
         "tabelas": tabelas_configuradas(),
         "tabelas_validacao": status_validacao(),
+        "schema_persistencia": diagnosticar_schema_persistencia(),
     }
 
 

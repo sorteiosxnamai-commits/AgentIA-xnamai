@@ -159,7 +159,7 @@ def test_chat_persistir_true_funciona(monkeypatch):
     monkeypatch.setattr(
         mem,
         "persistir_sessao",
-        lambda *_a, **_k: saves.__setitem__("ctx", saves["ctx"] + 1),
+        lambda *_a, **_k: (saves.__setitem__("ctx", saves["ctx"] + 1) or True),
     )
     out = api_mod.processar_mensagem(
         _data(mid="pt-1"), dry_run=True, persistir=True
@@ -178,9 +178,10 @@ def test_chat_persistir_omitido_funciona(monkeypatch):
     monkeypatch.setattr(api_mod, "atualizar_historico_json", lambda *_a, **_k: None)
     import services.vendas.memoria as mem
 
-    monkeypatch.setattr(mem, "persistir_sessao", lambda *_a, **_k: None)
+    monkeypatch.setattr(mem, "persistir_sessao", lambda *_a, **_k: True)
     out = api_mod.processar_mensagem(_data(mid="po-1"), dry_run=True)  # persistir default True
     assert out and out.get("resposta")
+    assert out.get("persistencia_ok") is True
 
 
 # 4
@@ -190,6 +191,7 @@ def test_quero_comprar_persistir_salva_contexto(monkeypatch):
 
     def fake_persist(cid, sessao):
         sessao_salva.update(sessao)
+        return True
 
     import services.vendas.memoria as mem
 
@@ -202,6 +204,7 @@ def test_quero_comprar_persistir_salva_contexto(monkeypatch):
         persistir=True,
     )
     assert out["resposta"]
+    assert out.get("persistencia_ok") is True
     assert "entrega" in out["resposta"].lower() or "retirar" in out["resposta"].lower()
     assert sessao_salva.get("produto_checkout") or sessao_salva.get("produto_ativo")
 
@@ -369,7 +372,7 @@ def test_lock_liberado_mesmo_com_exception():
 def test_webhook_continua():
     assert hasattr(api_mod, "receber_webhook")
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-10-fix-persistencia-checkout"
+    assert api_mod.CODE_VERSION == "2026-07-10-fix-schema-persistencia"
 
 
 def test_dry_run_nao_chama_bridge_cliente(monkeypatch):
@@ -384,6 +387,6 @@ def test_dry_run_nao_chama_bridge_cliente(monkeypatch):
     monkeypatch.setattr(api_mod, "atualizar_historico_json", lambda *_a, **_k: None)
     import services.vendas.memoria as mem
 
-    monkeypatch.setattr(mem, "persistir_sessao", lambda *_a, **_k: None)
+    monkeypatch.setattr(mem, "persistir_sessao", lambda *_a, **_k: True)
     api_mod.processar_mensagem(_data(mid="br-1"), dry_run=True, persistir=True)
     assert called["bridge"] == 0

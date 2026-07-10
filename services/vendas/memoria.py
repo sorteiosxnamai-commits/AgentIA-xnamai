@@ -52,9 +52,20 @@ def sessao_vazia() -> dict[str, Any]:
 
 def carregar_sessao(cliente: dict | None, cliente_id: str | None = None) -> dict[str, Any]:
     cid = str(cliente_id or (cliente or {}).get("id") or "")
+    ctx = None
     if cliente and isinstance(cliente.get("contexto_venda"), dict):
+        ctx = cliente["contexto_venda"]
+    elif cliente:
+        # Fallback: contexto embutido no JSON historico (sem coluna)
+        try:
+            from services.supabase_service import extrair_contexto_do_historico_json
+
+            ctx = extrair_contexto_do_historico_json(cliente.get("historico"))
+        except Exception:
+            ctx = None
+    if isinstance(ctx, dict) and ctx:
         base = sessao_vazia()
-        base.update({k: v for k, v in cliente["contexto_venda"].items() if k in base})
+        base.update({k: v for k, v in ctx.items() if k in base})
         if cid:
             _cache_sessao[cid] = base
         return deepcopy(base)
@@ -63,19 +74,19 @@ def carregar_sessao(cliente: dict | None, cliente_id: str | None = None) -> dict
     return sessao_vazia()
 
 
-def persistir_sessao(cliente_id: str, sessao: dict[str, Any]) -> None:
+def persistir_sessao(cliente_id: str, sessao: dict[str, Any]) -> bool:
+    """Persiste sessão no Supabase. Retorna True se gravou de fato."""
     if not cliente_id:
-        return
+        return False
     limpa = serializar_contexto_venda(sessao)
     _cache_sessao[str(cliente_id)] = deepcopy(limpa)
+    if str(cliente_id).startswith("ephemeral-"):
+        return False
     try:
-        from services.supabase_service import atualizar_cliente
-        from services.webhook_guard import log_seguro
+        from services.supabase_service import persistir_contexto_venda
 
-        log_seguro("atualizar_contexto_inicio", cliente_id=str(cliente_id)[:8])
-        atualizar_cliente(cliente_id=cliente_id, contexto_venda=limpa)
+        return bool(persistir_contexto_venda(str(cliente_id), limpa))
     except Exception as exc:
-        # Coluna pode não existir / payload inválido — cache em memória basta
         try:
             from services.webhook_guard import log_seguro
 
@@ -87,6 +98,7 @@ def persistir_sessao(cliente_id: str, sessao: dict[str, Any]) -> None:
             )
         except Exception:
             print("AVISO contexto_venda não persistido:", type(exc).__name__, str(exc)[:120])
+        return False
 
 
 def serializar_contexto_venda(sessao: dict[str, Any] | None) -> dict[str, Any]:

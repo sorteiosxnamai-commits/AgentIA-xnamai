@@ -32,6 +32,15 @@ TABELA_CONVERSAS = CONVERSAS_TABLE
 _RETRIES = 3
 _RETRY_ERRORS = (ReadError, ConnectError, TimeoutException, OSError)
 
+# Cache de schema (None = ainda não detectado)
+_SCHEMA_FLAGS: dict[str, bool | None] = {
+    "message_id": None,
+    "contexto_venda": None,
+}
+
+# Sentinel no JSON historico quando a coluna contexto_venda ainda não existe
+_HIST_CTX_ROLE = "_contexto_venda"
+
 
 def _executar(comando, rotulo: str = "supabase"):
     for tentativa in range(1, _RETRIES + 1):
@@ -44,6 +53,100 @@ def _executar(comando, rotulo: str = "supabase"):
             espera = 0.4 * tentativa
             print(f"RETRY {rotulo} ({tentativa}/{_RETRIES}) em {espera:.1f}s:", erro)
             time.sleep(espera)
+
+
+def _texto_erro(exc: Exception) -> str:
+    partes = [str(exc)]
+    if getattr(exc, "args", None):
+        for a in exc.args:
+            partes.append(str(a))
+    return " ".join(partes).lower()
+
+
+def erro_coluna_ausente(exc: Exception, coluna: str | None = None) -> bool:
+    """Detecta PGRST204 / column not in schema cache."""
+    text = _texto_erro(exc)
+    code = ""
+    if isinstance(exc, APIError) and exc.args:
+        arg0 = exc.args[0]
+        if isinstance(arg0, dict):
+            code = str(arg0.get("code") or "").lower()
+            text = f"{text} {arg0.get('message') or ''}".lower()
+    if code == "pgrst204" or "pgrst204" in text:
+        if not coluna:
+            return True
+        return coluna.lower() in text
+    if coluna and coluna.lower() in text and (
+        "column" in text or "schema cache" in text or "could not find" in text
+    ):
+        return True
+    return False
+
+
+def schema_tem_message_id() -> bool | None:
+    return _SCHEMA_FLAGS.get("message_id")
+
+
+def schema_tem_contexto_venda() -> bool | None:
+    return _SCHEMA_FLAGS.get("contexto_venda")
+
+
+def diagnosticar_schema_persistencia() -> dict:
+    """Lê uma linha de cada tabela e reporta colunas críticas."""
+    out = {
+        "clientes_tem_contexto_venda": False,
+        "conversas_tem_message_id": False,
+        "clientes_cols": [],
+        "conversas_cols": [],
+    }
+    try:
+        r = supabase.table(TABELA_CLIENTES).select("*").limit(1).execute()
+        cols = sorted((r.data[0] if r.data else {}).keys())
+        out["clientes_cols"] = cols
+        out["clientes_tem_contexto_venda"] = "contexto_venda" in cols
+        _SCHEMA_FLAGS["contexto_venda"] = out["clientes_tem_contexto_venda"]
+    except Exception as exc:
+        out["clientes_erro"] = type(exc).__name__
+    try:
+        r = supabase.table(TABELA_HISTORICO).select("*").limit(1).execute()
+        cols = sorted((r.data[0] if r.data else {}).keys())
+        out["conversas_cols"] = cols
+        out["conversas_tem_message_id"] = "message_id" in cols
+        _SCHEMA_FLAGS["message_id"] = out["conversas_tem_message_id"]
+    except Exception as exc:
+        out["conversas_erro"] = type(exc).__name__
+    return out
+
+
+def extrair_contexto_do_historico_json(historico_raw) -> dict:
+    """Lê contexto embutido no JSON historico (fallback sem coluna)."""
+    if isinstance(historico_raw, dict):
+        ctx = historico_raw.get("contexto_venda") or historico_raw.get(_HIST_CTX_ROLE)
+        return ctx if isinstance(ctx, dict) else {}
+    if isinstance(historico_raw, list):
+        for item in reversed(historico_raw):
+            if isinstance(item, dict) and item.get("role") == _HIST_CTX_ROLE:
+                content = item.get("content")
+                return content if isinstance(content, dict) else {}
+    return {}
+
+
+def anexar_contexto_no_historico_json(mensagens: list, contexto: dict) -> list:
+    """Mantém lista compatível + sentinel de contexto no final."""
+    base = [
+        m
+        for m in (mensagens or [])
+        if not (isinstance(m, dict) and m.get("role") == _HIST_CTX_ROLE)
+    ]
+    if contexto:
+        base.append(
+            {
+                "role": _HIST_CTX_ROLE,
+                "content": contexto,
+                "timestamp": "",
+            }
+        )
+    return base
 
 
 def _normalizar_produto(row: dict) -> dict:
@@ -95,12 +198,20 @@ def criar_cliente(telefone, nome=""):
     if nome:
         dados["nome"] = nome
 
-    resultado = _executar(
-        lambda: supabase.table(TABELA_CLIENTES).insert(dados).execute(),
-        "criar_cliente",
-    )
-
-    return resultado.data[0]
+    try:
+        resultado = _executar(
+            lambda: supabase.table(TABELA_CLIENTES).insert(dados).execute(),
+            "criar_cliente",
+        )
+        return resultado.data[0]
+    except Exception as exc:
+        text = _texto_erro(exc)
+        # Telefone já existe — rebusca em vez de falhar
+        if "duplicate" in text or "unique" in text or "23505" in text:
+            existente = buscar_cliente(tel)
+            if existente:
+                return existente
+        raise
 
 
 def atualizar_cliente(cliente_id, **campos):
@@ -143,13 +254,14 @@ def salvar_mensagem(cliente_id, tipo, mensagem, message_id: str | None = None):
         "mensagem": mensagem,
     }
     mid = (message_id or "").strip()
-    if mid:
+    # Só envia message_id se a coluna existir (evita PGRST204)
+    if mid and _SCHEMA_FLAGS.get("message_id") is not False:
         payload["message_id"] = mid
 
     log_seguro(
         "salvar_mensagem_inicio",
         tipo=tipo,
-        message_id=mid or "-",
+        message_id=mid if "message_id" in payload else "-",
         chars=len(mensagem or ""),
     )
     try:
@@ -159,7 +271,6 @@ def salvar_mensagem(cliente_id, tipo, mensagem, message_id: str | None = None):
             .execute()
         )
     except Exception as exc:
-        msg = str(exc).lower()
         log_seguro(
             "salvar_mensagem_erro",
             tipo=tipo,
@@ -167,12 +278,14 @@ def salvar_mensagem(cliente_id, tipo, mensagem, message_id: str | None = None):
             erro=type(exc).__name__,
             detalhe=str(exc)[:120],
         )
+        text = _texto_erro(exc)
         # Índice único em message_id — trata como duplicata (idempotente)
-        if mid and ("duplicate" in msg or "unique" in msg or "23505" in msg):
+        if mid and ("duplicate" in text or "unique" in text or "23505" in text):
             print("AVISO: message_id já existe — insert ignorado")
             return None
         # Coluna message_id ainda não migrada — grava sem o campo
-        if mid and ("message_id" in msg or "pgrst204" in msg or "column" in msg):
+        if "message_id" in payload and erro_coluna_ausente(exc, "message_id"):
+            _SCHEMA_FLAGS["message_id"] = False
             payload.pop("message_id", None)
             try:
                 return (
@@ -197,6 +310,8 @@ def mensagem_ja_existe(message_id: str) -> bool:
     mid = (message_id or "").strip()
     if not mid:
         return False
+    if _SCHEMA_FLAGS.get("message_id") is False:
+        return False
     try:
         resultado = _executar(
             lambda: (
@@ -208,11 +323,12 @@ def mensagem_ja_existe(message_id: str) -> bool:
             ),
             "mensagem_ja_existe",
         )
+        _SCHEMA_FLAGS["message_id"] = True
         return bool(resultado.data)
     except Exception as exc:
         # Coluna pode não existir ainda — não bloqueia o fluxo
-        msg = str(exc).lower()
-        if "message_id" in msg or "pgrst" in msg or "column" in msg:
+        if erro_coluna_ausente(exc, "message_id") or "pgrst" in _texto_erro(exc):
+            _SCHEMA_FLAGS["message_id"] = False
             print("AVISO: checagem message_id indisponível:", type(exc).__name__)
             return False
         raise
@@ -232,11 +348,11 @@ def buscar_historico(cliente_id, limit: int | None = None):
     return dados
 
 
-def atualizar_historico_json(cliente_id):
+def atualizar_historico_json(cliente_id, contexto_extra: dict | None = None):
+    """Atualiza clientes.historico; preserva contexto embutido se coluna ausente."""
     historico = buscar_historico(cliente_id)
 
     historico_json = []
-
     for msg in historico:
         historico_json.append({
             "role": "user" if msg["tipo"] == "cliente" else "assistant",
@@ -244,16 +360,111 @@ def atualizar_historico_json(cliente_id):
             "timestamp": str(msg.get("criado_em") or ""),
         })
 
+    # Preserva/atualiza contexto no JSON quando não há coluna contexto_venda
+    ctx = contexto_extra
+    if ctx is None and _SCHEMA_FLAGS.get("contexto_venda") is False:
+        try:
+            atual = (
+                supabase.table(TABELA_CLIENTES)
+                .select("historico")
+                .eq("id", cliente_id)
+                .limit(1)
+                .execute()
+            )
+            if atual.data:
+                ctx = extrair_contexto_do_historico_json(atual.data[0].get("historico"))
+        except Exception:
+            ctx = {}
+
+    payload_hist = historico_json
+    if ctx and _SCHEMA_FLAGS.get("contexto_venda") is not True:
+        payload_hist = anexar_contexto_no_historico_json(historico_json, ctx)
+
     resultado = (
         supabase.table(TABELA_CLIENTES)
-        .update({
-            "historico": historico_json
-        })
+        .update({"historico": payload_hist})
         .eq("id", cliente_id)
         .execute()
     )
-
     return resultado
+
+
+def persistir_contexto_venda(cliente_id: str, contexto: dict) -> bool:
+    """Persiste contexto_venda na coluna ou fallback no JSON historico.
+
+    Retorna True se gravou no Supabase; False se falhou.
+    """
+    from services.webhook_guard import log_seguro
+
+    if not cliente_id or str(cliente_id).startswith("ephemeral-"):
+        return False
+
+    log_seguro("atualizar_contexto_inicio", cliente_id=str(cliente_id)[:8])
+
+    # Caminho preferencial: coluna dedicada
+    if _SCHEMA_FLAGS.get("contexto_venda") is not False:
+        try:
+            atualizar_cliente(cliente_id=cliente_id, contexto_venda=contexto)
+            _SCHEMA_FLAGS["contexto_venda"] = True
+            return True
+        except Exception as exc:
+            if erro_coluna_ausente(exc, "contexto_venda"):
+                _SCHEMA_FLAGS["contexto_venda"] = False
+                log_seguro(
+                    "atualizar_contexto_erro",
+                    cliente_id=str(cliente_id)[:8],
+                    erro="PGRST204",
+                    detalhe="coluna contexto_venda ausente — usando fallback historico",
+                )
+            else:
+                log_seguro(
+                    "atualizar_contexto_erro",
+                    cliente_id=str(cliente_id)[:8],
+                    erro=type(exc).__name__,
+                    detalhe=str(exc)[:120],
+                )
+                return False
+
+    # Fallback: embute no JSON historico (sem migração)
+    try:
+        atual = (
+            supabase.table(TABELA_CLIENTES)
+            .select("historico")
+            .eq("id", cliente_id)
+            .limit(1)
+            .execute()
+        )
+        hist_raw = (atual.data[0].get("historico") if atual.data else None) or []
+        if isinstance(hist_raw, list):
+            mensagens = [
+                m
+                for m in hist_raw
+                if not (isinstance(m, dict) and m.get("role") == _HIST_CTX_ROLE)
+            ]
+        elif isinstance(hist_raw, dict):
+            mensagens = hist_raw.get("mensagens") or hist_raw.get("messages") or []
+            if not isinstance(mensagens, list):
+                mensagens = []
+        else:
+            mensagens = []
+
+        novo = anexar_contexto_no_historico_json(mensagens, contexto)
+        atualizar_cliente(cliente_id=cliente_id, historico=novo)
+        log_seguro(
+            "atualizar_contexto_inicio",
+            cliente_id=str(cliente_id)[:8],
+            modo="fallback_historico",
+        )
+        return True
+    except Exception as exc:
+        log_seguro(
+            "atualizar_contexto_erro",
+            cliente_id=str(cliente_id)[:8],
+            erro=type(exc).__name__,
+            detalhe=str(exc)[:120],
+            modo="fallback_historico",
+        )
+        return False
 
 
 # =========================
