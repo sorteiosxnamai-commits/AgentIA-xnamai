@@ -439,20 +439,20 @@ def resposta_preco_em_discussao(
             [
                 (
                     f"{nome}, o {nome_prod} fica {preco_fmt}. "
-                    "Quer que eu feche 1 unidade pra você?"
+                    "Quer seguir com a compra?"
                 ),
                 (
                     f"{nome}, esse {nome_prod} está {preco_fmt}. "
-                    "Te interessa fechar 1 unidade?"
+                    "Posso te passar o próximo passo para comprar."
                 ),
                 (
                     f"{nome_prod} — {preco_fmt}, {nome}. "
-                    "Posso separar 1 pra você?"
+                    "Quer seguir com a compra?"
                 ),
             ],
         )
     if preco_fmt:
-        return f"{nome}, fica {preco_fmt}. Quer fechar?"
+        return f"{nome}, fica {preco_fmt}. Quer seguir com a compra?"
     if nome_prod:
         return (
             f"{nome}, sobre o {nome_prod}: me confirma o modelo/código "
@@ -469,35 +469,38 @@ def resposta_fora_catalogo(
     termos: list | None = None,
     amostra: list | None = None,
 ) -> str:
-    """Quando o cliente pede algo que a loja não vende."""
+    """Produto inexistente — curto, sem lista aleatória."""
     nome = nome_cliente or "Cliente"
-    termos_produto = _termos_produto(termos)
+    termos_uteis = [
+        t for t in (termos or [])
+        if t and len(str(t)) >= 3
+    ]
+    pedido = " ".join(str(t) for t in termos_uteis[:4]).strip()
+    if not pedido:
+        pedido = "esse item"
 
-    # Sem termo de produto real → não inventar "não trabalhamos com X"
-    if not termos_produto:
+    # Só cita alternativa se a amostra for claramente relacionada ao pedido
+    relacionados = []
+    chave = _normalizar(pedido)
+    for p in amostra or []:
+        nome_p = str(p.get("name") or p.get("nome") or "")
+        cat_p = str(p.get("category") or p.get("categoria") or "")
+        blob = _normalizar(f"{nome_p} {cat_p}")
+        if chave and any(tok in blob for tok in chave.split() if len(tok) >= 4):
+            relacionados.append(nome_p)
+    relacionados = [r for r in relacionados if r][:2]
+
+    if relacionados:
+        alts = " ou ".join(relacionados)
         return (
-            f"{nome}, me diz qual tipo de produto você procura "
-            "(ex.: headset, cabo HDMI, mouse) que eu te mostro as opções."
+            f"{nome}, não encontrei {pedido} no nosso catálogo. "
+            f"Posso te mostrar {alts}?"
         )
 
-    pedido = " ".join(termos_produto)
-
-    if amostra:
-        exemplos = [p.get("nome", "") for p in amostra[:3] if p.get("nome")]
-        if len(exemplos) == 1:
-            linha_cat = f"Temos {exemplos[0]}, por exemplo."
-        elif exemplos:
-            linha_cat = f"Temos {exemplos[0]} e {exemplos[1]}, entre outros."
-        else:
-            linha_cat = ""
-    else:
-        linha_cat = ""
-
-    partes = [f"{nome}, não trabalhamos com {pedido}."]
-    if linha_cat:
-        partes.append(linha_cat)
-    partes.append("Quer ver o catálogo?")
-    return " ".join(partes)
+    return (
+        f"{nome}, não encontrei {pedido} no nosso catálogo. "
+        "Posso te ajudar com produtos de informática, periféricos ou armazenamento."
+    )
 
 
 def resposta_mostrar_catalogo(

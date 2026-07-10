@@ -185,20 +185,16 @@ def buscar_por_intencao(
     normalizados = [p for p in normalizados if p][:limite]
 
     if not normalizados:
-        amostra = _amostra_relacionada(categoria or query)
-        msg = (
-            "Não encontrei esse item no catálogo."
-            if sem_match or query
-            else "Nenhum produto correspondente no catálogo."
-        )
-        if amostra:
-            msg += " Posso te mostrar opções relacionadas do que trabalhamos."
+        # Não coloca amostra aleatória em products (evita lista sem relação no prompt)
         return _resultado(
             found=False,
             query=query or mensagem,
             category=categoria,
-            products=amostra[:limite] if amostra else [],
-            message=msg,
+            products=[],
+            message=(
+                "Não encontrei esse item no catálogo. "
+                "Responda de forma curta, sem listar produtos aleatórios."
+            ),
             fonte=fonte,
         )
 
@@ -400,26 +396,56 @@ def disponibilidade_texto(produto: dict) -> str:
     if not produto:
         return "Posso verificar a disponibilidade para você."
     qty = produto.get("stock_quantity")
-    if produto.get("stock_confirmed") and qty is not None and qty > 0:
-        return f"Há estoque confirmado ({int(qty) if float(qty) == int(qty) else qty})."
-    return "Posso verificar a disponibilidade para você."
+    confirmed = bool(produto.get("stock_confirmed"))
+    if confirmed and qty is not None and float(qty) > 0:
+        q = int(qty) if float(qty) == int(float(qty)) else qty
+        return f"Estoque no catálogo: {q} unidade(s). Pode informar essa quantidade."
+    return (
+        "Estoque NÃO confirmado (stock_confirmed=false / quantity nula ou zero). "
+        "NÃO afirme disponibilidade. "
+        "Diga apenas: Posso verificar a disponibilidade para você."
+    )
 
 
 def aplicar_resultado_no_contexto(contexto_venda, resultado: dict) -> None:
     """Atualiza ContextoVenda com produtos/catálogo do Product Service."""
     if contexto_venda is None or not resultado:
         return
-    produtos = resultado.get("products") or []
+
+    found = bool(resultado.get("found"))
+    produtos = resultado.get("products") or [] if found else []
+    relacionados = resultado.get("related") or []
+
     contexto_venda.produtos = produtos
-    contexto_venda.catalogo = resultado.get("catalogo") or montar_catalogo_para_prompt(produtos)
+    contexto_venda.sem_match = not found
+    # Não injeta amostra aleatória no prompt
+    contexto_venda.amostra_disponivel = relacionados if relacionados else []
+
+    if found:
+        contexto_venda.catalogo = (
+            resultado.get("catalogo") or montar_catalogo_para_prompt(produtos)
+        )
+    else:
+        contexto_venda.catalogo = (
+            "Nenhum produto encontrado no catálogo para esta consulta.\n"
+            "PROIBIDO listar produtos aleatórios (ex.: HD, headset) sem relação.\n"
+            "Diga que não encontrou o item e ofereça ajuda geral em informática/"
+            "periféricos/armazenamento — sem listar modelos.\n"
+        )
+
     if resultado.get("fonte"):
         contexto_venda.fonte = resultado["fonte"]
-    contexto_venda.sem_match = not resultado.get("found")
-    if resultado.get("message"):
-        extra = (
-            f"\nPRODUCT SERVICE: {resultado['message']}\n"
-            "Use SOMENTE produtos listados no CATÁLOGO. "
-            "Não invente produto, preço ou estoque. "
-            f"Disponibilidade: {disponibilidade_texto(produtos[0]) if produtos else 'Posso verificar a disponibilidade para você.'}"
-        )
-        contexto_venda.briefing = ((contexto_venda.briefing or "") + extra).strip()
+
+    p0 = produtos[0] if produtos else {}
+    stock_line = disponibilidade_texto(p0) if p0 else (
+        "Sem produto — não falar de estoque."
+    )
+    extra = (
+        f"\nPRODUCT SERVICE: found={found}; {resultado.get('message') or ''}\n"
+        f"stock_confirmed={p0.get('stock_confirmed') if p0 else False}; "
+        f"stock_quantity={p0.get('stock_quantity') if p0 else None}\n"
+        f"{stock_line}\n"
+        "Use SOMENTE produtos listados no CATÁLOGO. "
+        "Não invente produto, preço, estoque nem reserva/separação."
+    )
+    contexto_venda.briefing = ((contexto_venda.briefing or "") + extra).strip()

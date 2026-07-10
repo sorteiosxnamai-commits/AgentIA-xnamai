@@ -119,7 +119,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-etapa4-product-service"
+CODE_VERSION = "2026-07-10-fix-estoque-reserva-fora"
 
 router = APIRouter()
 
@@ -882,7 +882,18 @@ def _processar_mensagem_locked(
                 motivos=",".join(motivos_evitados),
             )
 
-        resposta_ia = sanitizar_frases_comerciais(resposta_ia)
+        stock_ok = False
+        if produtos:
+            p0 = produtos[0] or {}
+            qty = p0.get("stock_quantity")
+            stock_ok = bool(
+                p0.get("stock_confirmed")
+                and qty is not None
+                and float(qty) > 0
+            )
+        resposta_ia = sanitizar_frases_comerciais(
+            resposta_ia, stock_confirmed=stock_ok
+        )
 
         log_seguro(
             "resposta_pronta",

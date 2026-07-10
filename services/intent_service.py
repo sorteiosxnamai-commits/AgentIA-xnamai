@@ -463,15 +463,28 @@ FRASES_PROIBIDAS = (
     "disponível para envio",
     "disponivel para envio",
     "pronta entrega",
+    "disponibilidade confirmada",
+    "posso separar",
+    "posso reservar",
+    "já reservei",
+    "deixo separado",
 )
 
 
-def sanitizar_frases_comerciais(texto: str) -> str:
-    """Remove/substitui frases ruins sem inventar estoque."""
+def sanitizar_frases_comerciais(
+    texto: str,
+    *,
+    stock_confirmed: bool = False,
+) -> str:
+    """Remove/substitui frases ruins sem inventar estoque/reserva.
+
+    Se stock_confirmed=True, permite falar de estoque real.
+    Se False, remove afirmações de disponibilidade.
+    """
     if not (texto or "").strip():
         return texto or ""
     out = texto
-    substituicoes = (
+    substituicoes = [
         (
             r"(?i)a\s+princ[ií]pio\s+temos\s+(os\s+itens\s+)?em\s+estoque[^.!?]*[.!]?",
             "Posso verificar a disponibilidade para você. ",
@@ -496,20 +509,60 @@ def sanitizar_frases_comerciais(texto: str) -> str:
             r"(?i)quer\s+ver\s+o\s+cat[aá]logo\?",
             "Quer que eu te mostre algumas opções?",
         ),
-        # Disponibilidade inventada (sem estoque confirmado no catálogo)
         (
-            r"(?i),?\s*dispon[ií]vel\s+para\s+envio\.?",
-            ". Posso verificar a disponibilidade para você.",
+            r"(?i)\bposso\s+separar\b[^.!?]*[.!]?",
+            "Quer seguir com a compra?",
         ),
         (
-            r"(?i)\bpronta\s+entrega\b",
-            "disponibilidade a confirmar",
+            r"(?i)\bposso\s+reservar\b[^.!?]*[.!]?",
+            "Quer seguir com a compra?",
         ),
         (
-            r"(?i)\b(temos|esta|está)\s+dispon[ií]vel\b(?!\s+\d)",
-            "Posso verificar a disponibilidade",
+            r"(?i)\bj[aá]\s+reservei\b[^.!?]*[.!]?",
+            "Quer seguir com a compra?",
         ),
-    )
+        (
+            r"(?i)\bdeixo\s+separado\b[^.!?]*[.!]?",
+            "Quer seguir com a compra?",
+        ),
+        (
+            r"(?i)\bseparar\s+1\b[^.!?]*[.!]?",
+            "Quer seguir com a compra?",
+        ),
+    ]
+    if not stock_confirmed:
+        substituicoes.extend(
+            [
+                (
+                    r"(?i),?\s*dispon[ií]vel\s+para\s+envio\.?",
+                    ". Posso verificar a disponibilidade para você.",
+                ),
+                (
+                    r"(?i)\bpronta\s+entrega\b",
+                    "disponibilidade a confirmar",
+                ),
+                (
+                    r"(?i)\b(temos|esta|está)\s+dispon[ií]vel\b(?!\s+\d)",
+                    "Posso verificar a disponibilidade",
+                ),
+                (
+                    r"(?i),?\s*com\s+disponibilidade\s+confirmada[^.!?]*[.!]?",
+                    ". Posso verificar a disponibilidade para você.",
+                ),
+                (
+                    r"(?i)\bdisponibilidade\s+confirmada\b",
+                    "disponibilidade a confirmar",
+                ),
+                (
+                    r"(?i)\bem\s+estoque\b",
+                    "com disponibilidade a confirmar",
+                ),
+                (
+                    r"(?i)\bdispon[ií]vel\b(?!\s+a\s+confirmar)",
+                    "com disponibilidade a confirmar",
+                ),
+            ]
+        )
     for padrao, repl in substituicoes:
         out = re.sub(padrao, repl, out)
     out = re.sub(r"\s{2,}", " ", out)

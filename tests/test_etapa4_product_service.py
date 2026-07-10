@@ -70,7 +70,8 @@ def test_produto_com_estoque_confirmado():
     n = normalizar_produto_servico(_prod("SSD", 199, 10))
     assert n["stock_confirmed"] is True
     assert n["stock_quantity"] == 10
-    assert "estoque confirmado" in disponibilidade_texto(n).lower()
+    assert "unidade" in disponibilidade_texto(n).lower()
+    assert "10" in disponibilidade_texto(n)
 
 
 # 6

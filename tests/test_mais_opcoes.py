@@ -39,4 +39,6 @@ def test_resposta_mais_opcoes_com_categoria():
 def test_fora_catalogo_sem_termo_nao_inventa_frase():
     texto = resposta_fora_catalogo("Arthur", ["opcoes", "produtos"], [])
     assert "não trabalhamos com opções" not in texto.lower()
-    assert "tipo de produto" in texto.lower() or "procura" in texto.lower()
+    assert "não encontrei" in texto.lower() or "nao encontrei" in texto.lower()
+    assert "HD Externo" not in texto
+    assert texto.count("?") <= 1

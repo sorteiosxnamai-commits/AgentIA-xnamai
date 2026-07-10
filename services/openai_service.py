@@ -131,4 +131,21 @@ def perguntar_ia(
 
     from services.intent_service import sanitizar_frases_comerciais
 
-    return sanitizar_frases_comerciais(texto)
+    stock_ok = False
+    if isinstance(mem, dict):
+        # memória não guarda stock; usa produtos do contexto se houver
+        pass
+    prods = getattr(ctx, "produtos", None) or []
+    if prods:
+        p0 = prods[0] or {}
+        qty = p0.get("stock_quantity", p0.get("estoque"))
+        try:
+            stock_ok = bool(
+                p0.get("stock_confirmed")
+                and qty is not None
+                and float(qty) > 0
+            )
+        except (TypeError, ValueError):
+            stock_ok = False
+
+    return sanitizar_frases_comerciais(texto, stock_confirmed=stock_ok)
