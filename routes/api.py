@@ -91,7 +91,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-mcp-layer"
+CODE_VERSION = "2026-07-10-consultor-humano"
 
 router = APIRouter()
 
