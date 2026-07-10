@@ -127,7 +127,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-fix-conversas-thread"
+CODE_VERSION = "2026-07-10-fix-cliente-ok"
 
 
 def _resposta_texto(resultado) -> str | None:
@@ -362,15 +362,16 @@ def _processar_mensagem_locked(
         except Exception as exc:
             cliente = None
             log_seguro(
-                "chat_aviso_persistencia",
+                "cliente_busca_nao_encontrado",
                 telefone=numero,
                 message_id=msg_id or "-",
-                etapa="buscar_cliente",
                 erro=type(exc).__name__,
                 detalhe=str(exc)[:120],
             )
 
-        if not cliente:
+        if cliente:
+            etapas["cliente_ok"] = True
+        elif not cliente:
             if persistir:
                 cliente = _tentar_persistir(
                     "criar_cliente",
@@ -378,7 +379,14 @@ def _processar_mensagem_locked(
                     essencial=True,
                     etapa_flag="cliente_ok",
                 )
+                # Insert sem retorno / race: tenta rebusca antes de ephemeral
+                if not cliente:
+                    try:
+                        cliente = buscar_cliente(numero)
+                    except Exception:
+                        cliente = None
                 if cliente:
+                    etapas["cliente_ok"] = True
                     log_seguro("cliente_novo", telefone=numero, message_id=msg_id or "-")
                 else:
                     cliente = {
@@ -397,7 +405,13 @@ def _processar_mensagem_locked(
                     "contexto_venda": {},
                 }
                 log_seguro("cliente_ephemeral", telefone=numero, message_id=msg_id or "-")
-        elif nome_cliente and cliente.get("nome") != nome_cliente:
+
+        if (
+            cliente
+            and not str(cliente.get("id") or "").startswith("ephemeral-")
+            and nome_cliente
+            and cliente.get("nome") != nome_cliente
+        ):
             if persistir:
                 _tentar_persistir(
                     "atualizar_nome",
@@ -407,6 +421,9 @@ def _processar_mensagem_locked(
             cliente["nome"] = nome_cliente
 
         cliente_id = cliente["id"]
+        # Cliente real resolvido = ok (mesmo se create passou por rebusca)
+        if persistir and not str(cliente_id).startswith("ephemeral-"):
+            etapas["cliente_ok"] = True
 
         # =========================
         # SALVA MENSAGEM (histórico essencial; thread opcional)
@@ -1246,6 +1263,9 @@ def _processar_mensagem_locked(
 
         # Essenciais: cliente + historico + contexto
         if persistir and not str(cliente_id).startswith("ephemeral-"):
+            # Se histórico/contexto gravaram no registro do cliente, o cliente existe
+            if etapas.get("historico_ok") and etapas.get("contexto_ok"):
+                etapas["cliente_ok"] = True
             persistencia_ok = bool(
                 etapas.get("cliente_ok", True)
                 and etapas.get("historico_ok", True)

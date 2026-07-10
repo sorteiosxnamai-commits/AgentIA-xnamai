@@ -373,7 +373,7 @@ def test_lock_liberado_mesmo_com_exception():
 def test_webhook_continua():
     assert hasattr(api_mod, "receber_webhook")
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-10-fix-conversas-thread"
+    assert api_mod.CODE_VERSION == "2026-07-10-fix-cliente-ok"
 
 
 def test_dry_run_nao_chama_bridge_cliente(monkeypatch):

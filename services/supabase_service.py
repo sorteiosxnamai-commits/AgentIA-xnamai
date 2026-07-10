@@ -245,46 +245,174 @@ def _normalizar_produto(row: dict) -> dict:
 # CLIENTES (agente WhatsApp)
 # =========================
 
+def _nome_cliente_seguro(nome: str, tel: str) -> str:
+    limpo = (nome or "").strip()
+    if limpo:
+        return limpo[:120]
+    sufixo = (tel or "")[-4:] or "0000"
+    return f"WhatsApp {sufixo}"
+
+
+def _buscar_cliente_por_campo(campo: str, tel: str) -> dict | None:
+    try:
+        resultado = _executar(
+            lambda: (
+                supabase.table(TABELA_CLIENTES)
+                .select("*")
+                .eq(campo, tel)
+                .limit(1)
+                .execute()
+            ),
+            f"buscar_cliente_{campo}",
+        )
+        if resultado.data:
+            return resultado.data[0]
+    except Exception as exc:
+        if erro_coluna_ausente(exc, campo):
+            return None
+        raise
+    return None
+
+
 def buscar_cliente(telefone):
+    """Busca por telefone e, se necessário, por celular (schema PulseDesk)."""
+    from services.webhook_guard import log_seguro
+
     tel = normalizar_telefone(telefone)
     if not tel:
         return None
 
-    resultado = _executar(
-        lambda: (
-            supabase.table(TABELA_CLIENTES)
-            .select("*")
-            .eq("telefone", tel)
-            .execute()
-        ),
-        "buscar_cliente",
-    )
+    log_seguro("cliente_busca_inicio", tel_sufixo=tel[-4:])
 
-    if resultado.data:
-        return resultado.data[0]
+    # 1) telefone
+    row = _buscar_cliente_por_campo("telefone", tel)
+    if row:
+        log_seguro("cliente_busca_ok", via="telefone", id_prefix=str(row.get("id") or "")[:8])
+        return row
 
+    # 2) celular (mesma tabela PulseDesk)
+    row = _buscar_cliente_por_campo("celular", tel)
+    if row:
+        log_seguro("cliente_busca_ok", via="celular", id_prefix=str(row.get("id") or "")[:8])
+        return row
+
+    # 3) or_ filter (uma query) — ignora se PostgREST rejeitar
+    try:
+        resultado = _executar(
+            lambda: (
+                supabase.table(TABELA_CLIENTES)
+                .select("*")
+                .or_(f"telefone.eq.{tel},celular.eq.{tel}")
+                .limit(1)
+                .execute()
+            ),
+            "buscar_cliente_or",
+        )
+        if resultado.data:
+            row = resultado.data[0]
+            log_seguro(
+                "cliente_busca_ok",
+                via="or",
+                id_prefix=str(row.get("id") or "")[:8],
+            )
+            return row
+    except Exception:
+        pass
+
+    log_seguro("cliente_busca_nao_encontrado", tel_sufixo=tel[-4:])
     return None
 
 
 def criar_cliente(telefone, nome=""):
+    """Cria cliente com colunas existentes (telefone/celular/nome). Sem email/CPF."""
+    from services.webhook_guard import log_seguro
+
     tel = normalizar_telefone(telefone)
-    dados = {"telefone": tel}
-    if nome:
-        dados["nome"] = nome
+    if not tel:
+        raise ValueError("telefone_obrigatorio")
+
+    nome_ok = _nome_cliente_seguro(nome, tel)
+    log_seguro("cliente_criacao_inicio", tel_sufixo=tel[-4:])
+
+    # Colunas reais do schema PulseDesk — não inserir campos inexistentes
+    dados = {
+        "telefone": tel,
+        "celular": tel,
+        "nome": nome_ok,
+    }
 
     try:
         resultado = _executar(
             lambda: supabase.table(TABELA_CLIENTES).insert(dados).execute(),
             "criar_cliente",
         )
-        return resultado.data[0]
+        if resultado.data:
+            row = resultado.data[0]
+            log_seguro(
+                "cliente_criacao_ok",
+                id_prefix=str(row.get("id") or "")[:8],
+                via="insert",
+            )
+            return row
+        # Insert pode gravar sem retornar linha (RLS / Prefer) — rebusca
+        existente = buscar_cliente(tel)
+        if existente:
+            log_seguro(
+                "cliente_criacao_ok",
+                id_prefix=str(existente.get("id") or "")[:8],
+                via="rebusca_pos_insert",
+            )
+            return existente
+        log_seguro("cliente_criacao_erro", erro="insert_sem_retorno")
+        raise RuntimeError("criar_cliente_sem_retorno")
     except Exception as exc:
         text = _texto_erro(exc)
-        # Telefone já existe — rebusca em vez de falhar
+        # Duplicado — rebusca em telefone/celular
         if "duplicate" in text or "unique" in text or "23505" in text:
             existente = buscar_cliente(tel)
             if existente:
+                log_seguro(
+                    "cliente_criacao_ok",
+                    id_prefix=str(existente.get("id") or "")[:8],
+                    via="duplicado_rebusca",
+                )
                 return existente
+        # Coluna celular ausente — retry só com telefone+nome
+        if "celular" in dados and erro_coluna_ausente(exc, "celular"):
+            dados.pop("celular", None)
+            try:
+                resultado = _executar(
+                    lambda: supabase.table(TABELA_CLIENTES).insert(dados).execute(),
+                    "criar_cliente_sem_celular",
+                )
+                if resultado.data:
+                    row = resultado.data[0]
+                    log_seguro(
+                        "cliente_criacao_ok",
+                        id_prefix=str(row.get("id") or "")[:8],
+                        via="insert_sem_celular",
+                    )
+                    return row
+                existente = buscar_cliente(tel)
+                if existente:
+                    return existente
+            except Exception as exc2:
+                text2 = _texto_erro(exc2)
+                if "duplicate" in text2 or "unique" in text2 or "23505" in text2:
+                    existente = buscar_cliente(tel)
+                    if existente:
+                        return existente
+                log_seguro(
+                    "cliente_criacao_erro",
+                    erro=type(exc2).__name__,
+                    detalhe=str(exc2)[:120],
+                )
+                raise
+        log_seguro(
+            "cliente_criacao_erro",
+            erro=type(exc).__name__,
+            detalhe=str(exc)[:120],
+        )
         raise
 
 
@@ -292,14 +420,25 @@ def atualizar_cliente(cliente_id, **campos):
     if not campos:
         return None
 
-    resultado = (
-        supabase.table(TABELA_CLIENTES)
-        .update(campos)
-        .eq("id", cliente_id)
-        .execute()
-    )
+    try:
+        resultado = (
+            supabase.table(TABELA_CLIENTES)
+            .update(campos)
+            .eq("id", cliente_id)
+            .execute()
+        )
+        return resultado
+    except Exception as exc:
+        from services.webhook_guard import log_seguro
 
-    return resultado
+        log_seguro(
+            "cliente_update_erro",
+            id_prefix=str(cliente_id)[:8],
+            erro=type(exc).__name__,
+            detalhe=str(exc)[:120],
+            campos=",".join(sorted(campos.keys())),
+        )
+        raise
 
 
 def salvar_openai_thread_id(cliente_id, thread_id):
