@@ -1,6 +1,7 @@
-fastapi
+﻿fastapi
 uvicorn
 openai
 python-dotenv
 requests
 supabase==2.31.0
+mcp>=1.0.0

@@ -91,7 +91,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-vendedor-humano"
+CODE_VERSION = "2026-07-10-mcp-layer"
 
 router = APIRouter()
 
@@ -330,6 +330,30 @@ def processar_mensagem(data: dict):
         contexto_venda.memoria = sessao
         persistir_sessao(str(cliente_id), sessao)
 
+        # MCP: tools necessárias → JSON → prompt (não altera fechamento)
+        mcp_bloco = ""
+        try:
+            from services.mcp.router import enrich_turno
+
+            sessao, mcp_bloco, _mcp_raw = enrich_turno(
+                mensagem=mensagem,
+                sessao=sessao,
+                cliente_id=str(cliente_id),
+                telefone=numero,
+                nome_cliente=nome_conversa,
+                historico_texto=historico_venda,
+            )
+            contexto_venda.memoria = sessao
+            if mcp_bloco:
+                contexto_venda.briefing = (
+                    (contexto_venda.briefing or "")
+                    + "\nUse RESULTADOS MCP abaixo; não invente dados fora deles."
+                ).strip()
+                persistir_sessao(str(cliente_id), sessao)
+        except Exception as mcp_exc:
+            print("MCP enrich falhou (seguindo sem MCP):", type(mcp_exc).__name__, str(mcp_exc)[:120])
+            mcp_bloco = ""
+
         if not pular_catalogo:
             print("================================")
             print("ESTAGIO VENDA:", contexto_venda.estagio)
@@ -525,6 +549,7 @@ def processar_mensagem(data: dict):
                 contexto_venda=contexto_venda,
                 memoria_sessao=sessao,
                 temperature=TEMPERATURE_CONVERSA,
+                mcp_enrichment=mcp_bloco,
             )
             print("LLM: pergunta ambígua sobre produto ativo")
         elif (
@@ -564,6 +589,7 @@ def processar_mensagem(data: dict):
                 foto_automatica=bool(com_foto and pediu_foto),
                 contexto_venda=contexto_venda,
                 memoria_sessao=sessao,
+                mcp_enrichment=mcp_bloco,
             )
 
         print("RESPOSTA IA:")
@@ -661,6 +687,8 @@ async def status():
         "vendas_consultivas": True,
         "code_version": CODE_VERSION,
         "pulsedesk_bridge": os.getenv("PULSEDESK_BRIDGE_ENABLED", "true"),
+        "mcp_enabled": os.getenv("MCP_ENABLED", "true"),
+        "mcp_server_enabled": os.getenv("MCP_SERVER_ENABLED", "false"),
     }
 
 

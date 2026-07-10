@@ -1,0 +1,1 @@
+# Pacote server (FastMCP opcional)

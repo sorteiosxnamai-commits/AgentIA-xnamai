@@ -70,6 +70,7 @@ def montar_entrada_ia(
     contexto_venda,
     foto_automatica: bool = False,
     memoria_sessao: dict | None = None,
+    mcp_enrichment: str = "",
 ) -> str:
     estagio = getattr(contexto_venda, "estagio", "atencao")
     briefing = getattr(contexto_venda, "briefing", "")
@@ -115,4 +116,6 @@ HISTÓRICO RECENTE:
 
 CATÁLOGO (única fonte de produtos/preços):
 {catalogo or "Nenhum produto retornado para esta consulta."}
+
+{mcp_enrichment}
 """.strip()

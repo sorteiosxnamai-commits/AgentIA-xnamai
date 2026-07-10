@@ -89,6 +89,7 @@ def perguntar_ia(
     contexto_venda: ContextoVenda | None = None,
     memoria_sessao: dict | None = None,
     temperature: float | None = None,
+    mcp_enrichment: str = "",
 ) -> str:
     ctx = contexto_venda or ContextoVenda(catalogo=catalogo)
     if catalogo and not ctx.catalogo:
@@ -107,6 +108,7 @@ def perguntar_ia(
         contexto_venda=ctx,
         foto_automatica=foto_automatica,
         memoria_sessao=mem,
+        mcp_enrichment=mcp_enrichment or "",
     )
 
     texto = _chamar_openai(instrucoes, entrada, temp)
