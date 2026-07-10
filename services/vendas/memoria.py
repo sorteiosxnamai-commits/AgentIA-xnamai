@@ -66,15 +66,61 @@ def carregar_sessao(cliente: dict | None, cliente_id: str | None = None) -> dict
 def persistir_sessao(cliente_id: str, sessao: dict[str, Any]) -> None:
     if not cliente_id:
         return
-    limpa = {k: sessao.get(k, SESSAO_PADRAO[k]) for k in SESSAO_PADRAO}
+    limpa = serializar_contexto_venda(sessao)
     _cache_sessao[str(cliente_id)] = deepcopy(limpa)
     try:
         from services.supabase_service import atualizar_cliente
+        from services.webhook_guard import log_seguro
 
+        log_seguro("atualizar_contexto_inicio", cliente_id=str(cliente_id)[:8])
         atualizar_cliente(cliente_id=cliente_id, contexto_venda=limpa)
     except Exception as exc:
-        # Coluna pode não existir ainda — cache em memória basta
-        print("AVISO contexto_venda não persistido:", type(exc).__name__, str(exc)[:120])
+        # Coluna pode não existir / payload inválido — cache em memória basta
+        try:
+            from services.webhook_guard import log_seguro
+
+            log_seguro(
+                "atualizar_contexto_erro",
+                cliente_id=str(cliente_id)[:8],
+                erro=type(exc).__name__,
+                detalhe=str(exc)[:120],
+            )
+        except Exception:
+            print("AVISO contexto_venda não persistido:", type(exc).__name__, str(exc)[:120])
+
+
+def serializar_contexto_venda(sessao: dict[str, Any] | None) -> dict[str, Any]:
+    """Converte sessão para dict JSON-safe (Decimal, datetime, etc.)."""
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    bruto = {k: (sessao or {}).get(k, SESSAO_PADRAO[k]) for k in SESSAO_PADRAO}
+
+    def _default(obj: Any):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        if isinstance(obj, set):
+            return list(obj)
+        if hasattr(obj, "item"):  # numpy scalar
+            try:
+                return obj.item()
+            except Exception:
+                return str(obj)
+        return str(obj)
+
+    try:
+        return json.loads(json.dumps(bruto, ensure_ascii=False, default=_default))
+    except (TypeError, ValueError):
+        # Fallback campo a campo
+        out: dict[str, Any] = {}
+        for k, v in bruto.items():
+            try:
+                out[k] = json.loads(json.dumps(v, ensure_ascii=False, default=_default))
+            except Exception:
+                out[k] = None if v is None else str(v)
+        return out
 
 
 def limpar_sessao(cliente_id: str) -> None:
@@ -257,7 +303,7 @@ def atualizar_sessao_turno(
 
 
 def formatar_sessao_para_prompt(sessao: dict[str, Any] | None) -> str:
-    s = sessao or sessao_vazia()
+    s = serializar_contexto_venda(sessao or sessao_vazia())
     return json.dumps(s, ensure_ascii=False, indent=2)
 
 

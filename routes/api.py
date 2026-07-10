@@ -125,7 +125,21 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-etapa5-checkout"
+CODE_VERSION = "2026-07-10-fix-persistencia-checkout"
+
+
+def _resposta_texto(resultado) -> str | None:
+    """Extrai texto da resposta (str legado ou dict Etapa 5+)."""
+    if isinstance(resultado, dict):
+        return resultado.get("resposta")
+    return resultado
+
+
+def _montar_resultado(resposta: str | None, persistencia_ok: bool = True) -> dict:
+    return {
+        "resposta": resposta,
+        "persistencia_ok": bool(persistencia_ok) if resposta else False,
+    }
 
 router = APIRouter()
 
@@ -249,6 +263,27 @@ def _processar_mensagem_locked(
     msg_id: str,
     inicio: float,
 ):
+    persistencia_ok = True
+    resposta_ia = None
+
+    def _tentar_persistir(etapa: str, fn):
+        nonlocal persistencia_ok
+        if not persistir:
+            return None
+        try:
+            return fn()
+        except Exception as exc:
+            persistencia_ok = False
+            log_seguro(
+                "chat_erro_persistencia",
+                telefone=numero,
+                message_id=msg_id or "-",
+                etapa=etapa,
+                erro=type(exc).__name__,
+                detalhe=str(exc)[:120],
+            )
+            return None
+
     try:
         log_seguro(
             "processamento_inicio",
@@ -263,12 +298,36 @@ def _processar_mensagem_locked(
         # CLIENTE (isolado por telefone normalizado)
         # =========================
 
-        cliente = buscar_cliente(numero)
+        try:
+            cliente = buscar_cliente(numero)
+        except Exception as exc:
+            persistencia_ok = False
+            cliente = None
+            log_seguro(
+                "chat_erro_persistencia",
+                telefone=numero,
+                message_id=msg_id or "-",
+                etapa="buscar_cliente",
+                erro=type(exc).__name__,
+                detalhe=str(exc)[:120],
+            )
 
         if not cliente:
             if persistir:
-                cliente = criar_cliente(numero, nome=nome_cliente)
-                log_seguro("cliente_novo", telefone=numero, message_id=msg_id or "-")
+                cliente = _tentar_persistir(
+                    "criar_cliente",
+                    lambda: criar_cliente(numero, nome=nome_cliente),
+                )
+                if cliente:
+                    log_seguro("cliente_novo", telefone=numero, message_id=msg_id or "-")
+                else:
+                    cliente = {
+                        "id": f"ephemeral-{numero}",
+                        "telefone": numero,
+                        "nome": nome_cliente,
+                        "contexto_venda": {},
+                    }
+                    persistencia_ok = False
             else:
                 cliente = {
                     "id": f"ephemeral-{numero}",
@@ -279,7 +338,10 @@ def _processar_mensagem_locked(
                 log_seguro("cliente_ephemeral", telefone=numero, message_id=msg_id or "-")
         elif nome_cliente and cliente.get("nome") != nome_cliente:
             if persistir:
-                atualizar_cliente(cliente_id=cliente["id"], nome=nome_cliente)
+                _tentar_persistir(
+                    "atualizar_nome",
+                    lambda: atualizar_cliente(cliente_id=cliente["id"], nome=nome_cliente),
+                )
             cliente["nome"] = nome_cliente
 
         cliente_id = cliente["id"]
@@ -288,15 +350,32 @@ def _processar_mensagem_locked(
         # SALVA MENSAGEM
         # =========================
 
-        if persistir:
-            salvar_mensagem(
-                cliente_id,
-                "cliente",
-                mensagem,
-                message_id=msg_id or None,
+        if persistir and not str(cliente_id).startswith("ephemeral-"):
+            _tentar_persistir(
+                "salvar_mensagem_cliente",
+                lambda: salvar_mensagem(
+                    cliente_id,
+                    "cliente",
+                    mensagem,
+                    message_id=msg_id or None,
+                ),
             )
-            espelhar_mensagem_cliente(numero, nome_cliente, mensagem)
-            atualizar_historico_json(cliente_id)
+            # Bridge PulseDesk só em tráfego real (não dry_run de /chat)
+            if not dry_run:
+                try:
+                    espelhar_mensagem_cliente(numero, nome_cliente, mensagem)
+                except Exception as exc:
+                    log_seguro(
+                        "chat_erro_persistencia",
+                        telefone=numero,
+                        message_id=msg_id or "-",
+                        etapa="espelhar_cliente",
+                        erro=type(exc).__name__,
+                    )
+            _tentar_persistir(
+                "atualizar_historico_json",
+                lambda: atualizar_historico_json(cliente_id),
+            )
 
         # =========================
         # HISTÓRICO
@@ -478,8 +557,11 @@ def _processar_mensagem_locked(
         if intent.get("category") and not sessao.get("categoria_interesse"):
             sessao["categoria_interesse"] = intent["category"]
         contexto_venda.memoria = sessao
-        if persistir:
-            persistir_sessao(str(cliente_id), sessao)
+        if persistir and not str(cliente_id).startswith('ephemeral-'):
+            _tentar_persistir(
+                'atualizar_contexto',
+                lambda: persistir_sessao(str(cliente_id), sessao),
+            )
 
         log_seguro(
             "intent_classificada",
@@ -534,8 +616,11 @@ def _processar_mensagem_locked(
                 if p0.get("price") is not None:
                     sessao["preco_cotado"] = p0["price"]
             contexto_venda.memoria = sessao
-            if persistir:
-                persistir_sessao(str(cliente_id), sessao)
+            if persistir and not str(cliente_id).startswith("ephemeral-"):
+                _tentar_persistir(
+                    "atualizar_contexto",
+                    lambda: persistir_sessao(str(cliente_id), sessao),
+                )
             log_seguro(
                 "product_service",
                 telefone=numero,
@@ -591,8 +676,11 @@ def _processar_mensagem_locked(
                     (contexto_venda.briefing or "")
                     + "\nUse RESULTADOS MCP abaixo; não invente dados fora deles."
                 ).strip()
-                if persistir:
-                    persistir_sessao(str(cliente_id), sessao)
+                if persistir and not str(cliente_id).startswith("ephemeral-"):
+                    _tentar_persistir(
+                        "atualizar_contexto",
+                        lambda: persistir_sessao(str(cliente_id), sessao),
+                    )
         except Exception as mcp_exc:
             print("MCP enrich falhou (seguindo sem MCP):", type(mcp_exc).__name__, str(mcp_exc)[:120])
             mcp_bloco = ""
@@ -610,18 +698,28 @@ def _processar_mensagem_locked(
         # LEADS + NOTIFICA VENDEDOR
         # =========================
 
-        if persistir:
-            resultado_lead = processar_lead_e_notificar(
-                cliente_id=cliente_id,
-                numero_cliente=numero,
-                nome_cliente=nome_cliente,
-                mensagem=mensagem,
-                produtos=produtos,
-            )
-
-            if resultado_lead["notificado"]:
-                print("VENDEDOR NOTIFICADO:", resultado_lead["interesse"])
-        else:
+        if persistir and not str(cliente_id).startswith("ephemeral-"):
+            try:
+                resultado_lead = processar_lead_e_notificar(
+                    cliente_id=cliente_id,
+                    numero_cliente=numero,
+                    nome_cliente=nome_cliente,
+                    mensagem=mensagem,
+                    produtos=produtos,
+                )
+                if resultado_lead.get("notificado"):
+                    print("VENDEDOR NOTIFICADO:", resultado_lead["interesse"])
+            except Exception as exc:
+                persistencia_ok = False
+                log_seguro(
+                    "chat_erro_persistencia",
+                    telefone=numero,
+                    message_id=msg_id or "-",
+                    etapa="lead",
+                    erro=type(exc).__name__,
+                    detalhe=str(exc)[:120],
+                )
+        elif not persistir:
             log_seguro("lead_pulado", telefone=numero, message_id=msg_id or "-", motivo="persistir=false")
 
         # =========================
@@ -689,8 +787,11 @@ def _processar_mensagem_locked(
                     if checkout_out.get("sessao"):
                         sessao.update(checkout_out["sessao"])
                         contexto_venda.memoria = sessao
-                        if persistir:
-                            persistir_sessao(str(cliente_id), sessao)
+                        if persistir and not str(cliente_id).startswith("ephemeral-"):
+                            _tentar_persistir(
+                                "atualizar_contexto",
+                                lambda: persistir_sessao(str(cliente_id), sessao),
+                            )
 
                     pedido_registrado = checkout_out.get("pedido")
                     if pedido_registrado and pedido_registrado.get("pedido_id"):
@@ -790,8 +891,11 @@ def _processar_mensagem_locked(
             if checkout_out.get("sessao"):
                 sessao.update(checkout_out["sessao"])
                 contexto_venda.memoria = sessao
-                if persistir:
-                    persistir_sessao(str(cliente_id), sessao)
+                if persistir and not str(cliente_id).startswith("ephemeral-"):
+                    _tentar_persistir(
+                        "atualizar_contexto",
+                        lambda: persistir_sessao(str(cliente_id), sessao),
+                    )
             resposta_ia = checkout_out.get("reply") or (
                 "Posso te passar o próximo passo para compra."
             )
@@ -976,16 +1080,27 @@ def _processar_mensagem_locked(
         # SALVA RESPOSTA IA
         # =========================
 
-        if persistir:
-            salvar_mensagem(
-                cliente_id,
-                "ia",
-                resposta_ia,
+        if persistir and not str(cliente_id).startswith("ephemeral-"):
+            _tentar_persistir(
+                "salvar_mensagem_ia",
+                lambda: salvar_mensagem(cliente_id, "ia", resposta_ia),
             )
             if not dry_run:
-                espelhar_mensagem_agente(numero, nome_cliente, resposta_ia)
+                try:
+                    espelhar_mensagem_agente(numero, nome_cliente, resposta_ia)
+                except Exception as exc:
+                    log_seguro(
+                        "chat_erro_persistencia",
+                        telefone=numero,
+                        message_id=msg_id or "-",
+                        etapa="espelhar_agente",
+                        erro=type(exc).__name__,
+                    )
 
-            atualizar_historico_json(cliente_id)
+            _tentar_persistir(
+                "atualizar_historico_json",
+                lambda: atualizar_historico_json(cliente_id),
+            )
 
             # Atualiza última pergunta do agente na sessão
             from services.historico_service import extrair_ultima_pergunta_ia
@@ -993,13 +1108,35 @@ def _processar_mensagem_locked(
             sessao["ultima_pergunta_agente"] = extrair_ultima_pergunta_ia(
                 historico_venda + f"\nIA: {resposta_ia}\n"
             ) or sessao.get("ultima_pergunta_agente") or ""
-            persistir_sessao(str(cliente_id), sessao)
+            _tentar_persistir(
+                "atualizar_contexto",
+                lambda: persistir_sessao(str(cliente_id), sessao),
+            )
+        elif persistir:
+            # ephemeral: só cache local
+            try:
+                from services.vendas.memoria import persistir_sessao as _ps
+
+                _ps(str(cliente_id), sessao)
+            except Exception:
+                pass
 
         # =========================
         # ENVIA WHATSAPP
         # =========================
 
         enviar_wa = (not dry_run) and persistir
+
+        resultado_final = _montar_resultado(resposta_ia, persistencia_ok)
+        log_seguro(
+            "chat_resposta_final",
+            telefone=numero,
+            message_id=msg_id or "-",
+            persistencia_ok=persistencia_ok,
+            chars=len(resposta_ia or ""),
+            dry_run=dry_run,
+            persistir=persistir,
+        )
 
         if not enviar_wa:
             log_seguro(
@@ -1010,7 +1147,7 @@ def _processar_mensagem_locked(
                 ms=int((__import__("time").time() - inicio) * 1000),
             )
             finalizar_mensagem(data, sucesso=True)
-            return resposta_ia
+            return resultado_final
 
         envio = enviar_mensagem(
             numero,
@@ -1035,14 +1172,32 @@ def _processar_mensagem_locked(
             etapa=sessao.get("estagio_conversa") or "fim",
             ms=int((__import__("time").time() - inicio) * 1000),
         )
-        return resposta_ia
+        return resultado_final
 
     except Exception as e:
         print("ERRO:")
         print(type(e).__name__, str(e)[:200])
         traceback.print_exc()
         finalizar_mensagem(data, sucesso=False)
-        return None
+        # Se já havia resposta comercial, devolve mesmo com falha
+        if resposta_ia:
+            log_seguro(
+                "chat_erro_persistencia",
+                telefone=numero,
+                message_id=msg_id or "-",
+                etapa="exception_apos_resposta",
+                erro=type(e).__name__,
+                detalhe=str(e)[:120],
+            )
+            log_seguro(
+                "chat_resposta_final",
+                telefone=numero,
+                message_id=msg_id or "-",
+                persistencia_ok=False,
+                chars=len(resposta_ia or ""),
+            )
+            return _montar_resultado(resposta_ia, persistencia_ok=False)
+        return _montar_resultado(None, persistencia_ok=False)
 
 
 def _log_webhook_recebido(data: dict) -> None:
@@ -1175,10 +1330,16 @@ async def chat_teste(payload: dict):
     }
 
     loop = asyncio.get_event_loop()
-    resposta = await loop.run_in_executor(
+    resultado = await loop.run_in_executor(
         None,
         lambda: processar_mensagem(data, dry_run=dry_run, persistir=persistir),
     )
+    resposta = _resposta_texto(resultado)
+    persistencia_ok = True
+    if isinstance(resultado, dict):
+        persistencia_ok = bool(resultado.get("persistencia_ok", False))
+    elif resultado is None:
+        persistencia_ok = False
 
     return {
         "status": "ok" if resposta else "erro",
@@ -1187,6 +1348,7 @@ async def chat_teste(payload: dict):
         "resposta": resposta,
         "dry_run": dry_run,
         "persistir": persistir,
+        "persistencia_ok": persistencia_ok if resposta else False,
         "code_version": CODE_VERSION,
     }
 

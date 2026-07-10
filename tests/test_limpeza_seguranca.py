@@ -201,7 +201,8 @@ def test_chat_persistir_false_nao_salva(monkeypatch):
         },
     }
     resp = api_mod.processar_mensagem(data, dry_run=True, persistir=False)
-    assert resp
+    texto = resp.get("resposta") if isinstance(resp, dict) else resp
+    assert texto
     assert calls["salvar"] == 0
     assert calls["hist"] == 0
     assert calls["lead"] == 0

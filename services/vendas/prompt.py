@@ -148,9 +148,21 @@ def montar_entrada_ia(
 
     memoria_json = "{}"
     if memoria_sessao:
-        memoria_json = json.dumps(memoria_sessao, ensure_ascii=False, indent=2)
+        from services.vendas.memoria import serializar_contexto_venda
+
+        memoria_json = json.dumps(
+            serializar_contexto_venda(memoria_sessao),
+            ensure_ascii=False,
+            indent=2,
+        )
     elif getattr(contexto_venda, "memoria", None):
-        memoria_json = json.dumps(contexto_venda.memoria, ensure_ascii=False, indent=2)
+        from services.vendas.memoria import serializar_contexto_venda
+
+        memoria_json = json.dumps(
+            serializar_contexto_venda(contexto_venda.memoria),
+            ensure_ascii=False,
+            indent=2,
+        )
 
     # historico_texto já deve vir montado (resumo + histórico útil). Não cortar às cegas.
     historico_bloco = (historico_texto or "").strip() or "(primeira mensagem)"

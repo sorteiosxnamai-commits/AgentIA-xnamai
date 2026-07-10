@@ -135,6 +135,8 @@ def salvar_openai_thread_id(cliente_id, thread_id):
 # =========================
 
 def salvar_mensagem(cliente_id, tipo, mensagem, message_id: str | None = None):
+    from services.webhook_guard import log_seguro
+
     payload = {
         "cliente_id": cliente_id,
         "tipo": tipo,
@@ -144,6 +146,12 @@ def salvar_mensagem(cliente_id, tipo, mensagem, message_id: str | None = None):
     if mid:
         payload["message_id"] = mid
 
+    log_seguro(
+        "salvar_mensagem_inicio",
+        tipo=tipo,
+        message_id=mid or "-",
+        chars=len(mensagem or ""),
+    )
     try:
         return (
             supabase.table(TABELA_HISTORICO)
@@ -152,6 +160,13 @@ def salvar_mensagem(cliente_id, tipo, mensagem, message_id: str | None = None):
         )
     except Exception as exc:
         msg = str(exc).lower()
+        log_seguro(
+            "salvar_mensagem_erro",
+            tipo=tipo,
+            message_id=mid or "-",
+            erro=type(exc).__name__,
+            detalhe=str(exc)[:120],
+        )
         # Índice único em message_id — trata como duplicata (idempotente)
         if mid and ("duplicate" in msg or "unique" in msg or "23505" in msg):
             print("AVISO: message_id já existe — insert ignorado")
@@ -159,11 +174,21 @@ def salvar_mensagem(cliente_id, tipo, mensagem, message_id: str | None = None):
         # Coluna message_id ainda não migrada — grava sem o campo
         if mid and ("message_id" in msg or "pgrst204" in msg or "column" in msg):
             payload.pop("message_id", None)
-            return (
-                supabase.table(TABELA_HISTORICO)
-                .insert(payload)
-                .execute()
-            )
+            try:
+                return (
+                    supabase.table(TABELA_HISTORICO)
+                    .insert(payload)
+                    .execute()
+                )
+            except Exception as exc2:
+                log_seguro(
+                    "salvar_mensagem_erro",
+                    tipo=tipo,
+                    message_id="-",
+                    erro=type(exc2).__name__,
+                    detalhe=str(exc2)[:120],
+                )
+                raise
         raise
 
 
