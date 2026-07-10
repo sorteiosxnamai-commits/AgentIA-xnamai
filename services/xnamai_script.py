@@ -226,11 +226,8 @@ def resposta_pedido_minimo(nome_cliente: str = "", valor_atual: float | None = N
 def resposta_estoque_disponibilidade(nome_cliente: str = "") -> str:
     nome = nome_cliente or "Cliente"
     return (
-        f"A princípio temos os itens em estoque, sim, {nome}!\n\n"
-        "Como o pedido ainda passa pela fila de separação, pode acontecer de algum item "
-        "ficar indisponível na conferência. Nesse caso fazemos crédito ou estorno no mesmo dia.\n\n"
-        "Para iniciarmos a separação, o pagamento antecipado é a etapa inicial do processo "
-        "(sem obrigatoriedade)."
+        f"Posso verificar a disponibilidade para você, {nome}. "
+        "Me diga o produto (ou me confirma o que estávamos vendo) que eu checo e te retorno."
     )
 
 

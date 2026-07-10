@@ -44,10 +44,14 @@ def resposta_sem_foto(produto: dict) -> str:
     preco = produto.get("preco", "")
     if preco not in (None, ""):
         return (
-            f"Ainda não tenho foto do {nome} aqui. "
-            f"Sai por R$ {preco}. Fechamos 1 unidade?"
+            f"Para o que você precisa, indico o {nome} por R$ {preco}. "
+            f"É uma boa opção custo-benefício. Quer que eu te passe mais detalhes "
+            f"ou prefere ver outra faixa de preço?"
         )
-    return f"Ainda não tenho foto do {nome} aqui. Quer que eu te passe os detalhes?"
+    return (
+        f"Indico o {nome} para o que você comentou. "
+        f"Quer que eu te passe os detalhes principais?"
+    )
 
 
 def resposta_com_foto(produto: dict) -> str:
@@ -125,4 +129,6 @@ def perguntar_ia(
         if texto2:
             texto = texto2
 
-    return texto
+    from services.intent_service import sanitizar_frases_comerciais
+
+    return sanitizar_frases_comerciais(texto)

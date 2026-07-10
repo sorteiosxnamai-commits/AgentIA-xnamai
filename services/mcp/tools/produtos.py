@@ -66,10 +66,10 @@ def _estoque(args: dict, ctx: SessionContext) -> ToolResult:
         return ToolResult(
             ok=True,
             data={
-                "politica": (
-                    "A princípio temos os itens em estoque. "
-                    "Na separação pode faltar item — crédito ou estorno no mesmo dia."
-                ),
+                    "politica": (
+                        "Posso verificar a disponibilidade para você. "
+                        "Confirme o produto que eu checo o estoque."
+                    ),
             },
         )
     res = _buscar({"consulta": nome}, ctx)
@@ -82,7 +82,7 @@ def _estoque(args: dict, ctx: SessionContext) -> ToolResult:
         data={
             "nome": p.get("nome"),
             "estoque": p.get("estoque"),
-            "politica": "Disponibilidade sujeita à conferência na separação.",
+            "politica": "Posso verificar a disponibilidade para você.",
         },
     )
 

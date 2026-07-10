@@ -68,6 +68,13 @@ from services.historico_service import (
     registrar_perguntas_respondidas,
     sanitizar_resposta_anti_repeticao,
 )
+from services.intent_service import (
+    classificar_intencao,
+    resposta_atendimento_humano,
+    resposta_fora_do_escopo,
+    resposta_sac,
+    sanitizar_frases_comerciais,
+)
 from services.webhook_guard import (
     finalizar_mensagem,
     lock_telefone,
@@ -108,7 +115,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-limpeza-seguranca"
+CODE_VERSION = "2026-07-10-etapa3-intent"
 
 router = APIRouter()
 
@@ -445,8 +452,45 @@ def _processar_mensagem_locked(
         )
         sessao = registrar_perguntas_respondidas(sessao, mensagem)
         contexto_venda.memoria = sessao
+
+        # =========================
+        # ETAPA 3 — classificação de intenção (não responde ao cliente)
+        # =========================
+        intent = classificar_intencao(
+            mensagem,
+            historico_texto=historico_venda,
+            contexto_venda=sessao,
+            produto_ativo=str(sessao.get("produto_ativo") or ""),
+            categoria_ativa=str(sessao.get("categoria_interesse") or ""),
+            ultima_pergunta_agente=str(sessao.get("ultima_pergunta_agente") or ""),
+        )
+        sessao["ultima_intencao"] = intent.get("intent") or "INDEFINIDO"
+        if intent.get("category") and not sessao.get("categoria_interesse"):
+            sessao["categoria_interesse"] = intent["category"]
+        contexto_venda.memoria = sessao
         if persistir:
             persistir_sessao(str(cliente_id), sessao)
+
+        log_seguro(
+            "intent_classificada",
+            telefone=numero,
+            message_id=msg_id or "-",
+            intent=intent.get("intent"),
+            confidence=intent.get("confidence"),
+            needs_catalog=intent.get("needs_catalog"),
+            needs_human=intent.get("needs_human"),
+            category=intent.get("category") or "-",
+            reason=intent.get("reason") or "-",
+        )
+
+        # Briefing leve para a OpenAI com a intenção (sem responder no classificador)
+        if intent.get("intent") and intent["intent"] != "INDEFINIDO":
+            contexto_venda.briefing = (
+                (contexto_venda.briefing or "")
+                + f"\nINTENÇÃO DETECTADA: {intent['intent']} "
+                f"(confiança {intent.get('confidence')}). "
+                "Use para conduzir o fluxo; não mencione a classificação ao cliente."
+            ).strip()
 
         historico_para_ia = montar_bloco_contexto_openai(
             historico_texto=historico_venda,
@@ -635,7 +679,16 @@ def _processar_mensagem_locked(
                     print("PULSEDESK PEDIDO CRIADO:", pedido_registrado)
                 elif pedido_registrado and pedido_registrado.get("erro"):
                     print("PULSEDESK PEDIDO FALHOU:", pedido_registrado["erro"])
-        elif saudacao:
+        elif intent.get("intent") == "ATENDIMENTO_HUMANO":
+            resposta_ia = resposta_atendimento_humano(nome_conversa)
+            log_seguro("fluxo_intent", intent="ATENDIMENTO_HUMANO", telefone=numero)
+        elif intent.get("intent") == "SAC":
+            resposta_ia = resposta_sac(nome_conversa)
+            log_seguro("fluxo_intent", intent="SAC", telefone=numero)
+        elif intent.get("intent") == "FORA_DO_ESCOPO":
+            resposta_ia = resposta_fora_do_escopo(nome_conversa)
+            log_seguro("fluxo_intent", intent="FORA_DO_ESCOPO", telefone=numero)
+        elif saudacao or intent.get("intent") == "SAUDACAO":
             resposta_ia = resposta_saudacao(nome_conversa)
         elif cliente_perguntou_como_trabalham(mensagem) and not pedido_encerrado:
             resposta_ia = resposta_como_trabalham(nome_conversa)
@@ -653,7 +706,10 @@ def _processar_mensagem_locked(
             resposta_ia = resposta_ja_informado(com_foto[0])
         elif pediu_foto and com_foto:
             resposta_ia = resposta_com_foto(com_foto[0])
-        elif cliente_pediu_mais_opcoes(mensagem) and not pedido_encerrado:
+        elif (
+            intent.get("intent") == "MAIS_OPCOES"
+            or cliente_pediu_mais_opcoes(mensagem)
+        ) and not pedido_encerrado:
             # "tem mais opções?" — NUNCA cair em "não trabalhamos com opções produtos"
             # Avaliado ANTES de cliente_quer_ver_catalogo para não perder "me mostra outros"
             cat_geral = montar_catalogo_geral()
@@ -669,7 +725,9 @@ def _processar_mensagem_locked(
             produtos = cat_geral["produtos"]
             catalogo = cat_geral["catalogo"]
             resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos)
-        elif cliente_perguntou_preco(mensagem) and not pedido_encerrado:
+        elif (
+            intent.get("intent") == "PRECO" or cliente_perguntou_preco(mensagem)
+        ) and not pedido_encerrado:
             resposta_ia = resposta_preco_em_discussao(
                 historico_venda,
                 nome_conversa,
@@ -755,6 +813,8 @@ def _processar_mensagem_locked(
                 message_id=msg_id or "-",
                 motivos=",".join(motivos_evitados),
             )
+
+        resposta_ia = sanitizar_frases_comerciais(resposta_ia)
 
         log_seguro(
             "resposta_pronta",

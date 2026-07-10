@@ -29,6 +29,7 @@ SESSAO_PADRAO: dict[str, Any] = {
     "perguntas_respondidas": [],
     "estagio_conversa": "abertura",
     "ultima_recomendacao": "",
+    "ultima_intencao": "",
 }
 
 # Cache em processo (fallback se coluna contexto_venda não existir no Supabase)
