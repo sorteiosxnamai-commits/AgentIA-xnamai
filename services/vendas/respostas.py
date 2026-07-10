@@ -10,6 +10,8 @@ TERMOS_IGNORAR_PEDIDO = {
     "sim", "nao", "não", "ok", "tem", "catalogo", "catálogo", "nada",
     "disponivel", "disponível", "hoje", "voce", "voces", "vocês", "claro", "pode",
     "retirar", "retirada", "retiro", "envio", "enviar", "frete", "sei",
+    "produto", "produtos", "opcao", "opcoes", "item", "itens",
+    "tipo", "tipos", "categoria", "mais", "outras", "outra", "outro",
 }
 
 
@@ -70,8 +72,87 @@ def cliente_quer_ver_catalogo(mensagem: str, ultima_resposta_ia: str = "") -> bo
         r"produtos?\s+para\s+vender",
         r"mais\s+de\s+produtos",
         r"o\s+que\s+mais",
+        r"lista\s+(de\s+)?produtos",
+        r"manda\s+(o\s+)?catalogo",
     )
     return any(re.search(p, texto) for p in padroes_diretos)
+
+
+def cliente_pediu_mais_opcoes(mensagem: str) -> bool:
+    """'tem mais opções?', 'outras opções' — não é nome de produto."""
+    texto = _normalizar(mensagem)
+    padroes = (
+        r"tem\s+mais\s+(opcoes|opções|produtos|itens)",
+        r"mais\s+(opcoes|opções)(\s+de\s+produtos?)?",
+        r"(outras|mais)\s+(opcoes|opções)",
+        r"tem\s+(outras|mais)\s+(opcoes|opções)",
+        r"quais\s+(outras\s+)?(opcoes|opções)",
+        r"tem\s+opcoes|tem\s+opções",
+        r"outras\s+opcoes|outras\s+opções",
+        r"mais\s+produtos",
+        r"tem\s+mais\s*\??$",
+    )
+    return any(re.search(p, texto) for p in padroes)
+
+
+def _categoria_no_historico(historico_texto: str) -> str | None:
+    """Detecta categoria/produto já citado no histórico recente."""
+    from services.conversa_service import _extrair_oferta_ia
+
+    nome_oferta, _ = _extrair_oferta_ia(historico_texto or "")
+    if nome_oferta:
+        return nome_oferta
+
+    categorias = (
+        "headset", "fone", "cabo", "hdmi", "mouse", "teclado", "monitor",
+        "notebook", "webcam", "ssd", "hd", "hub", "carregador", "caixa",
+    )
+    texto = _normalizar(historico_texto or "")
+    for cat in categorias:
+        if cat in texto:
+            return cat
+    return None
+
+
+def resposta_mais_opcoes(
+    nome_cliente: str = "",
+    historico_texto: str = "",
+    produtos: list | None = None,
+) -> str:
+    """Resposta natural quando o cliente pede mais opções."""
+    nome = nome_cliente or "Cliente"
+    categoria = _categoria_no_historico(historico_texto)
+
+    if categoria:
+        # Já há contexto de categoria/produto
+        itens = produtos or []
+        similares = [
+            p for p in itens
+            if _normalizar(str(p.get("nome") or "")).find(_normalizar(categoria)[:4]) >= 0
+        ][:4]
+
+        if similares and len(similares) >= 2:
+            linhas = [
+                f"Temos sim, {nome}. Nessa linha há outras opções:"
+            ]
+            for p in similares[:4]:
+                nome_p = p.get("nome", "Produto")
+                preco = _fmt_preco_item(p)
+                linhas.append(f"• {nome_p}" + (f" — {preco}" if preco else ""))
+            linhas.append(
+                "Você prefere algo mais econômico ou com melhor desempenho?"
+            )
+            return "\n".join(linhas)
+
+        return (
+            f"Temos sim, {nome}. Nessa categoria há outras opções. "
+            "Você prefere algo mais econômico ou com melhor desempenho?"
+        )
+
+    return (
+        f"Temos sim, {nome}. Qual tipo de produto você está procurando? "
+        "Assim consigo mostrar opções que realmente façam sentido para você."
+    )
 
 
 def _fmt_preco_item(produto: dict) -> str:
@@ -174,7 +255,15 @@ def resposta_fora_catalogo(
     """Quando o cliente pede algo que a loja não vende."""
     nome = nome_cliente or "Cliente"
     termos_produto = _termos_produto(termos)
-    pedido = " ".join(termos_produto) if termos_produto else "isso"
+
+    # Sem termo de produto real → não inventar "não trabalhamos com X"
+    if not termos_produto:
+        return (
+            f"{nome}, me diz qual tipo de produto você procura "
+            "(ex.: headset, cabo HDMI, mouse) que eu te mostro as opções."
+        )
+
+    pedido = " ".join(termos_produto)
 
     if amostra:
         exemplos = [p.get("nome", "") for p in amostra[:3] if p.get("nome")]

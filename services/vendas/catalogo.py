@@ -40,6 +40,13 @@ PADROES_CATALOGO = (
     r"conferiu|conferir|verificou|checou",
     r"algo mais|mais alguma",
     r"disponivel|estoque",
+    # Pedidos genéricos de opções — NÃO são nome de produto
+    r"tem\s+mais\s+(opcoes|opções|produtos|itens)",
+    r"mais\s+(opcoes|opções)\s+(de\s+)?produtos?",
+    r"(outras|mais)\s+(opcoes|opções)",
+    r"tem\s+(outras|mais)\s+(opcoes|opções)",
+    r"quais\s+(outras\s+)?(opcoes|opções)",
+    r"tem\s+opcoes|tem\s+opções",
 )
 
 
@@ -99,6 +106,10 @@ TERMOS_NAO_PRODUTO = TERMOS_ESTETICOS | {
     "obrigada", "valeu", "haha", "kkk", "kkkk", "faz", "nele", "nela",
     "pedido", "pedidos", "venda", "vendas", "fazer", "abrir", "outro",
     "outra", "nova", "novo", "mais", "comprar", "preciso", "quero",
+    # Genéricos de catálogo — NUNCA viram "não trabalhamos com X"
+    "produto", "produtos", "opcao", "opcoes", "item", "itens",
+    "tipo", "tipos", "categoria", "categorias", "linha", "linhas",
+    "modelo", "modelos", "variedade", "variedades",
     # Envio / NF / confirmações — NUNCA tratar como produto
     "retirar", "retirada", "retiro", "buscar", "pego", "envio", "enviar",
     "frete", "correios", "entrega", "entregar", "mandar", "local",

@@ -312,6 +312,12 @@ def mensagem_nao_e_busca_produto(mensagem: str) -> bool:
         t,
     ):
         return True
+    # Pedido genérico de opções — não é busca de produto inexistente
+    if re.search(
+        r"mais\s+(opcoes|opções)|outras\s+(opcoes|opções)|tem\s+mais\s+produtos",
+        t,
+    ):
+        return True
     return False
 
 

@@ -11,9 +11,11 @@ from services.openai_service import (
     resposta_sem_foto,
 )
 from services.vendas.respostas import (
+    cliente_pediu_mais_opcoes,
     cliente_perguntou_preco,
     cliente_quer_ver_catalogo,
     resposta_fora_catalogo,
+    resposta_mais_opcoes,
     resposta_mostrar_catalogo,
     resposta_preco_em_discussao,
 )
@@ -91,7 +93,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-consultor-humano"
+CODE_VERSION = "2026-07-10-etapa1-opcoes"
 
 router = APIRouter()
 
@@ -117,29 +119,29 @@ def _bloqueio_diagnostico(token: str = "") -> dict | None:
     return None
 
 
-def processar_mensagem(data: dict):
+def processar_mensagem(data: dict, dry_run: bool = False):
 
     try:
 
         if "data" not in data:
             print("EVENTO IGNORADO:", data)
-            return
+            return None
 
         ignorar, motivo = evento_deve_ser_ignorado(data)
         if ignorar:
             print("WEBHOOK IGNORADO:", motivo)
-            return
+            return None
 
         evento = data["data"]
 
         if evento.get("fromMe"):
             print("MENSAGEM PROPRIA IGNORADA")
-            return
+            return None
 
         numero_raw = evento.get("from", "")
         if "@g.us" in numero_raw:
             print("MENSAGEM DE GRUPO IGNORADA:", numero_raw)
-            return
+            return None
 
         numero = numero_raw.split("@")[0].replace("+", "").strip()
         mensagem = evento.get("body")
@@ -147,11 +149,11 @@ def processar_mensagem(data: dict):
 
         if evento.get("type") and evento.get("type") != "chat":
             print("TIPO IGNORADO:", evento.get("type"))
-            return
+            return None
 
         if not numero or not mensagem:
             print("SEM NUMERO OU MENSAGEM:", evento)
-            return
+            return None
 
         print("Número:", numero)
         print("Mensagem:", mensagem)
@@ -520,6 +522,16 @@ def processar_mensagem(data: dict):
             produtos = cat_geral["produtos"]
             catalogo = cat_geral["catalogo"]
             resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos)
+        elif cliente_pediu_mais_opcoes(mensagem) and not pedido_encerrado:
+            # "tem mais opções?" — NUNCA cair em "não trabalhamos com opções produtos"
+            cat_geral = montar_catalogo_geral()
+            produtos_op = cat_geral.get("produtos") or produtos
+            resposta_ia = resposta_mais_opcoes(
+                nome_cliente=nome_conversa,
+                historico_texto=historico_venda,
+                produtos=produtos_op,
+            )
+            print("MAIS OPCOES: resposta consultiva (sem fora_catalogo)")
         elif cliente_perguntou_preco(mensagem) and not pedido_encerrado:
             resposta_ia = resposta_preco_em_discussao(
                 historico_venda,
@@ -563,6 +575,7 @@ def processar_mensagem(data: dict):
         elif (
             contexto_venda.sem_match
             and not mensagem_nao_e_busca_produto(mensagem)
+            and not cliente_pediu_mais_opcoes(mensagem)
             and not (
                 conversa_em_andamento(historico_venda)
                 and _mensagem_tem_confirmacao(mensagem)
@@ -604,13 +617,19 @@ def processar_mensagem(data: dict):
             "ia",
             resposta_ia
         )
-        espelhar_mensagem_agente(numero, nome_cliente, resposta_ia)
+        if not dry_run:
+            espelhar_mensagem_agente(numero, nome_cliente, resposta_ia)
 
         atualizar_historico_json(cliente_id)
 
         # =========================
         # ENVIA WHATSAPP
         # =========================
+
+        if dry_run:
+            print("DRY_RUN: WhatsApp não enviado")
+            marcar_evento_processado(data)
+            return resposta_ia
 
         envio = enviar_mensagem(
             numero,
@@ -628,12 +647,14 @@ def processar_mensagem(data: dict):
 
         print("PROCESSAMENTO CONCLUIDO")
         marcar_evento_processado(data)
+        return resposta_ia
 
     except Exception as e:
 
         print("ERRO:")
         print(str(e))
         traceback.print_exc()
+        return None
 
 
 async def receber_webhook(data: dict, background_tasks: BackgroundTasks | None = None):
@@ -668,6 +689,51 @@ async def webhook_info():
 @router.post("/webhook")
 async def webhook(data: dict, background_tasks: BackgroundTasks):
     return await receber_webhook(data, background_tasks)
+
+
+@router.post("/chat")
+async def chat_teste(payload: dict):
+    """
+    Teste local do agente sem enviar WhatsApp.
+    Body: {"telefone": "5543999999999", "mensagem": "tem mais opções?", "nome": "Arthur"}
+    """
+    telefone = str(payload.get("telefone") or payload.get("phone") or "").strip()
+    mensagem = str(payload.get("mensagem") or payload.get("message") or "").strip()
+    nome = str(payload.get("nome") or payload.get("name") or "Cliente").strip()
+
+    if not telefone or not mensagem:
+        return {
+            "status": "erro",
+            "mensagem": "Informe telefone e mensagem",
+            "code_version": CODE_VERSION,
+        }
+
+    data = {
+        "event_type": "message_received",
+        "provider": "chat_teste",
+        "data": {
+            "from": telefone,
+            "body": mensagem,
+            "pushname": nome,
+            "fromMe": False,
+            "type": "chat",
+            "id": f"chat-{telefone}-{abs(hash(mensagem)) % 10_000_000}",
+            "time": __import__("time").time(),
+        },
+    }
+
+    loop = asyncio.get_event_loop()
+    resposta = await loop.run_in_executor(
+        None, lambda: processar_mensagem(data, dry_run=True)
+    )
+
+    return {
+        "status": "ok" if resposta else "erro",
+        "telefone": telefone,
+        "mensagem": mensagem,
+        "resposta": resposta,
+        "code_version": CODE_VERSION,
+    }
 
 
 @router.get("/status")
