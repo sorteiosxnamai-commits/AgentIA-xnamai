@@ -26,6 +26,7 @@ def reclamar_mensagem(data: dict) -> tuple[bool, str]:
     """
     Tenta 'claim' do ID da mensagem antes de processar.
     Retorna (ok, motivo). ok=False => duplicado ou já em processamento.
+    Memória + banco (message_id em conversas) como fonte final.
     """
     evento = data.get("data") or {}
     msg_id = extrair_id_mensagem(data, evento)
@@ -39,8 +40,26 @@ def reclamar_mensagem(data: dict) -> tuple[bool, str]:
             return False, f"duplicado id={msg_id}"
         if estado == "processing":
             return False, f"em_processamento id={msg_id}"
+
+    # Fonte final: já gravado no Supabase?
+    try:
+        from services.supabase_service import mensagem_ja_existe
+
+        if mensagem_ja_existe(msg_id):
+            with _IDS_LOCK:
+                _IDS_ESTADO[msg_id] = "done"
+                _IDS_PROCESSADOS[msg_id] = time.time()
+            return False, f"duplicado_banco id={msg_id}"
+    except Exception as exc:
+        log_seguro("checagem_banco_falhou", message_id=msg_id, erro=type(exc).__name__)
+
+    with _IDS_LOCK:
+        estado = _IDS_ESTADO.get(msg_id)
+        if estado == "done" or msg_id in _IDS_PROCESSADOS:
+            return False, f"duplicado id={msg_id}"
+        if estado == "processing":
+            return False, f"em_processamento id={msg_id}"
         _IDS_ESTADO[msg_id] = "processing"
-        # Também marca no set legado para evento_deve_ser_ignorado
         _IDS_PROCESSADOS[msg_id] = time.time()
     return True, f"claim id={msg_id}"
 

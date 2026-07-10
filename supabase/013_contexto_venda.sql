@@ -8,10 +8,4 @@ ALTER TABLE public.clientes
 COMMENT ON COLUMN public.clientes.contexto_venda IS
   'Memória estruturada da sessão de venda (JSON). Etapa 2.';
 
--- Opcional: idempotência persistente de mensagens do webhook (Z-API messageId)
--- Só rode se a tabela conversas existir e você quiser dedup entre reinícios.
--- ALTER TABLE public.conversas
---   ADD COLUMN IF NOT EXISTS message_id text;
--- CREATE UNIQUE INDEX IF NOT EXISTS conversas_message_id_uidx
---   ON public.conversas (message_id)
---   WHERE message_id IS NOT NULL;
+-- message_id: ver supabase/014_conversas_message_id.sql

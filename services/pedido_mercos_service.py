@@ -1,6 +1,6 @@
 import os
 
-from dotenv import load_dotenv
+from services.env_loader import carregar_env
 
 from services.conversa_service import (
     extrair_contato,
@@ -20,7 +20,7 @@ from services.mercos_service import (
 )
 from services.supabase_service import atualizar_cliente
 
-load_dotenv(override=True)
+carregar_env()
 
 MERCOS_CLIENTE_PADRAO = os.getenv("MERCOS_CLIENTE_PADRAO", "").strip()
 

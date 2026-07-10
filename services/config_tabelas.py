@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 import re
 
-from dotenv import load_dotenv
+from services.env_loader import carregar_env
 
-load_dotenv(override=True)
+carregar_env()
 
 # Preferência: CLIENTES_TABLE / CONVERSAS_TABLE (Etapa 2).
 # AGENT_* permanece só como alias legado — se ambos existirem, CLIENTES_* vence.

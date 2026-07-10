@@ -4,9 +4,9 @@ import time
 import unicodedata
 
 import requests
-from dotenv import load_dotenv
+from services.env_loader import carregar_env
 
-load_dotenv(override=True)
+carregar_env()
 
 def _sanitizar_base_url(url: str) -> str:
     """Remove '=' acidental do Render e sufixo /v1|/v2 (paths já incluem a versão)."""

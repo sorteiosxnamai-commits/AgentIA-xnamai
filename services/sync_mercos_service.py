@@ -1,7 +1,7 @@
 import os
 import time
 
-from dotenv import load_dotenv
+from services.env_loader import carregar_env
 
 from services.mercos_service import (
     buscar_produtos_mercos,
@@ -11,7 +11,7 @@ from services.mercos_service import (
 )
 from services.supabase_service import sincronizar_produto_mercos
 
-load_dotenv(override=True)
+carregar_env()
 
 
 def _produto_para_supabase(produto_mercos: dict) -> dict:

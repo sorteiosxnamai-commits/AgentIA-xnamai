@@ -1,9 +1,9 @@
 import os
 import time
 
-from dotenv import load_dotenv
+from services.env_loader import carregar_env
 
-load_dotenv(override=True)
+carregar_env()
 
 MAX_IDADE_SEGUNDOS = int(os.getenv("WEBHOOK_MAX_IDADE_MINUTOS", "15")) * 60
 _IDS_PROCESSADOS: dict[str, float] = {}

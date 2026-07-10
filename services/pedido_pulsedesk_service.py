@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 
-from dotenv import load_dotenv
+from services.env_loader import carregar_env
 
 from database.supabase import supabase
 from services.conversa_service import (
@@ -19,7 +19,7 @@ from services.conversa_service import (
 )
 from services.supabase_service import _executar, atualizar_cliente
 
-load_dotenv(override=True)
+carregar_env()
 
 
 def pulsedesk_pedidos_habilitado() -> bool:

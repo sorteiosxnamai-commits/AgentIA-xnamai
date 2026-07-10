@@ -1,9 +1,9 @@
 import os
 
 import requests
-from dotenv import load_dotenv
+from services.env_loader import carregar_env
 
-load_dotenv(override=True)
+carregar_env()
 
 INSTANCE_ID = os.getenv("ULTRAMSG_INSTANCE_ID", "")
 TOKEN = os.getenv("ULTRAMSG_TOKEN", "")

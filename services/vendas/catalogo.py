@@ -1,7 +1,7 @@
 import unicodedata
 import os
 
-from dotenv import load_dotenv
+from services.env_loader import carregar_env
 
 from services.mercos_service import (
     _extrair_termos,
@@ -13,7 +13,7 @@ from services.mercos_service import (
 )
 from services.supabase_service import buscar_produtos, _normalizar_produto
 
-load_dotenv(override=True)
+carregar_env()
 
 LIMITE_CATALOGO = 20
 

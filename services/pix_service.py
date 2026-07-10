@@ -2,9 +2,9 @@ import os
 import re
 import unicodedata
 
-from dotenv import load_dotenv
+from services.env_loader import carregar_env
 
-load_dotenv(override=True)
+carregar_env()
 
 PIX_CHAVE = os.getenv("PIX_CHAVE", "contato@xnamai.com.br").strip()
 PIX_NOME = os.getenv("PIX_NOME", "XNAMAI").strip()

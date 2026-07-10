@@ -108,7 +108,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-etapa2-historico"
+CODE_VERSION = "2026-07-10-limpeza-seguranca"
 
 router = APIRouter()
 
@@ -134,7 +134,16 @@ def _bloqueio_diagnostico(token: str = "") -> dict | None:
     return None
 
 
-def processar_mensagem(data: dict, dry_run: bool = False):
+def processar_mensagem(data: dict, dry_run: bool = False, persistir: bool = True):
+    """
+    Processa mensagem do webhook /chat.
+
+    dry_run=True  → não envia WhatsApp (padrão do /chat).
+    persistir=False → não grava no Supabase (mensagens, histórico, lead, sessão)
+                      nem envia WhatsApp. Útil para testar resposta sem sujar o banco.
+    Se persistir não for informado (padrão True), mantém o comportamento atual
+    (grava no banco mesmo com dry_run=True).
+    """
     inicio = __import__("time").time()
     claim_ok = False
     numero = ""
@@ -143,7 +152,7 @@ def processar_mensagem(data: dict, dry_run: bool = False):
     try:
 
         if "data" not in data:
-            print("EVENTO IGNORADO:", data)
+            log_seguro("evento_ignorado", motivo="sem_data")
             return None
 
         ignorar, motivo = evento_deve_ser_ignorado(data)
@@ -195,6 +204,7 @@ def processar_mensagem(data: dict, dry_run: bool = False):
             return _processar_mensagem_locked(
                 data=data,
                 dry_run=dry_run,
+                persistir=persistir,
                 numero=numero,
                 mensagem=mensagem,
                 nome_cliente=nome_cliente,
@@ -204,7 +214,7 @@ def processar_mensagem(data: dict, dry_run: bool = False):
 
     except Exception as e:
         print("ERRO:")
-        print(str(e))
+        print(type(e).__name__, str(e)[:200])
         traceback.print_exc()
         if claim_ok:
             finalizar_mensagem(data, sucesso=False)
@@ -215,6 +225,7 @@ def _processar_mensagem_locked(
     *,
     data: dict,
     dry_run: bool,
+    persistir: bool,
     numero: str,
     mensagem: str,
     nome_cliente: str,
@@ -227,6 +238,8 @@ def _processar_mensagem_locked(
             telefone=numero,
             message_id=msg_id or "-",
             etapa="inicio",
+            persistir=persistir,
+            dry_run=dry_run,
         )
 
         # =========================
@@ -236,10 +249,20 @@ def _processar_mensagem_locked(
         cliente = buscar_cliente(numero)
 
         if not cliente:
-            cliente = criar_cliente(numero, nome=nome_cliente)
-            log_seguro("cliente_novo", telefone=numero, message_id=msg_id or "-")
+            if persistir:
+                cliente = criar_cliente(numero, nome=nome_cliente)
+                log_seguro("cliente_novo", telefone=numero, message_id=msg_id or "-")
+            else:
+                cliente = {
+                    "id": f"ephemeral-{numero}",
+                    "telefone": numero,
+                    "nome": nome_cliente,
+                    "contexto_venda": {},
+                }
+                log_seguro("cliente_ephemeral", telefone=numero, message_id=msg_id or "-")
         elif nome_cliente and cliente.get("nome") != nome_cliente:
-            atualizar_cliente(cliente_id=cliente["id"], nome=nome_cliente)
+            if persistir:
+                atualizar_cliente(cliente_id=cliente["id"], nome=nome_cliente)
             cliente["nome"] = nome_cliente
 
         cliente_id = cliente["id"]
@@ -248,20 +271,24 @@ def _processar_mensagem_locked(
         # SALVA MENSAGEM
         # =========================
 
-        salvar_mensagem(
-            cliente_id,
-            "cliente",
-            mensagem
-        )
-        espelhar_mensagem_cliente(numero, nome_cliente, mensagem)
-
-        atualizar_historico_json(cliente_id)
+        if persistir:
+            salvar_mensagem(
+                cliente_id,
+                "cliente",
+                mensagem,
+                message_id=msg_id or None,
+            )
+            espelhar_mensagem_cliente(numero, nome_cliente, mensagem)
+            atualizar_historico_json(cliente_id)
 
         # =========================
         # HISTÓRICO
         # =========================
 
-        historico = buscar_historico(cliente_id)
+        if str(cliente_id).startswith("ephemeral-"):
+            historico = []
+        else:
+            historico = buscar_historico(cliente_id)
 
         historico_texto = ""
         ultima_resposta_ia = ""
@@ -273,6 +300,10 @@ def _processar_mensagem_locked(
             else:
                 historico_texto += f"IA: {msg['mensagem']}\n"
                 ultima_resposta_ia = msg["mensagem"]
+
+        # Em modo sem persistir, inclui a mensagem atual (ainda não está no banco)
+        if not persistir:
+            historico_texto += f"Cliente: {mensagem}\n"
 
         log_seguro(
             "historico_carregado",
@@ -321,7 +352,8 @@ def _processar_mensagem_locked(
         )
 
         if nova_venda_explicita:
-            limpar_sessao(str(cliente_id))
+            if persistir:
+                limpar_sessao(str(cliente_id))
             sessao = carregar_sessao(None, str(cliente_id))
         else:
             sessao = carregar_sessao(cliente, str(cliente_id))
@@ -413,7 +445,8 @@ def _processar_mensagem_locked(
         )
         sessao = registrar_perguntas_respondidas(sessao, mensagem)
         contexto_venda.memoria = sessao
-        persistir_sessao(str(cliente_id), sessao)
+        if persistir:
+            persistir_sessao(str(cliente_id), sessao)
 
         historico_para_ia = montar_bloco_contexto_openai(
             historico_texto=historico_venda,
@@ -450,7 +483,8 @@ def _processar_mensagem_locked(
                     (contexto_venda.briefing or "")
                     + "\nUse RESULTADOS MCP abaixo; não invente dados fora deles."
                 ).strip()
-                persistir_sessao(str(cliente_id), sessao)
+                if persistir:
+                    persistir_sessao(str(cliente_id), sessao)
         except Exception as mcp_exc:
             print("MCP enrich falhou (seguindo sem MCP):", type(mcp_exc).__name__, str(mcp_exc)[:120])
             mcp_bloco = ""
@@ -468,16 +502,19 @@ def _processar_mensagem_locked(
         # LEADS + NOTIFICA VENDEDOR
         # =========================
 
-        resultado_lead = processar_lead_e_notificar(
-            cliente_id=cliente_id,
-            numero_cliente=numero,
-            nome_cliente=nome_cliente,
-            mensagem=mensagem,
-            produtos=produtos,
-        )
+        if persistir:
+            resultado_lead = processar_lead_e_notificar(
+                cliente_id=cliente_id,
+                numero_cliente=numero,
+                nome_cliente=nome_cliente,
+                mensagem=mensagem,
+                produtos=produtos,
+            )
 
-        if resultado_lead["notificado"]:
-            print("VENDEDOR NOTIFICADO:", resultado_lead["interesse"])
+            if resultado_lead["notificado"]:
+                print("VENDEDOR NOTIFICADO:", resultado_lead["interesse"])
+        else:
+            log_seguro("lead_pulado", telefone=numero, message_id=msg_id or "-", motivo="persistir=false")
 
         # =========================
         # CONTEXTO IA
@@ -584,7 +621,7 @@ def _processar_mensagem_locked(
                     mercos_pedido=pedido_registrado,
                 )
                 resultado_fechamento = buscar_produtos_para_atendimento(historico_venda)
-                if vendedor_configurado():
+                if persistir and vendedor_configurado():
                     notificar_vendedor(
                         numero_cliente=numero,
                         nome_cliente=nome_conversa,
@@ -719,45 +756,51 @@ def _processar_mensagem_locked(
                 motivos=",".join(motivos_evitados),
             )
 
-        print("RESPOSTA IA:")
-        print(resposta_ia)
+        log_seguro(
+            "resposta_pronta",
+            telefone=numero,
+            message_id=msg_id or "-",
+            chars=len(resposta_ia or ""),
+        )
 
         # =========================
         # SALVA RESPOSTA IA
         # =========================
 
-        salvar_mensagem(
-            cliente_id,
-            "ia",
-            resposta_ia
-        )
-        if not dry_run:
-            espelhar_mensagem_agente(numero, nome_cliente, resposta_ia)
+        if persistir:
+            salvar_mensagem(
+                cliente_id,
+                "ia",
+                resposta_ia,
+            )
+            if not dry_run:
+                espelhar_mensagem_agente(numero, nome_cliente, resposta_ia)
 
-        atualizar_historico_json(cliente_id)
+            atualizar_historico_json(cliente_id)
 
-        # Atualiza última pergunta do agente na sessão
-        from services.historico_service import extrair_ultima_pergunta_ia
+            # Atualiza última pergunta do agente na sessão
+            from services.historico_service import extrair_ultima_pergunta_ia
 
-        sessao["ultima_pergunta_agente"] = extrair_ultima_pergunta_ia(
-            historico_venda + f"\nIA: {resposta_ia}\n"
-        ) or sessao.get("ultima_pergunta_agente") or ""
-        persistir_sessao(str(cliente_id), sessao)
+            sessao["ultima_pergunta_agente"] = extrair_ultima_pergunta_ia(
+                historico_venda + f"\nIA: {resposta_ia}\n"
+            ) or sessao.get("ultima_pergunta_agente") or ""
+            persistir_sessao(str(cliente_id), sessao)
 
         # =========================
         # ENVIA WHATSAPP
         # =========================
 
-        if dry_run:
-            print("DRY_RUN: WhatsApp não enviado")
-            finalizar_mensagem(data, sucesso=True)
+        enviar_wa = (not dry_run) and persistir
+
+        if not enviar_wa:
             log_seguro(
                 "processamento_fim",
                 telefone=numero,
                 message_id=msg_id or "-",
-                etapa="dry_run",
+                etapa="dry_run" if dry_run else "sem_persistir",
                 ms=int((__import__("time").time() - inicio) * 1000),
             )
+            finalizar_mensagem(data, sucesso=True)
             return resposta_ia
 
         envio = enviar_mensagem(
@@ -765,7 +808,7 @@ def _processar_mensagem_locked(
             resposta_ia
         )
         if isinstance(envio, dict) and not envio.get("ok"):
-            print("FALHA ENVIO WHATSAPP:", envio)
+            print("FALHA ENVIO WHATSAPP:", {k: v for k, v in envio.items() if k != "token"})
         elif envio is None:
             print("FALHA ENVIO WHATSAPP: resposta vazia da Z-API")
 
@@ -787,20 +830,54 @@ def _processar_mensagem_locked(
 
     except Exception as e:
         print("ERRO:")
-        print(str(e))
+        print(type(e).__name__, str(e)[:200])
         traceback.print_exc()
         finalizar_mensagem(data, sucesso=False)
         return None
 
 
+def _log_webhook_recebido(data: dict) -> None:
+    """Log seguro — nunca imprime payload completo, tokens ou telefone."""
+    evento = data.get("data") if isinstance(data, dict) else {}
+    if not isinstance(evento, dict):
+        evento = {}
+    provider = (data.get("provider") if isinstance(data, dict) else None) or (
+        "zapi" if (isinstance(data, dict) and data.get("type") == "ReceivedCallback") else "desconhecido"
+    )
+    msg_id = ""
+    if isinstance(data, dict):
+        msg_id = (
+            str(data.get("messageId") or data.get("id") or "")
+            or str(evento.get("id") or evento.get("messageId") or "")
+        )
+    tel_raw = str(
+        (data.get("phone") if isinstance(data, dict) else None)
+        or evento.get("from")
+        or evento.get("phone")
+        or ""
+    )
+    tipo = (
+        (data.get("type") if isinstance(data, dict) else None)
+        or data.get("event_type")
+        or evento.get("type")
+        or "-"
+    )
+    log_seguro(
+        "webhook_recebido",
+        provider=provider,
+        message_id=msg_id or "-",
+        telefone=tel_raw or "-",
+        tipo=tipo,
+    )
+
+
 async def receber_webhook(data: dict, background_tasks: BackgroundTasks | None = None):
 
-    print("WEBHOOK RECEBIDO:")
-    print(data)
+    _log_webhook_recebido(data)
 
     payload = normalizar_webhook(data)
     if not payload:
-        print("WEBHOOK IGNORADO: formato não suportado ou evento descartado")
+        log_seguro("webhook_ignorado", motivo="formato_ou_evento_descartado")
         return {"status": "ok", "ignorado": True}
 
     if background_tasks is not None:
@@ -830,14 +907,42 @@ async def webhook(data: dict, background_tasks: BackgroundTasks):
 @router.post("/chat")
 async def chat_teste(payload: dict):
     """
-    Teste local do agente sem enviar WhatsApp.
-    Body: {"telefone": "5543999999999", "mensagem": "tem mais opções?", "nome": "Arthur"}
+    Teste local do agente.
+
+    Body:
+      {
+        "telefone": "5543999999999",
+        "mensagem": "tem mais opções?",
+        "nome": "Arthur",
+        "dry_run": true,
+        "persistir": false
+      }
+
+    - dry_run (default true): não envia WhatsApp.
+    - persistir (default true se omitido): grava no Supabase (comportamento atual).
+      Com persistir=false: não salva mensagem, histórico, lead nem WhatsApp.
     """
     telefone = normalizar_telefone(
         str(payload.get("telefone") or payload.get("phone") or "")
     )
     mensagem = str(payload.get("mensagem") or payload.get("message") or "").strip()
     nome = str(payload.get("nome") or payload.get("name") or "Cliente").strip()
+
+    dry_run_raw = payload.get("dry_run", True)
+    if isinstance(dry_run_raw, str):
+        dry_run = dry_run_raw.strip().lower() in ("1", "true", "sim", "yes")
+    else:
+        dry_run = bool(dry_run_raw)
+
+    # Default True = comportamento atual (grava mesmo em dry_run)
+    if "persistir" in payload:
+        persistir_raw = payload.get("persistir")
+        if isinstance(persistir_raw, str):
+            persistir = persistir_raw.strip().lower() in ("1", "true", "sim", "yes")
+        else:
+            persistir = bool(persistir_raw)
+    else:
+        persistir = True
 
     if not telefone or not mensagem:
         return {
@@ -862,7 +967,8 @@ async def chat_teste(payload: dict):
 
     loop = asyncio.get_event_loop()
     resposta = await loop.run_in_executor(
-        None, lambda: processar_mensagem(data, dry_run=True)
+        None,
+        lambda: processar_mensagem(data, dry_run=dry_run, persistir=persistir),
     )
 
     return {
@@ -870,6 +976,8 @@ async def chat_teste(payload: dict):
         "telefone": telefone,
         "mensagem": mensagem,
         "resposta": resposta,
+        "dry_run": dry_run,
+        "persistir": persistir,
         "code_version": CODE_VERSION,
     }
 

@@ -8,8 +8,9 @@ from postgrest.exceptions import APIError
 
 from database.supabase import supabase
 from services.config_tabelas import CLIENTES_TABLE, CONVERSAS_TABLE, normalizar_telefone
+from services.env_loader import carregar_env
 
-load_dotenv(override=True)
+carregar_env()
 
 
 def _leads_indisponivel(erro: Exception) -> bool:
@@ -133,18 +134,63 @@ def salvar_openai_thread_id(cliente_id, thread_id):
 # HISTÓRICO (agente)
 # =========================
 
-def salvar_mensagem(cliente_id, tipo, mensagem):
-    resultado = (
-        supabase.table(TABELA_HISTORICO)
-        .insert({
-            "cliente_id": cliente_id,
-            "tipo": tipo,
-            "mensagem": mensagem
-        })
-        .execute()
-    )
+def salvar_mensagem(cliente_id, tipo, mensagem, message_id: str | None = None):
+    payload = {
+        "cliente_id": cliente_id,
+        "tipo": tipo,
+        "mensagem": mensagem,
+    }
+    mid = (message_id or "").strip()
+    if mid:
+        payload["message_id"] = mid
 
-    return resultado
+    try:
+        return (
+            supabase.table(TABELA_HISTORICO)
+            .insert(payload)
+            .execute()
+        )
+    except Exception as exc:
+        msg = str(exc).lower()
+        # Índice único em message_id — trata como duplicata (idempotente)
+        if mid and ("duplicate" in msg or "unique" in msg or "23505" in msg):
+            print("AVISO: message_id já existe — insert ignorado")
+            return None
+        # Coluna message_id ainda não migrada — grava sem o campo
+        if mid and ("message_id" in msg or "pgrst204" in msg or "column" in msg):
+            payload.pop("message_id", None)
+            return (
+                supabase.table(TABELA_HISTORICO)
+                .insert(payload)
+                .execute()
+            )
+        raise
+
+
+def mensagem_ja_existe(message_id: str) -> bool:
+    """Fonte final de idempotência: message_id já gravado em conversas."""
+    mid = (message_id or "").strip()
+    if not mid:
+        return False
+    try:
+        resultado = _executar(
+            lambda: (
+                supabase.table(TABELA_HISTORICO)
+                .select("id")
+                .eq("message_id", mid)
+                .limit(1)
+                .execute()
+            ),
+            "mensagem_ja_existe",
+        )
+        return bool(resultado.data)
+    except Exception as exc:
+        # Coluna pode não existir ainda — não bloqueia o fluxo
+        msg = str(exc).lower()
+        if "message_id" in msg or "pgrst" in msg or "column" in msg:
+            print("AVISO: checagem message_id indisponível:", type(exc).__name__)
+            return False
+        raise
 
 
 def buscar_historico(cliente_id, limit: int | None = None):

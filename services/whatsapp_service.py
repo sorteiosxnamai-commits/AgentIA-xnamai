@@ -1,10 +1,10 @@
 import os
 
-from dotenv import load_dotenv
+from services.env_loader import carregar_env
 
 from services import ultramsg_service, zapi_service
 
-load_dotenv(override=True)
+carregar_env()
 
 
 def _provider() -> str:
