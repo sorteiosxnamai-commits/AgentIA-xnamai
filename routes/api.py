@@ -115,7 +115,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-etapa3-intent"
+CODE_VERSION = "2026-07-10-estoque-real"
 
 router = APIRouter()
 

@@ -185,9 +185,36 @@ def _valor_preco(produto: dict):
 def _valor_estoque(produto: dict):
     for campo in ("saldo_estoque", "estoque", "quantidade_estoque", "saldo"):
         valor = produto.get(campo)
-        if valor is not None:
+        if valor not in (None, ""):
             return valor
-    return 0
+    return None
+
+
+def estoque_confirmado(produto: dict) -> bool:
+    """True só quando há quantidade numérica > 0 no catálogo."""
+    bruto = _valor_estoque(produto)
+    if bruto in (None, ""):
+        return False
+    try:
+        return float(str(bruto).replace(",", ".")) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _texto_estoque_catalogo(produto: dict) -> str:
+    """Nunca afirma disponibilidade sem estoque real."""
+    bruto = _valor_estoque(produto)
+    if bruto in (None, ""):
+        return "não confirmado (verificar disponibilidade)"
+    try:
+        qtd = float(str(bruto).replace(",", "."))
+    except (TypeError, ValueError):
+        return "não confirmado (verificar disponibilidade)"
+    if qtd > 0:
+        if qtd == int(qtd):
+            return str(int(qtd))
+        return str(qtd)
+    return "0 (sem saldo confirmado)"
 
 
 def extrair_imagem_mercos(produto: dict) -> str:
@@ -402,11 +429,7 @@ def montar_catalogo_texto(produtos: list[dict]) -> str:
 
     catalogo = ""
     for produto in produtos:
-        estoque = _valor_estoque(produto)
-        if estoque in (None, "", 0, "0"):
-            estoque_texto = "disponível"
-        else:
-            estoque_texto = str(estoque)
+        estoque_texto = _texto_estoque_catalogo(produto)
 
         descricao = produto.get("descricao", "") or produto.get("observacoes", "") or ""
         if len(descricao) > 120:

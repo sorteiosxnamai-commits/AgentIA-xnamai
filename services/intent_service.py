@@ -460,6 +460,9 @@ FRASES_PROIBIDAS = (
     "nao trabalhamos com opcoes produtos",
     "quer ver o catálogo?",
     "quer ver o catalogo?",
+    "disponível para envio",
+    "disponivel para envio",
+    "pronta entrega",
 )
 
 
@@ -493,8 +496,23 @@ def sanitizar_frases_comerciais(texto: str) -> str:
             r"(?i)quer\s+ver\s+o\s+cat[aá]logo\?",
             "Quer que eu te mostre algumas opções?",
         ),
+        # Disponibilidade inventada (sem estoque confirmado no catálogo)
+        (
+            r"(?i),?\s*dispon[ií]vel\s+para\s+envio\.?",
+            ". Posso verificar a disponibilidade para você.",
+        ),
+        (
+            r"(?i)\bpronta\s+entrega\b",
+            "disponibilidade a confirmar",
+        ),
+        (
+            r"(?i)\b(temos|esta|está)\s+dispon[ií]vel\b(?!\s+\d)",
+            "Posso verificar a disponibilidade",
+        ),
     )
     for padrao, repl in substituicoes:
         out = re.sub(padrao, repl, out)
-    out = re.sub(r"\s{2,}", " ", out).strip()
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"\s+\.", ".", out)
+    out = re.sub(r"\.{2,}", ".", out).strip()
     return out
