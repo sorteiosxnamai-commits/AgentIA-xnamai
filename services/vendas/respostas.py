@@ -134,9 +134,24 @@ def resposta_preco_em_discussao(
 
     preco_fmt = _formatar_preco(preco) if preco is not None else None
     if nome_prod and preco_fmt:
-        return (
-            f"{nome}, o {nome_prod} fica {preco_fmt}. "
-            "Quer que eu feche 1 unidade pra você?"
+        from services.xnamai_script import _variante
+
+        return _variante(
+            f"preco:{nome}:{nome_prod}:{preco_fmt}",
+            [
+                (
+                    f"{nome}, o {nome_prod} fica {preco_fmt}. "
+                    "Quer que eu feche 1 unidade pra você?"
+                ),
+                (
+                    f"{nome}, esse {nome_prod} está {preco_fmt}. "
+                    "Te interessa fechar 1 unidade?"
+                ),
+                (
+                    f"{nome_prod} — {preco_fmt}, {nome}. "
+                    "Posso separar 1 pra você?"
+                ),
+            ],
         )
     if preco_fmt:
         return f"{nome}, fica {preco_fmt}. Quer fechar?"

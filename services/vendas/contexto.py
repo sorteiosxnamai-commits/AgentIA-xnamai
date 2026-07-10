@@ -2,11 +2,15 @@ from dataclasses import dataclass, field
 
 from services.vendas.analise import (
     analisar_bant,
+    briefing_referencia_implicita,
     detectar_intencao_compra,
+    detectar_modo_intencao,
     detectar_objecao,
+    detectar_tom,
     inferir_estagio_aida,
     orientacao_objecao,
     orientacao_spin,
+    orientacao_tom,
 )
 from services.vendas.catalogo import montar_contexto_catalogo
 
@@ -30,6 +34,8 @@ class ContextoVenda:
     sem_match: bool = False
     termos_cliente: list = field(default_factory=list)
     amostra_disponivel: list = field(default_factory=list)
+    tom: str = "neutro"
+    memoria: dict = field(default_factory=dict)
 
 
 ESTAGIO_ORIENTACAO = {
@@ -60,6 +66,7 @@ def preparar_contexto_venda(
     historico_texto: str = "",
     pedido_encerrado: bool = False,
     pular_catalogo: bool = False,
+    memoria: dict | None = None,
 ) -> ContextoVenda:
     if pular_catalogo:
         ctx_cat = {
@@ -70,6 +77,9 @@ def preparar_contexto_venda(
             "catalogo": "",
             "fonte": "",
             "erro_mercos": None,
+            "termos_cliente": [],
+            "sem_match": False,
+            "amostra_disponivel": [],
         }
     else:
         ctx_cat = montar_contexto_catalogo(mensagem, historico_texto)
@@ -78,6 +88,8 @@ def preparar_contexto_venda(
     bant = analisar_bant(mensagem, historico_texto)
     objecao = detectar_objecao(mensagem, historico_texto)
     intencao = detectar_intencao_compra(mensagem, historico_texto)
+    tom = detectar_tom(mensagem, historico_texto)
+    modo = detectar_modo_intencao(mensagem, historico_texto)
     estagio = inferir_estagio_aida(
         mensagem,
         historico_texto,
@@ -85,10 +97,17 @@ def preparar_contexto_venda(
         pedido_encerrado=pedido_encerrado,
     )
 
+    mem = memoria or {}
+    produto_ativo = mem.get("produto_ativo") or (
+        produtos[0].get("nome") if produtos else ""
+    )
+
     partes = [
         ESTAGIO_ORIENTACAO.get(estagio, ""),
         orientacao_spin(mensagem, historico_texto, bant),
         orientacao_objecao(objecao),
+        orientacao_tom(tom),
+        briefing_referencia_implicita(mensagem, str(produto_ativo or "")),
     ]
 
     if intencao and not pedido_encerrado:
@@ -146,15 +165,18 @@ def preparar_contexto_venda(
             "Proibido perguntar cor, tamanho ou prometer avisar quando chegar."
         )
 
+    if mem.get("resumo_curto"):
+        partes.append(f"Resumo da sessão: {mem['resumo_curto']}")
+
     briefing = "\n".join(p for p in partes if p)
 
     return ContextoVenda(
         produtos=produtos,
-        similares=ctx_cat["similares"],
-        upsell=ctx_cat["upsell"],
-        complementos=ctx_cat["complementos"],
-        catalogo=ctx_cat["catalogo"],
-        fonte=ctx_cat["fonte"],
+        similares=ctx_cat.get("similares") or [],
+        upsell=ctx_cat.get("upsell") or [],
+        complementos=ctx_cat.get("complementos") or [],
+        catalogo=ctx_cat.get("catalogo") or "",
+        fonte=ctx_cat.get("fonte") or "",
         erro_mercos=ctx_cat.get("erro_mercos"),
         estagio=estagio,
         bant=bant,
@@ -166,4 +188,6 @@ def preparar_contexto_venda(
         sem_match=bool(ctx_cat.get("sem_match")),
         termos_cliente=ctx_cat.get("termos_cliente") or [],
         amostra_disponivel=ctx_cat.get("amostra_disponivel") or [],
+        tom=tom,
+        memoria={**mem, "intencao": modo, "tom": tom},
     )

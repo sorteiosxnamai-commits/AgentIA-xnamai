@@ -91,9 +91,30 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-09-sem-loop-retirar"
+CODE_VERSION = "2026-07-10-vendedor-humano"
 
 router = APIRouter()
+
+
+def _bloqueio_diagnostico(token: str = "") -> dict | None:
+    """Com DIAGNOSTICOS_ABERTOS=false (padrão), exige SYNC_TOKEN."""
+    abertos = os.getenv("DIAGNOSTICOS_ABERTOS", "false").strip().lower() in (
+        "1",
+        "true",
+        "sim",
+        "yes",
+    )
+    if abertos:
+        return None
+    sync_token = os.getenv("SYNC_TOKEN", "").strip()
+    if not sync_token:
+        return {
+            "status": "erro",
+            "mensagem": "Diagnósticos fechados. Defina SYNC_TOKEN ou DIAGNOSTICOS_ABERTOS=true",
+        }
+    if token != sync_token:
+        return {"status": "erro", "mensagem": "Token inválido"}
+    return None
 
 
 def processar_mensagem(data: dict):
@@ -207,6 +228,21 @@ def processar_mensagem(data: dict):
             if trecho != historico_texto:
                 historico_venda = trecho
 
+        from services.vendas.analise import detectar_modo_intencao, detectar_tom
+        from services.vendas.memoria import (
+            atualizar_sessao_turno,
+            carregar_sessao,
+            limpar_sessao,
+            mensagem_ambigua_para_llm,
+            persistir_sessao,
+        )
+
+        if nova_venda_explicita:
+            limpar_sessao(str(cliente_id))
+            sessao = carregar_sessao(None, str(cliente_id))
+        else:
+            sessao = carregar_sessao(cliente, str(cliente_id))
+
         resposta_pos_venda = None
         if estado_venda == "pos_venda":
             resposta_pos_venda = resolver_resposta_pos_pedido(
@@ -266,6 +302,7 @@ def processar_mensagem(data: dict):
             historico_texto=historico_venda,
             pedido_encerrado=pedido_encerrado,
             pular_catalogo=pular_catalogo,
+            memoria=sessao,
         )
 
         if not pular_catalogo and cliente_pediu_foto(mensagem) and not contexto_venda.produtos:
@@ -275,10 +312,23 @@ def processar_mensagem(data: dict):
                     mensagem=busca_historico,
                     historico_texto=historico_venda,
                     pedido_encerrado=pedido_encerrado,
+                    memoria=sessao,
                 )
 
         produtos = contexto_venda.produtos
         catalogo = contexto_venda.catalogo
+
+        sessao = atualizar_sessao_turno(
+            sessao,
+            historico_texto=historico_venda,
+            mensagem=mensagem,
+            produtos=produtos,
+            tom=detectar_tom(mensagem, historico_venda),
+            intencao=detectar_modo_intencao(mensagem, historico_venda),
+            nova_venda=False,
+        )
+        contexto_venda.memoria = sessao
+        persistir_sessao(str(cliente_id), sessao)
 
         if not pular_catalogo:
             print("================================")
@@ -455,6 +505,30 @@ def processar_mensagem(data: dict):
             print("PRECO: resposta pelo produto em discussão")
         elif (
             not pedido_encerrado
+            and mensagem_ambigua_para_llm(mensagem, sessao)
+            and not cliente_perguntou_preco(mensagem)
+        ):
+            from services.openai_service import TEMPERATURE_CONVERSA
+
+            ultima_para_ia = (
+                ""
+                if nova_venda_explicita or historico_venda != historico_texto
+                else ultima_resposta_ia
+            )
+            resposta_ia = perguntar_ia(
+                mensagem=mensagem,
+                catalogo=catalogo,
+                historico_texto=historico_recente(historico_venda, max_linhas=12),
+                nome_cliente=nome_conversa,
+                ultima_resposta_ia=ultima_para_ia,
+                foto_automatica=bool(com_foto and pediu_foto),
+                contexto_venda=contexto_venda,
+                memoria_sessao=sessao,
+                temperature=TEMPERATURE_CONVERSA,
+            )
+            print("LLM: pergunta ambígua sobre produto ativo")
+        elif (
+            not pedido_encerrado
             and not cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia)
             and not cliente_quer_novo_atendimento(mensagem)
             and entrega_ja_informada(historico_venda)
@@ -484,11 +558,12 @@ def processar_mensagem(data: dict):
             resposta_ia = perguntar_ia(
                 mensagem=mensagem,
                 catalogo=catalogo,
-                historico_texto=historico_recente(historico_venda),
+                historico_texto=historico_recente(historico_venda, max_linhas=12),
                 nome_cliente=nome_conversa,
                 ultima_resposta_ia=ultima_para_ia,
                 foto_automatica=bool(com_foto and pediu_foto),
                 contexto_venda=contexto_venda,
+                memoria_sessao=sessao,
             )
 
         print("RESPOSTA IA:")
@@ -590,8 +665,11 @@ async def status():
 
 
 @router.get("/teste-supabase-produtos")
-async def teste_supabase_produtos():
+async def teste_supabase_produtos(token: str = ""):
     """Diagnóstico direto — lê produtos do Supabase sem montar catálogo."""
+    bloqueio = _bloqueio_diagnostico(token)
+    if bloqueio:
+        return bloqueio
     try:
         from services.supabase_service import buscar_produtos
 
@@ -613,8 +691,11 @@ async def teste_supabase_produtos():
 
 
 @router.get("/teste-pulsedesk-pedidos")
-async def teste_pulsedesk_pedidos(tel: str = "554396717931"):
+async def teste_pulsedesk_pedidos(tel: str = "554396717931", token: str = ""):
     """Diagnóstico — lê cliente/pedidos WhatsApp no Supabase PulseDesk."""
+    bloqueio = _bloqueio_diagnostico(token)
+    if bloqueio:
+        return bloqueio
     try:
         return {
             "status": "ok",
@@ -635,9 +716,9 @@ async def teste_pulsedesk_pedidos(tel: str = "554396717931"):
 @router.get("/registrar-pedido-pulsedesk")
 async def registrar_pedido_pulsedesk(tel: str = "", token: str = ""):
     """Backfill — grava no PulseDesk pedido fechado no WhatsApp (histórico agent)."""
-    sync_token = os.getenv("SYNC_TOKEN", "").strip()
-    if sync_token and token != sync_token:
-        return {"status": "erro", "mensagem": "Token inválido"}
+    bloqueio = _bloqueio_diagnostico(token)
+    if bloqueio:
+        return bloqueio
 
     if not tel:
         return {"status": "erro", "mensagem": "Informe ?tel=554396717931"}
@@ -658,22 +739,27 @@ async def registrar_pedido_pulsedesk(tel: str = "", token: str = ""):
 @router.post("/sync-produtos")
 @router.get("/sync-produtos")
 async def sync_produtos(token: str = ""):
-    """Sincroniza produtos Mercos → Supabase. Opcional: ?token=SEU_SYNC_TOKEN"""
-    sync_token = os.getenv("SYNC_TOKEN", "").strip()
-
-    if sync_token and token != sync_token:
-        return {"status": "erro", "mensagem": "Token inválido"}
+    """Sincroniza produtos Mercos → Supabase. Exige SYNC_TOKEN (ou DIAGNOSTICOS_ABERTOS)."""
+    bloqueio = _bloqueio_diagnostico(token)
+    if bloqueio:
+        return bloqueio
 
     try:
+        from services.supabase_service import invalidar_cache_produtos
+
         resultado = sincronizar_produtos_mercos()
+        invalidar_cache_produtos()
         return {"status": "ok", **resultado}
     except Exception as e:
         return {"status": "erro", "mensagem": str(e)}
 
 
 @router.get("/teste-produtos")
-async def teste_produtos(q: str = ""):
+async def teste_produtos(q: str = "", token: str = ""):
     """Testa busca de produtos (Mercos primeiro, Supabase fallback)."""
+    bloqueio = _bloqueio_diagnostico(token)
+    if bloqueio:
+        return bloqueio
     try:
         from services.vendas.contexto import preparar_contexto_venda
 
@@ -704,13 +790,16 @@ async def teste_produtos(q: str = ""):
 
 
 @router.get("/teste-mercos")
-async def teste_mercos(q: str = ""):
-    return await teste_produtos(q)
+async def teste_mercos(q: str = "", token: str = ""):
+    return await teste_produtos(q, token)
 
 
 @router.get("/teste-vendedor")
-async def teste_vendedor():
+async def teste_vendedor(token: str = ""):
     """Envia notificação de teste para o WhatsApp do vendedor."""
+    bloqueio = _bloqueio_diagnostico(token)
+    if bloqueio:
+        return bloqueio
     if not vendedor_configurado():
         return {
             "status": "erro",
@@ -732,8 +821,11 @@ async def teste_vendedor():
 
 
 @router.get("/teste-imagem")
-async def teste_imagem(tel: str = "", url: str = ""):
+async def teste_imagem(tel: str = "", url: str = "", token: str = ""):
     """Envia imagem de teste via WhatsApp (Z-API ou UltraMsg)."""
+    bloqueio = _bloqueio_diagnostico(token)
+    if bloqueio:
+        return bloqueio
     if not tel or not url:
         return {
             "status": "erro",
@@ -755,8 +847,11 @@ async def teste_imagem(tel: str = "", url: str = ""):
 @router.get("/teste-ultramsg")
 @router.get("/teste-zapi")
 @router.get("/teste-whatsapp")
-async def teste_whatsapp(tel: str = ""):
+async def teste_whatsapp(tel: str = "", token: str = ""):
     """Envia mensagem de teste direto pelo provedor WhatsApp configurado."""
+    bloqueio = _bloqueio_diagnostico(token)
+    if bloqueio:
+        return bloqueio
     if not tel:
         return {"status": "erro", "mensagem": "Informe ?tel=5543988601234"}
 

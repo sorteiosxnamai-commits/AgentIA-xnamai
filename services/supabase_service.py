@@ -138,16 +138,18 @@ def salvar_mensagem(cliente_id, tipo, mensagem):
     return resultado
 
 
-def buscar_historico(cliente_id):
-    resultado = (
+def buscar_historico(cliente_id, limit: int | None = None):
+    query = (
         supabase.table(TABELA_HISTORICO)
         .select("*")
         .eq("cliente_id", cliente_id)
         .order("criado_em")
-        .execute()
     )
-
-    return resultado.data
+    resultado = query.execute()
+    dados = resultado.data or []
+    if limit is not None and limit > 0 and len(dados) > limit:
+        return dados[-limit:]
+    return dados
 
 
 def atualizar_historico_json(cliente_id):
@@ -178,14 +180,29 @@ def atualizar_historico_json(cliente_id):
 # PRODUTOS (ETL PulseDesk → Supabase)
 # =========================
 
+_cache_produtos: dict = {"dados": None, "expira_em": 0.0}
+_CACHE_PRODUTOS_SEG = float(os.getenv("PRODUTOS_CACHE_SEGUNDOS", "120") or "120")
+
+
+def invalidar_cache_produtos() -> None:
+    _cache_produtos["dados"] = None
+    _cache_produtos["expira_em"] = 0.0
+
+
 def buscar_produtos():
+    agora = time.time()
+    if _cache_produtos["dados"] is not None and agora < float(_cache_produtos["expira_em"]):
+        return list(_cache_produtos["dados"])
+
     resultado = (
         supabase.table("produtos")
         .select("*")
         .execute()
     )
-
-    return [_normalizar_produto(row) for row in (resultado.data or [])]
+    produtos = [_normalizar_produto(row) for row in (resultado.data or [])]
+    _cache_produtos["dados"] = produtos
+    _cache_produtos["expira_em"] = agora + max(30.0, _CACHE_PRODUTOS_SEG)
+    return list(produtos)
 
 
 def buscar_produto_por_nome(nome):

@@ -26,7 +26,7 @@ def test_saudacao_tom_consultora():
 
 def test_quero_pedido_nao_oferece_produto():
     texto = resposta_abrir_espaco_pedido("Tironi")
-    assert "procurando" in texto.lower()
+    assert "procurando" in texto.lower() or "mente" in texto.lower() or "busca" in texto.lower()
     assert "R$" not in texto
     assert "Webcam" not in texto
     assert "HDMI" not in texto

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import unicodedata
@@ -22,6 +23,14 @@ def _normalizar(texto: str) -> str:
     texto = unicodedata.normalize("NFKD", texto or "")
     texto = "".join(c for c in texto if not unicodedata.combining(c))
     return texto.lower().strip()
+
+
+def _variante(chave: str, opcoes: list[str]) -> str:
+    """Escolha estável por conversa (testável, não aleatória pura)."""
+    if not opcoes:
+        return ""
+    digest = hashlib.md5((chave or "x").encode("utf-8")).hexdigest()
+    return opcoes[int(digest[:8], 16) % len(opcoes)]
 
 
 def extrair_preferencia_nf(historico_texto: str, mensagem: str = "") -> str | None:
@@ -106,40 +115,98 @@ def ia_pediu_alinhamento(ultima_resposta_ia: str) -> bool:
 
 
 def resposta_saudacao_xnamai(nome_cliente: str = "") -> str:
+    chave = nome_cliente or "anon"
     if nome_cliente:
-        return (
-            f"Olá, {nome_cliente}! Como vai?\n\n"
-            f"Sou a {CONSULTORA}, do time de vendas da {NOME_MARCA}. "
-            "No que posso te ajudar hoje?"
+        return _variante(
+            f"saudacao:{chave}",
+            [
+                (
+                    f"Olá, {nome_cliente}! Como vai?\n\n"
+                    f"Sou a {CONSULTORA}, do time de vendas da {NOME_MARCA}. "
+                    "No que posso te ajudar hoje?"
+                ),
+                (
+                    f"Oi, {nome_cliente}! Tudo bem?\n\n"
+                    f"Aqui é a {CONSULTORA}, do time de vendas da {NOME_MARCA}. "
+                    "Me conta o que você precisa?"
+                ),
+                (
+                    f"Oi, {nome_cliente}!\n\n"
+                    f"Sou a {CONSULTORA}, consultora de vendas da {NOME_MARCA}. "
+                    "Como posso te ajudar?"
+                ),
+            ],
         )
-    return (
-        f"Olá! Como vai?\n\n"
-        f"Sou a {CONSULTORA}, do time de vendas da {NOME_MARCA}. "
-        "No que posso te ajudar hoje?"
+    return _variante(
+        "saudacao:anon",
+        [
+            (
+                f"Olá! Como vai?\n\n"
+                f"Sou a {CONSULTORA}, do time de vendas da {NOME_MARCA}. "
+                "No que posso te ajudar hoje?"
+            ),
+            (
+                f"Oi! Tudo bem?\n\n"
+                f"Aqui é a {CONSULTORA}, do time de vendas da {NOME_MARCA}. "
+                "Me conta o que você precisa?"
+            ),
+        ],
     )
 
 
 def resposta_abrir_espaco_pedido(nome_cliente: str = "") -> str:
     """Cliente quer pedir, mas ainda não disse o produto — não empurrar catálogo."""
+    chave = nome_cliente or "anon"
     if nome_cliente:
-        return (
-            f"Perfeito, {nome_cliente}! Pode me contar o que você está procurando?\n\n"
-            "Fico à disposição pra te ajudar com calma."
+        return _variante(
+            f"abrir:{chave}",
+            [
+                (
+                    f"Perfeito, {nome_cliente}! Pode me contar o que você está procurando?\n\n"
+                    "Fico à disposição pra te ajudar com calma."
+                ),
+                (
+                    f"Combinado, {nome_cliente}! O que você tem em mente?\n\n"
+                    "Pode ser o produto ou o uso que você precisa."
+                ),
+                (
+                    f"Beleza, {nome_cliente}! Me fala o que você busca "
+                    "que eu te ajudo a achar a melhor opção."
+                ),
+            ],
         )
-    return (
-        "Perfeito! Pode me contar o que você está procurando?\n\n"
-        "Fico à disposição pra te ajudar com calma."
+    return _variante(
+        "abrir:anon",
+        [
+            (
+                "Perfeito! Pode me contar o que você está procurando?\n\n"
+                "Fico à disposição pra te ajudar com calma."
+            ),
+            "Combinado! O que você tem em mente? Produto ou o uso que precisa.",
+        ],
     )
 
 
 def resposta_alinhamento_pedido(nome_cliente: str = "") -> str:
     nome = nome_cliente or "Cliente"
-    return (
-        f"Perfeito, {nome}! Para finalizarmos o seu pedido, poderia me confirmar:\n\n"
-        "1) Vai precisar de NF? Se sim, qual a %?\n"
-        "2) Forma de envio ou retirada?\n\n"
-        "Trabalhamos com pagamento antecipado para agilizar separação e despacho "
-        "(não é obrigatório). ST/frete, se houver, avisamos depois com transparência."
+    return _variante(
+        f"alinhamento:{nome}",
+        [
+            (
+                f"Perfeito, {nome}! Para finalizarmos o seu pedido, poderia me confirmar:\n\n"
+                "1) Vai precisar de NF? Se sim, qual a %?\n"
+                "2) Forma de envio ou retirada?\n\n"
+                "Trabalhamos com pagamento antecipado para agilizar separação e despacho "
+                "(não é obrigatório). ST/frete, se houver, avisamos depois com transparência."
+            ),
+            (
+                f"Fechado, {nome}! Antes de registrar, só confirmo com você:\n\n"
+                "• Precisa de NF (e qual %)?\n"
+                "• Prefere envio ou retirada?\n\n"
+                "Pagamento antecipado ajuda a agilizar a separação — sem obrigatoriedade. "
+                "Frete/ST a gente confirma depois, com transparência."
+            ),
+        ],
     )
 
 

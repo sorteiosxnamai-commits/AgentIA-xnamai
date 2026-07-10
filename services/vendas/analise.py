@@ -222,3 +222,69 @@ def orientacao_objecao(tipo: str | None) -> str:
         ),
     }
     return orientacoes.get(tipo, "")
+
+
+TOM_BRAVO = (
+    r"\b(absurdo|ridiculo|ridículo|horrivel|horrível|pessimo|péssimo|lixo|golpe|"
+    r"raiva|irritad|cansad|nao aguento|não aguento|que merda|porcaria|"
+    r"demora demais|nunca responde|so enrola|só enrola)\b"
+)
+
+TOM_PESQUISA = (
+    r"\b(so\s+olhando|só\s+olhando|estou\s+vendo|to\s+vendo|tô\s+vendo|"
+    r"pesquisando|quero\s+saber|mais\s+tarde|depois\s+eu\s+vejo|"
+    r"sem\s+compromisso|so\s+uma\s+duvida|só\s+uma\s+dúvida)\b"
+)
+
+
+def detectar_tom(mensagem: str, historico_texto: str = "") -> str:
+    """Retorna 'bravo' | 'pesquisa' | 'compra' | 'neutro'."""
+    texto = _normalizar(mensagem)
+    if re.search(TOM_BRAVO, texto):
+        return "bravo"
+    if detectar_intencao_compra(mensagem, historico_texto):
+        return "compra"
+    if re.search(TOM_PESQUISA, texto):
+        return "pesquisa"
+    return "neutro"
+
+
+def detectar_modo_intencao(mensagem: str, historico_texto: str = "") -> str:
+    """Intenção de sessão: pesquisa | compra | neutro."""
+    tom = detectar_tom(mensagem, historico_texto)
+    if tom == "compra":
+        return "compra"
+    if tom == "pesquisa":
+        return "pesquisa"
+    return "neutro"
+
+
+def orientacao_tom(tom: str) -> str:
+    if tom == "bravo":
+        return (
+            "TOM: cliente irritado. Acolha em 1 frase, seja objetivo, "
+            "não use emojis excessivos nem empurrar catálogo. Resolva a dúvida."
+        )
+    if tom == "pesquisa":
+        return (
+            "TOM: cliente só pesquisando. Informe com clareza, não force fechamento; "
+            "ofereça ajuda se quiser comparar opções do catálogo."
+        )
+    if tom == "compra":
+        return (
+            "TOM: cliente pronto para comprar. Facilite o próximo passo "
+            "(confirmar item, NF/envio) sem pressão."
+        )
+    return ""
+
+
+def briefing_referencia_implicita(mensagem: str, produto_ativo: str = "") -> str:
+    from services.vendas.memoria import mensagem_referencia_implicita
+
+    if not produto_ativo or not mensagem_referencia_implicita(mensagem):
+        return ""
+    return (
+        f"REFERÊNCIA IMPLÍCITA: a mensagem curta do cliente refere-se ao produto "
+        f"já em discussão: '{produto_ativo}'. Responda sobre esse item "
+        "(cor/estoque/preço/detalhe) sem pedir de novo 'qual produto?'."
+    )
