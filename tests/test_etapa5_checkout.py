@@ -453,7 +453,7 @@ def test_chat_continua_funcionando():
     sig = inspect.signature(api_mod.processar_mensagem)
     assert "dry_run" in sig.parameters
     assert "persistir" in sig.parameters
-    assert api_mod.CODE_VERSION == "2026-07-10-fix-cliente-ok"
+    assert api_mod.CODE_VERSION == "2026-07-12-fix-cliente-ok-final"
 
 
 # 26

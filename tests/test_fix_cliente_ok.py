@@ -122,6 +122,7 @@ def test_cliente_existente_telefone_ok(monkeypatch):
 # 2
 def test_buscar_cliente_por_celular(monkeypatch):
     calls = {"telefone": 0, "celular": 0}
+    sb._SCHEMA_FLAGS["clientes_celular"] = None
 
     class FakeTable:
         def __init__(self, name):
@@ -167,8 +168,15 @@ def test_buscar_cliente_por_celular(monkeypatch):
 # 3
 def test_criar_cliente_com_telefone_e_nome(monkeypatch):
     inserted = {}
+    sb._SCHEMA_FLAGS["clientes_celular"] = True
 
     class FakeTable:
+        def select(self, *_a, **_k):
+            return self
+
+        def limit(self, *_a, **_k):
+            return self
+
         def insert(self, payload):
             inserted.update(payload)
             return self
@@ -180,6 +188,7 @@ def test_criar_cliente_com_telefone_e_nome(monkeypatch):
             }])
 
     monkeypatch.setattr(sb, "supabase", MagicMock(table=lambda n: FakeTable()))
+    monkeypatch.setattr(sb, "_detectar_colunas_clientes", lambda: {"telefone", "celular", "nome"})
     row = sb.criar_cliente("5543999999993", nome="Arthur")
     assert row["id"] == "cli-new"
     assert inserted["telefone"] == "5543999999993"
@@ -192,8 +201,15 @@ def test_criar_cliente_com_telefone_e_nome(monkeypatch):
 # 4
 def test_criar_cliente_sem_nome_usa_fallback(monkeypatch):
     inserted = {}
+    sb._SCHEMA_FLAGS["clientes_celular"] = False
 
     class FakeTable:
+        def select(self, *_a, **_k):
+            return self
+
+        def limit(self, *_a, **_k):
+            return self
+
         def insert(self, payload):
             inserted.update(payload)
             return self
@@ -202,6 +218,7 @@ def test_criar_cliente_sem_nome_usa_fallback(monkeypatch):
             return MagicMock(data=[{"id": "cli-fb", **inserted}])
 
     monkeypatch.setattr(sb, "supabase", MagicMock(table=lambda n: FakeTable()))
+    monkeypatch.setattr(sb, "_detectar_colunas_clientes", lambda: set())
     row = sb.criar_cliente("5543999999993", nome="")
     assert row["nome"].startswith("WhatsApp")
     assert "9993" in row["nome"]
@@ -223,8 +240,15 @@ def test_cliente_existente_nao_duplica(monkeypatch):
 # 6
 def test_insert_somente_colunas_existentes(monkeypatch):
     inserted = {}
+    sb._SCHEMA_FLAGS["clientes_celular"] = False
 
     class FakeTable:
+        def select(self, *_a, **_k):
+            return self
+
+        def limit(self, *_a, **_k):
+            return self
+
         def insert(self, payload):
             inserted.update(payload)
             return self
@@ -233,8 +257,10 @@ def test_insert_somente_colunas_existentes(monkeypatch):
             return MagicMock(data=[{"id": "x", **inserted}])
 
     monkeypatch.setattr(sb, "supabase", MagicMock(table=lambda n: FakeTable()))
+    monkeypatch.setattr(sb, "_detectar_colunas_clientes", lambda: set())
     sb.criar_cliente("5511999999999", nome="Ana")
     assert set(inserted.keys()) <= {"telefone", "celular", "nome"}
+    assert "celular" not in inserted
 
 
 # 7
@@ -300,7 +326,7 @@ def test_persistir_false_continua(monkeypatch):
 # 12
 def test_webhook_continua():
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-10-fix-cliente-ok"
+    assert api_mod.CODE_VERSION == "2026-07-12-fix-cliente-ok-final"
 
 
 # 13

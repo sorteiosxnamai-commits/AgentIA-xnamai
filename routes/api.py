@@ -127,7 +127,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-10-fix-cliente-ok"
+CODE_VERSION = "2026-07-12-fix-cliente-ok-final"
 
 
 def _resposta_texto(resultado) -> str | None:
@@ -141,6 +141,7 @@ def _montar_resultado(
     resposta: str | None,
     persistencia_ok: bool = True,
     persistencia_etapas: dict | None = None,
+    cliente_debug: dict | None = None,
 ) -> dict:
     out = {
         "resposta": resposta,
@@ -148,6 +149,8 @@ def _montar_resultado(
     }
     if persistencia_etapas is not None:
         out["persistencia_etapas"] = persistencia_etapas
+    if cliente_debug is not None:
+        out["cliente_debug"] = cliente_debug
     return out
 
 
@@ -275,13 +278,17 @@ def _processar_mensagem_locked(
 ):
     persistencia_ok = True
     resposta_ia = None
+    # Com persistir: começa False — só True após gravação real no banco
     etapas = {
-        "cliente_ok": True,
-        "contexto_ok": True,
-        "historico_ok": True,
-        "thread_ok": True,
-        "message_log_ok": True,
+        "cliente_ok": not persistir,
+        "contexto_ok": not persistir,
+        "historico_ok": not persistir,
+        "thread_ok": not persistir,
+        "message_log_ok": not persistir,
     }
+    origem_cliente = "desconhecido"
+    contexto_salvo_em = "nenhum"
+    historico_salvo_em = "nenhum"
 
     def _tentar_persistir(
         etapa: str,
@@ -369,23 +376,33 @@ def _processar_mensagem_locked(
                 detalhe=str(exc)[:120],
             )
 
-        if cliente:
+        if cliente and cliente.get("id") and not str(cliente.get("id")).startswith("ephemeral-"):
             etapas["cliente_ok"] = True
-        elif not cliente:
-            if persistir:
-                cliente = _tentar_persistir(
-                    "criar_cliente",
-                    lambda: criar_cliente(numero, nome=nome_cliente),
-                    essencial=True,
-                    etapa_flag="cliente_ok",
-                )
-                # Insert sem retorno / race: tenta rebusca antes de ephemeral
-                if not cliente:
-                    try:
-                        cliente = buscar_cliente(numero)
-                    except Exception:
-                        cliente = None
-                if cliente:
+            tel_norm = numero
+            if str(cliente.get("telefone") or "") == tel_norm:
+                origem_cliente = "telefone"
+            elif str(cliente.get("celular") or "") == tel_norm:
+                origem_cliente = "celular"
+            else:
+                origem_cliente = "telefone"
+        elif persistir:
+            cliente = _tentar_persistir(
+                "criar_cliente",
+                lambda: criar_cliente(numero, nome=nome_cliente),
+                essencial=True,
+                etapa_flag="cliente_ok",
+            )
+            if cliente and cliente.get("id") and not str(cliente.get("id")).startswith("ephemeral-"):
+                origem_cliente = "criado"
+                etapas["cliente_ok"] = True
+            else:
+                # Insert sem retorno / race: rebusca antes de ephemeral
+                try:
+                    cliente = buscar_cliente(numero)
+                except Exception:
+                    cliente = None
+                if cliente and cliente.get("id") and not str(cliente.get("id")).startswith("ephemeral-"):
+                    origem_cliente = "rebuscado"
                     etapas["cliente_ok"] = True
                     log_seguro("cliente_novo", telefone=numero, message_id=msg_id or "-")
                 else:
@@ -395,17 +412,27 @@ def _processar_mensagem_locked(
                         "nome": nome_cliente,
                         "contexto_venda": {},
                     }
+                    origem_cliente = "ephemeral"
+                    # Nunca deixar historico/contexto “ok” por valor inicial quando caiu em fallback
                     etapas["cliente_ok"] = False
+                    etapas["contexto_ok"] = False
+                    etapas["historico_ok"] = False
+                    etapas["thread_ok"] = False
+                    etapas["message_log_ok"] = False
                     persistencia_ok = False
-            else:
-                cliente = {
-                    "id": f"ephemeral-{numero}",
-                    "telefone": numero,
-                    "nome": nome_cliente,
-                    "contexto_venda": {},
-                }
-                log_seguro("cliente_ephemeral", telefone=numero, message_id=msg_id or "-")
+                    contexto_salvo_em = "fallback"
+                    historico_salvo_em = "fallback"
+        else:
+            cliente = {
+                "id": f"ephemeral-{numero}",
+                "telefone": numero,
+                "nome": nome_cliente,
+                "contexto_venda": {},
+            }
+            origem_cliente = "ephemeral"
+            log_seguro("cliente_ephemeral", telefone=numero, message_id=msg_id or "-")
 
+        # Update de nome é opcional — nunca derruba cliente_ok
         if (
             cliente
             and not str(cliente.get("id") or "").startswith("ephemeral-")
@@ -421,9 +448,25 @@ def _processar_mensagem_locked(
             cliente["nome"] = nome_cliente
 
         cliente_id = cliente["id"]
-        # Cliente real resolvido = ok (mesmo se create passou por rebusca)
-        if persistir and not str(cliente_id).startswith("ephemeral-"):
+        cliente_real = bool(
+            persistir
+            and cliente_id
+            and not str(cliente_id).startswith("ephemeral-")
+        )
+        if cliente_real:
             etapas["cliente_ok"] = True
+
+        if dry_run or persistir:
+            log_seguro(
+                "cliente_resolvido",
+                telefone=numero,
+                message_id=msg_id or "-",
+                cliente_ok=etapas.get("cliente_ok"),
+                tem_cliente_id=cliente_real,
+                origem_cliente=origem_cliente,
+                contexto_salvo_em=contexto_salvo_em,
+                historico_salvo_em=historico_salvo_em,
+            )
 
         # =========================
         # SALVA MENSAGEM (histórico essencial; thread opcional)
@@ -443,6 +486,8 @@ def _processar_mensagem_locked(
                 essencial=True,
                 etapa_flag="historico_ok",
             )
+            if etapas.get("historico_ok"):
+                historico_salvo_em = "banco"
             # Thread PulseDesk — opcional
             _tentar_persistir(
                 "atualizar_thread",
@@ -1203,6 +1248,8 @@ def _processar_mensagem_locked(
                 essencial=True,
                 etapa_flag="historico_ok",
             )
+            if etapas.get("historico_ok"):
+                historico_salvo_em = "banco"
             if not dry_run:
                 try:
                     espelhar_mensagem_agente(numero, nome_cliente, resposta_ia)
@@ -1246,14 +1293,24 @@ def _processar_mensagem_locked(
                 essencial=True,
                 etapa_flag="contexto_ok",
             )
+            if etapas.get("contexto_ok"):
+                contexto_salvo_em = "banco"
+            else:
+                contexto_salvo_em = "fallback"
         elif persistir:
-            # ephemeral: só cache local
+            # ephemeral: só cache local — NÃO marca contexto/historico como ok de banco
             try:
                 from services.vendas.memoria import persistir_sessao as _ps
 
                 _ps(str(cliente_id), sessao)
             except Exception:
                 pass
+            etapas["contexto_ok"] = False
+            etapas["historico_ok"] = False
+            etapas["cliente_ok"] = False
+            contexto_salvo_em = "fallback"
+            historico_salvo_em = "fallback"
+            persistencia_ok = False
 
         # =========================
         # ENVIA WHATSAPP
@@ -1261,21 +1318,57 @@ def _processar_mensagem_locked(
 
         enviar_wa = (not dry_run) and persistir
 
-        # Essenciais: cliente + historico + contexto
-        if persistir and not str(cliente_id).startswith("ephemeral-"):
-            # Se histórico/contexto gravaram no registro do cliente, o cliente existe
+        # Snapshot ANTES da reconciliação final (detecta flag antiga/errada)
+        cliente_ok_antes = bool(etapas.get("cliente_ok"))
+        tem_cliente_id = bool(
+            cliente_id and not str(cliente_id).startswith("ephemeral-")
+        )
+
+        # Essenciais: cliente + historico + contexto (somente banco real)
+        # Regra: id real OU historico+contexto no banco => cliente_ok
+        if persistir and tem_cliente_id:
+            etapas["cliente_ok"] = True
             if etapas.get("historico_ok") and etapas.get("contexto_ok"):
                 etapas["cliente_ok"] = True
             persistencia_ok = bool(
-                etapas.get("cliente_ok", True)
-                and etapas.get("historico_ok", True)
-                and etapas.get("contexto_ok", True)
+                etapas.get("cliente_ok")
+                and etapas.get("historico_ok")
+                and etapas.get("contexto_ok")
+            )
+        elif persistir:
+            etapas["cliente_ok"] = False
+            etapas["contexto_ok"] = False
+            etapas["historico_ok"] = False
+            contexto_salvo_em = "fallback"
+            historico_salvo_em = "fallback"
+            persistencia_ok = False
+
+        cliente_debug = None
+        if dry_run:
+            cliente_debug = {
+                "tem_cliente_id": tem_cliente_id if persistir else False,
+                "origem_cliente": origem_cliente,
+                "cliente_ok_antes": cliente_ok_antes,
+                "cliente_ok_final": bool(etapas.get("cliente_ok")),
+                "contexto_salvo_em": contexto_salvo_em,
+                "historico_salvo_em": historico_salvo_em,
+            }
+            log_seguro(
+                "cliente_resolvido",
+                telefone=numero,
+                message_id=msg_id or "-",
+                cliente_ok=etapas.get("cliente_ok"),
+                tem_cliente_id=tem_cliente_id,
+                origem_cliente=origem_cliente,
+                contexto_salvo_em=contexto_salvo_em,
+                historico_salvo_em=historico_salvo_em,
             )
 
         resultado_final = _montar_resultado(
             resposta_ia,
             persistencia_ok,
             persistencia_etapas=etapas if dry_run else None,
+            cliente_debug=cliente_debug,
         )
         log_seguro(
             "chat_resposta_final",
@@ -1490,10 +1583,12 @@ async def chat_teste(payload: dict):
     resposta = _resposta_texto(resultado)
     persistencia_ok = True
     etapas = None
+    cliente_debug = None
     if isinstance(resultado, dict):
         persistencia_ok = bool(resultado.get("persistencia_ok", False))
         if dry_run:
             etapas = resultado.get("persistencia_etapas")
+            cliente_debug = resultado.get("cliente_debug")
     elif resultado is None:
         persistencia_ok = False
 
@@ -1509,6 +1604,8 @@ async def chat_teste(payload: dict):
     }
     if etapas is not None:
         out["persistencia_etapas"] = etapas
+    if cliente_debug is not None:
+        out["cliente_debug"] = cliente_debug
     return out
 
 
