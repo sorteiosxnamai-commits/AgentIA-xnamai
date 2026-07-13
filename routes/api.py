@@ -132,7 +132,7 @@ from services.supabase_service import (
     obter_ultimo_erro_historico,
 )
 
-CODE_VERSION = "2026-07-13-fix-retorno-formatado"
+CODE_VERSION = "2026-07-13-fix-ultramsg-webhook-parser"
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
 from services.vendedor_service import (
@@ -1612,13 +1612,23 @@ def _processar_mensagem_locked(
         return _montar_resultado(None, persistencia_ok=False)
 
 
-def _log_webhook_recebido(data: dict) -> None:
+def _log_webhook_recebido(data: dict, diag: dict | None = None) -> None:
     """Log seguro — nunca imprime payload completo, tokens ou telefone."""
+    from services.webhook_normalizer import _detectar_provider
+
     evento = data.get("data") if isinstance(data, dict) else {}
+    if isinstance(evento, str):
+        try:
+            import json as _json
+
+            evento = _json.loads(evento)
+        except Exception:
+            evento = {}
     if not isinstance(evento, dict):
         evento = {}
-    provider = (data.get("provider") if isinstance(data, dict) else None) or (
-        "zapi" if (isinstance(data, dict) and data.get("type") == "ReceivedCallback") else "desconhecido"
+
+    provider = (diag or {}).get("provider_detectado") or _detectar_provider(
+        data if isinstance(data, dict) else {}
     )
     msg_id = ""
     if isinstance(data, dict):
@@ -1633,28 +1643,58 @@ def _log_webhook_recebido(data: dict) -> None:
         or ""
     )
     tipo = (
-        (data.get("type") if isinstance(data, dict) else None)
-        or data.get("event_type")
+        (diag or {}).get("tipo_evento")
+        or (data.get("event_type") if isinstance(data, dict) else None)
+        or (data.get("type") if isinstance(data, dict) else None)
         or evento.get("type")
         or "-"
     )
     log_seguro(
         "webhook_recebido",
         provider=provider,
+        provider_detectado=provider,
         message_id=msg_id or "-",
         telefone=tel_raw or "-",
         tipo=tipo,
+        tipo_evento=tipo,
+        tem_texto=bool((diag or {}).get("tem_texto")),
+        from_me=bool((diag or {}).get("from_me")),
+        eh_grupo=bool((diag or {}).get("eh_grupo")),
+        parse_ok=bool((diag or {}).get("parse_ok")),
     )
 
 
 async def receber_webhook(data: dict, background_tasks: BackgroundTasks | None = None):
+    from services.webhook_normalizer import analisar_webhook
 
-    _log_webhook_recebido(data)
+    diag = analisar_webhook(data if isinstance(data, dict) else {})
+    _log_webhook_recebido(data if isinstance(data, dict) else {}, diag)
 
-    payload = normalizar_webhook(data)
-    if not payload:
-        log_seguro("webhook_ignorado", motivo="formato_ou_evento_descartado")
-        return {"status": "ok", "ignorado": True}
+    if not diag.get("ok") or not diag.get("payload"):
+        motivo = diag.get("motivo_ignorado") or "formato_ou_evento_descartado"
+        log_seguro(
+            "webhook_ignorado",
+            motivo=motivo,
+            provider_detectado=diag.get("provider_detectado") or "-",
+            tipo_evento=diag.get("tipo_evento") or "-",
+            tem_texto=bool(diag.get("tem_texto")),
+            from_me=bool(diag.get("from_me")),
+            eh_grupo=bool(diag.get("eh_grupo")),
+            parse_ok=bool(diag.get("parse_ok")),
+            motivo_ignorado=motivo,
+        )
+        return {"status": "ok", "ignorado": True, "motivo": motivo}
+
+    payload = diag["payload"]
+    log_seguro(
+        "webhook_aceito",
+        provider_detectado=diag.get("provider_detectado") or payload.get("provider"),
+        tipo_evento=diag.get("tipo_evento") or "message_received",
+        tem_texto=True,
+        from_me=False,
+        eh_grupo=False,
+        parse_ok=True,
+    )
 
     if background_tasks is not None:
         background_tasks.add_task(processar_mensagem, payload)
@@ -1669,9 +1709,19 @@ async def receber_webhook(data: dict, background_tasks: BackgroundTasks | None =
 async def webhook_info():
     return {
         "status": "ok",
-        "mensagem": "POST aqui para receber mensagens da Z-API",
+        "mensagem": "POST aqui para receber mensagens WhatsApp (UltraMsg ou Z-API)",
         "url": "https://agent-ia-xnamai.onrender.com/webhook",
         "provider": provider_nome(),
+        "code_version": CODE_VERSION,
+        "aceita": [
+            "ultramsg message_received (privado @c.us)",
+            "zapi ReceivedCallback",
+        ],
+        "ignora": [
+            "grupos @g.us",
+            "fromMe=true",
+            "sem texto",
+        ],
     }
 
 

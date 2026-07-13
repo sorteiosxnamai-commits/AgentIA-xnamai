@@ -36,7 +36,7 @@ def _assert_json_resposta_limpa(texto: str) -> None:
 
 
 def test_code_version_retorno_formatado():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-retorno-formatado"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-ultramsg-webhook-parser"
 
 
 def test_detector_ve_soft_hyphen_e_zwsp():
@@ -98,7 +98,7 @@ def test_chat_json_resposta_sem_colagem(monkeypatch):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["code_version"] == "2026-07-13-fix-retorno-formatado"
+    assert data["code_version"] == "2026-07-13-fix-ultramsg-webhook-parser"
     # Valida o campo JSON, não variável interna
     _assert_json_resposta_limpa(data["resposta"])
     assert data["formatacao_debug"]["formatador_final_aplicado"] is True
