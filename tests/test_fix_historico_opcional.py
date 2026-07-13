@@ -153,4 +153,4 @@ def test_checkout_sequencia_contexto():
 
 
 def test_code_version_historico():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-historico-opcional"
+    assert api_mod.CODE_VERSION == "2026-07-13-feat-ultramsg-beta"

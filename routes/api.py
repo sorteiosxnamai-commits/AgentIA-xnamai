@@ -31,6 +31,8 @@ from services.whatsapp_service import (
     provider_nome,
     whatsapp_configurado,
 )
+from services import ultramsg_service as ultramsg_svc
+from services import zapi_service as zapi_svc
 from services.produto_imagem_service import (
     cliente_pediu_foto,
     enviar_fotos_produtos,
@@ -130,7 +132,7 @@ from services.supabase_service import (
     obter_ultimo_erro_historico,
 )
 
-CODE_VERSION = "2026-07-13-fix-historico-opcional"
+CODE_VERSION = "2026-07-13-feat-ultramsg-beta"
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
 from services.vendedor_service import (
@@ -1747,7 +1749,8 @@ async def status():
         "status": "online",
         "whatsapp_provider": provider_nome(),
         "whatsapp_configurado": whatsapp_configurado(),
-        "ultramsg_configurado": whatsapp_configurado(),
+        "ultramsg_configurado": ultramsg_svc.ultramsg_configurado(),
+        "zapi_configurado": zapi_svc.zapi_configurado(),
         "vendedor_configurado": vendedor_configurado(),
         "produtos_fonte": os.getenv("PRODUTOS_FONTE", "auto"),
         "mercos_configurado": mercos_configurado(),
@@ -1965,10 +1968,16 @@ async def teste_whatsapp(tel: str = "", token: str = ""):
         return {"status": "erro", "mensagem": "Informe ?tel=5543988601234"}
 
     if not whatsapp_configurado():
+        prov = provider_nome()
+        msg = (
+            "Configure ULTRAMSG_INSTANCE_ID e ULTRAMSG_TOKEN no Render"
+            if prov == "ultramsg"
+            else "Configure ZAPI_INSTANCE_ID e ZAPI_TOKEN no Render"
+        )
         return {
             "status": "erro",
-            "mensagem": "Configure ZAPI_INSTANCE_ID e ZAPI_TOKEN no Render",
-            "provider": provider_nome(),
+            "mensagem": msg,
+            "provider": prov,
         }
 
     resposta = enviar_mensagem(
@@ -1977,9 +1986,15 @@ async def teste_whatsapp(tel: str = "", token: str = ""):
     )
 
     ok = isinstance(resposta, dict) and resposta.get("ok")
+    if not ok and isinstance(resposta, str) and resposta:
+        ok = True
+    safe_resp = resposta
+    if isinstance(resposta, dict):
+        safe_resp = {k: v for k, v in resposta.items() if "token" not in k.lower()}
     return {
         "status": "ok" if ok else "erro",
         "provider": provider_nome(),
         "zapi_client_token_configurado": bool(os.getenv("ZAPI_CLIENT_TOKEN", "").strip()),
-        "resposta_whatsapp": resposta,
+        "ultramsg_configurado": ultramsg_svc.ultramsg_configurado(),
+        "resposta_whatsapp": safe_resp,
     }

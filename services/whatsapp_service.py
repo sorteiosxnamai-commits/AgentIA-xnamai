@@ -17,17 +17,29 @@ def whatsapp_configurado() -> bool:
     return zapi_service.zapi_configurado()
 
 
+def ultramsg_ativo() -> bool:
+    return _provider() == "ultramsg"
+
+
 def provider_nome() -> str:
-    return _provider()
+    return _provider() or "zapi"
 
 
 def enviar_mensagem(numero: str, mensagem: str):
-    if _provider() == "ultramsg":
+    from services.webhook_guard import log_seguro
+
+    prov = provider_nome()
+    log_seguro("whatsapp_provider_usado", provider=prov)
+    if prov == "ultramsg":
         return ultramsg_service.enviar_mensagem(numero, mensagem)
     return zapi_service.enviar_mensagem(numero, mensagem)
 
 
 def enviar_imagem(numero: str, url_imagem: str, legenda: str = ""):
-    if _provider() == "ultramsg":
+    from services.webhook_guard import log_seguro
+
+    prov = provider_nome()
+    log_seguro("whatsapp_provider_usado", provider=prov, tipo="imagem")
+    if prov == "ultramsg":
         return ultramsg_service.enviar_imagem(numero, url_imagem, legenda)
     return zapi_service.enviar_imagem(numero, url_imagem, legenda)
