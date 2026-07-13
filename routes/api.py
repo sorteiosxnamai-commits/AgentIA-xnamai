@@ -117,10 +117,13 @@ from services.supabase_service import (
     buscar_historico,
     atualizar_historico_json,
     diagnosticar_schema_persistencia,
+    diagnosticar_supabase_status,
+    diagnosticar_persistencia_cliente,
     atualizar_thread_conversa,
     limpar_ultimo_erro_cliente,
     obter_ultimo_erro_cliente,
     registrar_erro_cliente,
+    erro_cliente_para_debug,
 )
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
@@ -130,7 +133,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-13-fix-cliente-supabase"
+CODE_VERSION = "2026-07-13-fix-cliente-debug"
 
 
 def _resposta_texto(resultado) -> str | None:
@@ -421,13 +424,34 @@ def _processar_mensagem_locked(
                     etapas["cliente_ok"] = True
                     log_seguro("cliente_novo", telefone=numero, message_id=msg_id or "-")
                 else:
-                    if not cliente_debug_erro:
-                        cliente_debug_erro = obter_ultimo_erro_cliente() or {
-                            "etapa": "criar_cliente",
-                            "erro_codigo": "EPHEMERAL",
-                            "erro_tipo": "FALLBACK",
-                            "erro_resumido": "busca/criação falhou — fallback ephemeral",
-                        }
+                    # Garante erro estruturado (nunca string vazia)
+                    cliente_debug_erro = erro_cliente_para_debug("criar_cliente")
+                    # Probe extra em dry_run para capturar causa real (RLS/schema/rede)
+                    if dry_run:
+                        try:
+                            probe = diagnosticar_persistencia_cliente(numero)
+                            if probe.get("erro"):
+                                cliente_debug_erro = {
+                                    "etapa": str(probe["erro"].get("etapa") or "probe"),
+                                    "erro_codigo": str(probe["erro"].get("erro_codigo") or ""),
+                                    "erro_tipo": str(probe["erro"].get("erro_tipo") or ""),
+                                    "erro_resumido": str(probe["erro"].get("erro_resumido") or "")[:160],
+                                }
+                                registrar_erro_cliente(
+                                    f"probe_{cliente_debug_erro['etapa']}",
+                                    codigo=cliente_debug_erro["erro_codigo"],
+                                    tipo=cliente_debug_erro["erro_tipo"],
+                                    resumo=cliente_debug_erro["erro_resumido"],
+                                )
+                            elif not probe.get("insert_ok"):
+                                cliente_debug_erro = {
+                                    "etapa": "probe_insert",
+                                    "erro_codigo": "PROBE_FAIL",
+                                    "erro_tipo": "PERSISTENCIA",
+                                    "erro_resumido": "probe não conseguiu inserir em clientes",
+                                }
+                        except Exception as probe_exc:
+                            cliente_debug_erro = registrar_erro_cliente("probe", probe_exc)
                     cliente = {
                         "id": f"ephemeral-{numero}",
                         "telefone": numero,
@@ -1367,7 +1391,11 @@ def _processar_mensagem_locked(
 
         cliente_debug = None
         if dry_run:
-            dbg_erro = cliente_debug_erro or obter_ultimo_erro_cliente()
+            # Sempre objeto estruturado — nunca string vazia
+            if origem_cliente == "ephemeral" or not tem_cliente_id:
+                dbg_erro = cliente_debug_erro or erro_cliente_para_debug("criar_cliente")
+            else:
+                dbg_erro = cliente_debug_erro or obter_ultimo_erro_cliente()
             cliente_debug = {
                 "tem_cliente_id": tem_cliente_id if persistir else False,
                 "origem_cliente": origem_cliente,
@@ -1375,6 +1403,9 @@ def _processar_mensagem_locked(
                 "cliente_ok_final": bool(etapas.get("cliente_ok")),
                 "contexto_salvo_em": contexto_salvo_em,
                 "historico_salvo_em": historico_salvo_em,
+                "supabase_key_source": __import__(
+                    "database.supabase", fromlist=["supabase_key_source"]
+                ).supabase_key_source(),
             }
             if dbg_erro:
                 cliente_debug["cliente_debug_erro"] = {
@@ -1383,6 +1414,8 @@ def _processar_mensagem_locked(
                     "erro_tipo": str(dbg_erro.get("erro_tipo") or ""),
                     "erro_resumido": str(dbg_erro.get("erro_resumido") or "")[:160],
                 }
+            elif origem_cliente == "ephemeral":
+                cliente_debug["cliente_debug_erro"] = erro_cliente_para_debug("criar_cliente")
             log_seguro(
                 "cliente_resolvido",
                 telefone=numero,
@@ -1392,7 +1425,7 @@ def _processar_mensagem_locked(
                 origem_cliente=origem_cliente,
                 contexto_salvo_em=contexto_salvo_em,
                 historico_salvo_em=historico_salvo_em,
-                erro_tipo=(dbg_erro or {}).get("erro_tipo") or "-",
+                erro_tipo=(cliente_debug.get("cliente_debug_erro") or {}).get("erro_tipo") or "-",
             )
 
         resultado_final = _montar_resultado(
@@ -1642,6 +1675,7 @@ async def chat_teste(payload: dict):
 
 @router.get("/status")
 async def status():
+    supabase_diag = diagnosticar_supabase_status()
     return {
         "status": "online",
         "whatsapp_provider": provider_nome(),
@@ -1664,6 +1698,11 @@ async def status():
         "tabelas": tabelas_configuradas(),
         "tabelas_validacao": status_validacao(),
         "schema_persistencia": diagnosticar_schema_persistencia(),
+        "supabase_key_source": supabase_diag.get("supabase_key_source"),
+        "supabase_key_kind": supabase_diag.get("supabase_key_kind"),
+        "supabase_url_configurada": supabase_diag.get("supabase_url_configurada"),
+        "supabase_client_ready": supabase_diag.get("supabase_client_ready"),
+        "supabase_clientes_select_ok": supabase_diag.get("clientes_select_ok"),
     }
 
 

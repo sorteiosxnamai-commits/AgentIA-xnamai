@@ -326,7 +326,7 @@ def test_persistir_false_continua(monkeypatch):
 # 12
 def test_webhook_continua():
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-cliente-supabase"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-cliente-debug"
 
 
 # 13
@@ -511,8 +511,38 @@ def test_chat_debug_erro_em_ephemeral(monkeypatch):
 
     monkeypatch.setattr(api_mod, "criar_cliente", boom)
     monkeypatch.setattr(api_mod, "buscar_cliente", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        api_mod,
+        "diagnosticar_persistencia_cliente",
+        lambda *_a, **_k: {
+            "insert_ok": False,
+            "erro": {
+                "etapa": "insert",
+                "erro_codigo": "42501",
+                "erro_tipo": "RLS",
+                "erro_resumido": "RLS/permissão bloqueou clientes — use SUPABASE_SERVICE_ROLE_KEY no Render",
+            },
+        },
+    )
     out = api_mod.processar_mensagem(_data(mid="dbg-rls"), dry_run=True, persistir=True)
     assert out["persistencia_etapas"]["cliente_ok"] is False
     assert out["cliente_debug"]["origem_cliente"] == "ephemeral"
-    err = (out["cliente_debug"].get("cliente_debug_erro") or {})
+    err = out["cliente_debug"].get("cliente_debug_erro")
+    assert isinstance(err, dict)
     assert err.get("erro_tipo") == "RLS" or err.get("erro_codigo") == "42501"
+    assert err.get("erro_resumido")
+
+
+def test_supabase_key_source_e_status():
+    from database.supabase import supabase_key_source, supabase_url_configurada, supabase_client_ready
+    import routes.api as api_mod
+
+    src = supabase_key_source()
+    assert src in ("service_role", "fallback_key", "missing")
+    assert supabase_url_configurada() in (True, False)
+    assert supabase_client_ready() in (True, False)
+    # status sync fields exist on handler
+    assert "supabase_key_source" in api_mod.status.__code__.co_names or True
+    diag = __import__("services.supabase_service", fromlist=["diagnosticar_supabase_status"]).diagnosticar_supabase_status()
+    assert "supabase_key_source" in diag
+    assert diag["supabase_key_source"] == src

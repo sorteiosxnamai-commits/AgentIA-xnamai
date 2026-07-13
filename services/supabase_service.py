@@ -6,7 +6,13 @@ from httpx import ConnectError, ReadError, TimeoutException
 
 from postgrest.exceptions import APIError
 
-from database.supabase import supabase, supabase_key_kind
+from database.supabase import (
+    supabase,
+    supabase_client_ready,
+    supabase_key_kind,
+    supabase_key_source,
+    supabase_url_configurada,
+)
 from services.config_tabelas import CLIENTES_TABLE, CONVERSAS_TABLE, normalizar_telefone
 from services.env_loader import carregar_env
 
@@ -146,11 +152,16 @@ def registrar_erro_cliente(etapa: str, exc: Exception | None = None, *, codigo: 
     global _ULTIMO_ERRO_CLIENTE
     if exc is not None:
         codigo, tipo, resumo = classificar_erro_supabase(exc)
+    if not tipo:
+        tipo = type(exc).__name__ if exc is not None else "DESCONHECIDO"
+    if not resumo:
+        resumo = (str(exc)[:120] if exc is not None else "erro sem detalhe")
     _ULTIMO_ERRO_CLIENTE = {
-        "etapa": etapa,
+        "etapa": etapa or "desconhecida",
         "erro_codigo": codigo or "",
-        "erro_tipo": tipo or "",
-        "erro_resumido": (resumo or "")[:160],
+        "erro_tipo": tipo,
+        "erro_resumido": resumo[:160],
+        "key_source": supabase_key_source(),
         "key_kind": supabase_key_kind(),
         "tabela": TABELA_CLIENTES,
     }
@@ -158,16 +169,193 @@ def registrar_erro_cliente(etapa: str, exc: Exception | None = None, *, codigo: 
         from services.webhook_guard import log_seguro
 
         log_seguro(
-            "cliente_criacao_erro" if "criar" in etapa or "rebusca" in etapa else "cliente_busca_nao_encontrado",
+            "cliente_criacao_erro" if "criar" in (etapa or "") or "rebusca" in (etapa or "") else "cliente_busca_nao_encontrado",
             etapa=etapa,
-            erro=tipo or "erro",
-            detalhe=(resumo or "")[:120],
+            erro=tipo,
+            detalhe=resumo[:120],
             codigo=codigo or "-",
+            key_source=supabase_key_source(),
             key_kind=supabase_key_kind(),
         )
     except Exception:
         pass
-    return _ULTIMO_ERRO_CLIENTE
+    return dict(_ULTIMO_ERRO_CLIENTE)
+
+
+def erro_cliente_para_debug(fallback_etapa: str = "criar_cliente") -> dict:
+    """Sempre retorna objeto estruturado (nunca string vazia)."""
+    atual = obter_ultimo_erro_cliente()
+    if atual and (atual.get("erro_tipo") or atual.get("erro_resumido") or atual.get("erro_codigo")):
+        return {
+            "etapa": str(atual.get("etapa") or fallback_etapa),
+            "erro_codigo": str(atual.get("erro_codigo") or ""),
+            "erro_tipo": str(atual.get("erro_tipo") or ""),
+            "erro_resumido": str(atual.get("erro_resumido") or "")[:160],
+        }
+    return {
+        "etapa": fallback_etapa,
+        "erro_codigo": "EPHEMERAL",
+        "erro_tipo": "FALLBACK",
+        "erro_resumido": "busca/criação falhou sem detalhe — verifique SUPABASE_SERVICE_ROLE_KEY e RLS",
+    }
+
+
+def diagnosticar_supabase_status() -> dict:
+    """Campos seguros para /status (sem segredos)."""
+    out = {
+        "supabase_url_configurada": supabase_url_configurada(),
+        "supabase_client_ready": supabase_client_ready(),
+        "supabase_key_source": supabase_key_source(),
+        "supabase_key_kind": supabase_key_kind(),
+        "clientes_table": TABELA_CLIENTES,
+    }
+    # Probe leve: select 1
+    try:
+        r = supabase.table(TABELA_CLIENTES).select("id").limit(1).execute()
+        out["clientes_select_ok"] = True
+        out["clientes_tem_linhas"] = bool(r.data)
+    except Exception as exc:
+        codigo, tipo, resumo = classificar_erro_supabase(exc)
+        out["clientes_select_ok"] = False
+        out["clientes_select_erro"] = {
+            "erro_codigo": codigo,
+            "erro_tipo": tipo,
+            "erro_resumido": resumo[:120],
+        }
+    return out
+
+
+def diagnosticar_persistencia_cliente(telefone: str = "") -> dict:
+    """Probe seguro: select / insert mínimo / update historico|contexto.
+
+    Usa telefone de teste se vazio. Remove o registro de probe ao final quando possível.
+    """
+    from services.config_tabelas import normalizar_telefone as _norm
+
+    tel = _norm(telefone) or "5500000000000"
+    # evita colidir com números reais de teste do usuário
+    if tel.endswith("9993") or len(tel) < 10:
+        tel = "5500000000099"
+
+    out: dict = {
+        "key_source": supabase_key_source(),
+        "key_kind": supabase_key_kind(),
+        "tabela": TABELA_CLIENTES,
+        "select_ok": False,
+        "insert_ok": False,
+        "historico_ok": False,
+        "contexto_ok": False,
+        "erro": None,
+    }
+    cols = _detectar_colunas_clientes()
+    out["colunas_detectadas"] = sorted(cols)[:20]
+
+    try:
+        r = (
+            supabase.table(TABELA_CLIENTES)
+            .select("id")
+            .eq("telefone", tel)
+            .limit(1)
+            .execute()
+        )
+        out["select_ok"] = True
+        existente_id = (r.data[0]["id"] if r.data else None)
+    except Exception as exc:
+        codigo, tipo, resumo = classificar_erro_supabase(exc)
+        out["erro"] = {"etapa": "select", "erro_codigo": codigo, "erro_tipo": tipo, "erro_resumido": resumo[:120]}
+        registrar_erro_cliente("probe_select", exc)
+        return out
+
+    cliente_id = existente_id
+    criado_probe = False
+    if not cliente_id:
+        payload = {"telefone": tel, "nome": "Probe Agente"}
+        if "celular" in cols:
+            payload["celular"] = tel
+        try:
+            ins = supabase.table(TABELA_CLIENTES).insert(payload).execute()
+            if ins.data:
+                cliente_id = ins.data[0].get("id")
+                criado_probe = True
+                out["insert_ok"] = True
+            else:
+                # insert sem return — rebusca
+                r2 = (
+                    supabase.table(TABELA_CLIENTES)
+                    .select("id")
+                    .eq("telefone", tel)
+                    .limit(1)
+                    .execute()
+                )
+                if r2.data:
+                    cliente_id = r2.data[0]["id"]
+                    criado_probe = True
+                    out["insert_ok"] = True
+                else:
+                    out["erro"] = {
+                        "etapa": "insert",
+                        "erro_codigo": "SEM_RETORNO",
+                        "erro_tipo": "INSERT_EMPTY",
+                        "erro_resumido": "insert sem data e sem rebusca — possível RLS no SELECT",
+                    }
+                    registrar_erro_cliente(
+                        "probe_insert",
+                        codigo="SEM_RETORNO",
+                        tipo="INSERT_EMPTY",
+                        resumo=out["erro"]["erro_resumido"],
+                    )
+                    return out
+        except Exception as exc:
+            codigo, tipo, resumo = classificar_erro_supabase(exc)
+            out["erro"] = {"etapa": "insert", "erro_codigo": codigo, "erro_tipo": tipo, "erro_resumido": resumo[:120]}
+            registrar_erro_cliente("probe_insert", exc)
+            return out
+    else:
+        out["insert_ok"] = True  # já existia / select ok
+
+    if cliente_id and "historico" in cols:
+        try:
+            supabase.table(TABELA_CLIENTES).update(
+                {"historico": [{"role": "system", "content": "probe"}]}
+            ).eq("id", cliente_id).execute()
+            out["historico_ok"] = True
+        except Exception as exc:
+            codigo, tipo, resumo = classificar_erro_supabase(exc)
+            out["erro"] = out["erro"] or {
+                "etapa": "update_historico",
+                "erro_codigo": codigo,
+                "erro_tipo": tipo,
+                "erro_resumido": resumo[:120],
+            }
+            registrar_erro_cliente("probe_historico", exc)
+
+    if cliente_id and "contexto_venda" in cols:
+        try:
+            supabase.table(TABELA_CLIENTES).update(
+                {"contexto_venda": {"probe": True}}
+            ).eq("id", cliente_id).execute()
+            out["contexto_ok"] = True
+        except Exception as exc:
+            codigo, tipo, resumo = classificar_erro_supabase(exc)
+            out["erro"] = out["erro"] or {
+                "etapa": "update_contexto",
+                "erro_codigo": codigo,
+                "erro_tipo": tipo,
+                "erro_resumido": resumo[:120],
+            }
+            registrar_erro_cliente("probe_contexto", exc)
+    elif cliente_id and "historico" in cols:
+        out["contexto_ok"] = out["historico_ok"]  # fallback disponível
+
+    # limpa probe criado por nós
+    if criado_probe and cliente_id:
+        try:
+            supabase.table(TABELA_CLIENTES).delete().eq("id", cliente_id).execute()
+            out["probe_removido"] = True
+        except Exception:
+            out["probe_removido"] = False
+
+    return out
 
 
 def erro_coluna_ausente(exc: Exception, coluna: str | None = None) -> bool:
