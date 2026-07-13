@@ -17,6 +17,37 @@ PRODUTOS_FAKE = [
     {"nome": "Hub USB 4 Portas", "preco": 69.9, "saldo_estoque": 29},
 ]
 
+PRODUTOS_ESTOQUE_CRITICO = [
+    {
+        "nome": "Notebook Intel i5",
+        "preco": 3499.9,
+        "saldo_estoque": 89,
+        "stock_confirmed": True,
+        "stock_quantity": 89,
+    },
+    {
+        "nome": "Mouse Óptico",
+        "preco": 39.9,
+        "saldo_estoque": 1,
+        "stock_confirmed": True,
+        "stock_quantity": 1,
+    },
+    {
+        "nome": "Cabo HDMI",
+        "preco": 49.9,
+        "saldo_estoque": 10,
+        "stock_confirmed": True,
+        "stock_quantity": 10,
+    },
+    {
+        "nome": "Hub USB",
+        "preco": 69.9,
+        "saldo_estoque": 5,
+        "stock_confirmed": True,
+        "stock_quantity": 5,
+    },
+]
+
 _RUINS = (
     "algumasopções",
     "algumasopcoes",
@@ -30,6 +61,7 @@ _RUINS = (
     "10peças",
     "10pecas",
     "5itens",
+    "temos 89unidades",
 )
 
 
@@ -41,7 +73,7 @@ def _assert_json_resposta_limpa(texto: str) -> None:
 
 
 def test_code_version_retorno_formatado():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-espaco-unidades"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-montagem-estoque"
 
 
 def test_detector_e_fix_numero_unidade_colada():
@@ -66,8 +98,19 @@ def test_detector_e_fix_numero_unidade_colada():
     assert "10peças" not in limpo
     assert "5itens" not in limpo
     assert dbg["tem_espaco_colado_depois"] is False
+    assert dbg["resposta_final_tem_89unidades"] is False
     assert dbg["tinha_espaco_colado_antes"] is True
     _assert_json_resposta_limpa(limpo)
+
+
+def test_detector_numero_unidade_com_invisivel():
+    assert tem_espaco_colado("89\u00adunidades") is True
+    assert tem_espaco_colado("89\u200bunidades") is True
+    limpo, dbg = aplicar_formatador_final("(temos 89\u00adunidades)")
+    assert "89 unidades" in limpo
+    assert "89unidades" not in limpo
+    assert dbg["resposta_final_tem_89unidades"] is False
+    assert dbg["tem_espaco_colado_depois"] is False
 
 
 def test_detector_ve_soft_hyphen_e_zwsp():
@@ -129,7 +172,7 @@ def test_chat_json_resposta_sem_colagem(monkeypatch):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["code_version"] == "2026-07-13-fix-espaco-unidades"
+    assert data["code_version"] == "2026-07-13-fix-catalogo-montagem-estoque"
     # Valida o campo JSON, não variável interna
     _assert_json_resposta_limpa(data["resposta"])
     assert data["formatacao_debug"]["formatador_final_aplicado"] is True
@@ -138,6 +181,88 @@ def test_chat_json_resposta_sem_colagem(monkeypatch):
     assert data["formatacao_debug"]["amostra_resposta_final"] in data["resposta"] or data[
         "resposta"
     ].startswith(data["formatacao_debug"]["amostra_resposta_final"][:20])
+
+
+def test_chat_catalogo_real_resp_json_sem_estoque_colado(monkeypatch):
+    """Integração real /chat 'mande o catalogo' — valida resp_json['resposta']."""
+    monkeypatch.setenv("CHECKOUT_CREATE_ORDER", "false")
+    monkeypatch.setenv("WHATSAPP_PROVIDER", "ultramsg")
+
+    def _produtos_ps(limit=8):
+        return {
+            "found": True,
+            "products": [
+                {
+                    "name": p["nome"],
+                    "nome": p["nome"],
+                    "price": p["preco"],
+                    "preco": p["preco"],
+                    "stock_confirmed": True,
+                    "stock_quantity": p["saldo_estoque"],
+                    "saldo_estoque": p["saldo_estoque"],
+                    "estoque": p["saldo_estoque"],
+                }
+                for p in PRODUTOS_ESTOQUE_CRITICO[:limit]
+            ],
+            "produtos": PRODUTOS_ESTOQUE_CRITICO[:limit],
+            "message": "ok",
+            "fonte": "supabase",
+            "catalogo": "fake",
+        }
+
+    monkeypatch.setattr(
+        "services.vendas.catalogo.montar_catalogo_geral",
+        lambda limite=20: {
+            "produtos": PRODUTOS_ESTOQUE_CRITICO[:limite],
+            "catalogo": "fake",
+            "fonte": "supabase",
+        },
+    )
+    monkeypatch.setattr(
+        "services.product_service.listar_produtos_catalogo",
+        _produtos_ps,
+    )
+    monkeypatch.setattr(
+        "services.product_service.buscar_por_intencao",
+        lambda **_k: _produtos_ps(),
+    )
+
+    from main import app
+
+    client = TestClient(app)
+    resp = client.post(
+        "/chat",
+        json={
+            "telefone": "5543999999999",
+            "mensagem": "mande o catalogo",
+            "nome": "Tironi",
+            "dry_run": True,
+            "persistir": False,
+        },
+    )
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    assert resp_json["code_version"] == "2026-07-13-fix-catalogo-montagem-estoque"
+
+    resposta = resp_json["resposta"]
+    # Falha explícita se ainda colar número+unidade
+    for ruim in (
+        "89unidades",
+        "1unidade",
+        "10peças",
+        "10pecas",
+        "5itens",
+        "temos 89unidades",
+    ):
+        assert ruim not in resposta, f"resp_json['resposta'] ainda tem {ruim!r}: {resposta!r}"
+
+    assert "89 unidades" in resposta
+    assert "1 unidade" in resposta
+    assert "(temos 89 unidades)" in resposta
+    assert "(temos 1 unidade)" in resposta
+    assert resp_json["formatacao_debug"]["tem_espaco_colado_depois"] is False
+    assert resp_json["formatacao_debug"]["resposta_final_tem_89unidades"] is False
+    _assert_json_resposta_limpa(resposta)
 
 
 def test_chat_json_resposta_separa_numero_unidade(monkeypatch):
@@ -176,7 +301,7 @@ def test_chat_json_resposta_separa_numero_unidade(monkeypatch):
     )
     assert resp.status_code == 200
     resp_json = resp.json()
-    assert resp_json["code_version"] == "2026-07-13-fix-espaco-unidades"
+    assert resp_json["code_version"] == "2026-07-13-fix-catalogo-montagem-estoque"
     # Campo JSON final — não variável interna
     resposta = resp_json["resposta"]
     assert "89 unidades" in resposta
@@ -189,6 +314,7 @@ def test_chat_json_resposta_separa_numero_unidade(monkeypatch):
     assert "5itens" not in resposta
     assert "(R$ 3499,90) (temos 89 unidades)" in resposta
     assert resp_json["formatacao_debug"]["tem_espaco_colado_depois"] is False
+    assert resp_json["formatacao_debug"]["resposta_final_tem_89unidades"] is False
     assert resp_json["formatacao_debug"]["tinha_espaco_colado_antes"] is True
     _assert_json_resposta_limpa(resposta)
 

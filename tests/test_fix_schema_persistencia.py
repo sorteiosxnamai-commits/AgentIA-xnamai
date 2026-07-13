@@ -219,7 +219,7 @@ def test_falha_supabase_resposta_preenchida(monkeypatch):
 # 11
 def test_webhook_ok():
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-espaco-unidades"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-montagem-estoque"
 
 
 # 12+13

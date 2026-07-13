@@ -21,7 +21,7 @@ PRODUTOS = [
 
 
 def test_code_version_formatacao():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-espaco-unidades"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-montagem-estoque"
 
 
 def test_catalogo_sem_palavras_coladas():
@@ -85,6 +85,43 @@ def test_nome_produto_mojibake_so_na_exibicao():
     texto = resposta_mostrar_catalogo("Tironi", [produto])
     assert "Ã³" not in texto
     assert produto["nome"] == nome_quebrado
+
+
+def test_montar_item_catalogo_nunca_cola_quantidade_unidade():
+    from services.vendas.respostas import _montar_item_catalogo, resposta_mostrar_catalogo
+
+    item = _montar_item_catalogo(
+        {
+            "nome": "Notebook Intel i5",
+            "preco": 3499.9,
+            "saldo_estoque": 89,
+            "stock_confirmed": True,
+        }
+    )
+    assert item == "Notebook Intel i5 (R$ 3499,90) (temos 89 unidades)"
+    assert "89unidades" not in item
+
+    texto = resposta_mostrar_catalogo(
+        "Tironi",
+        [
+            {
+                "nome": "Notebook Intel i5",
+                "preco": 3499.9,
+                "saldo_estoque": 89,
+                "stock_confirmed": True,
+            },
+            {
+                "nome": "Mouse",
+                "preco": 39.9,
+                "saldo_estoque": 1,
+                "stock_confirmed": True,
+            },
+        ],
+    )
+    assert "89 unidades" in texto
+    assert "1 unidade" in texto
+    assert "89unidades" not in texto
+    assert "1unidade" not in texto
 
 
 def test_stock_confirmed_false_nao_inventa_estoque():

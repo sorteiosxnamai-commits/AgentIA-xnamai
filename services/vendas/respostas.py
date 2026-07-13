@@ -578,17 +578,17 @@ def resposta_fora_catalogo(
     )
 
 
-def _estoque_linha_catalogo(produto: dict) -> str:
-    """Só afirma unidade se estoque confirmado; senão silêncio."""
+def _qtd_estoque_confirmada(produto: dict):
+    """Quantidade numérica só se estoque confirmado; senão None."""
     from services.mercos_service import estoque_confirmado
 
     # Product Service: stock_confirmed=false nunca inventa disponibilidade
     if "stock_confirmed" in produto and not produto.get("stock_confirmed"):
-        return ""
+        return None
 
     confirmado = estoque_confirmado(produto)
     if not confirmado and not produto.get("stock_confirmed"):
-        return ""
+        return None
 
     for campo in (
         "saldo_estoque",
@@ -605,9 +605,46 @@ def _estoque_linha_catalogo(produto: dict) -> str:
         except (TypeError, ValueError):
             continue
         if qtd > 0:
-            n = int(qtd) if qtd == int(qtd) else qtd
-            return f"temos {n} unidades"
-    return ""
+            return int(qtd) if qtd == int(qtd) else qtd
+    return None
+
+
+def _estoque_linha_catalogo(produto: dict) -> str:
+    """Só afirma unidade se estoque confirmado; senão silêncio.
+
+    Sempre monta com espaços explícitos: 'temos' + qtd + 'unidades'.
+    Nunca concatena f'{n}unidades'.
+    """
+    qtd = _qtd_estoque_confirmada(produto)
+    if qtd is None:
+        return ""
+    unidade = "unidade" if qtd == 1 else "unidades"
+    return " ".join(["temos", str(qtd), unidade])
+
+
+def _montar_item_catalogo(produto: dict) -> str:
+    """Item de catálogo determinístico: nome (R$ preço) (temos N unidades)."""
+    from services.texto_seguro import texto_para_exibicao
+
+    nome_p = texto_para_exibicao(
+        str(produto.get("nome") or produto.get("name") or "Produto")
+    )
+    preco = _fmt_preco_item(produto)
+    if not preco and produto.get("price") not in (None, ""):
+        try:
+            preco = f"R$ {float(produto['price']):.2f}".replace(".", ",")
+        except (TypeError, ValueError):
+            preco = ""
+
+    qtd = _qtd_estoque_confirmada(produto)
+    partes = [nome_p]
+    if preco:
+        partes.append(f"({preco})")
+    if qtd is not None:
+        unidade = "unidade" if qtd == 1 else "unidades"
+        # Espaços ASCII explícitos entre quantidade e unidade
+        partes.append(f"(temos {qtd} {unidade})")
+    return " ".join(partes)
 
 
 def resposta_mostrar_catalogo(
@@ -632,26 +669,10 @@ def resposta_mostrar_catalogo(
     nomes_fmt: list[str] = []
     algum_estoque_ok = False
     for produto in amostra:
-        nome_p = texto_para_exibicao(
-            str(produto.get("nome") or produto.get("name") or "Produto")
-        )
-        preco = _fmt_preco_item(produto)
-        if not preco and produto.get("price") not in (None, ""):
-            try:
-                preco = f"R$ {float(produto['price']):.2f}".replace(".", ",")
-            except (TypeError, ValueError):
-                preco = ""
-        est = _estoque_linha_catalogo(produto)
-        if est:
+        item = _montar_item_catalogo(produto)
+        nomes_fmt.append(item)
+        if _qtd_estoque_confirmada(produto) is not None:
             algum_estoque_ok = True
-
-        # Montagem explícita com espaços ASCII — evita )( e palavras coladas
-        pedacos = [nome_p]
-        if preco:
-            pedacos.append(f"({preco})")
-        if est:
-            pedacos.append(f"({est})")
-        nomes_fmt.append(" ".join(pedacos))
 
     lista = ", ".join(nomes_fmt)
     # Frases em blocos separados (join com espaço ASCII explícito)

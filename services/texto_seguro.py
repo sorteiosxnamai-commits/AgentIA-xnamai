@@ -28,6 +28,17 @@ _MARCAS_MOJIBAKE = (
 _INVISIVEIS = re.compile(r"[\u00ad\u200b\u200c\u200d\u2060\ufeff\u200e\u200f\u034f]")
 _ESPACOS_UNICODE = re.compile(r"[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+")
 
+# Invisíveis opcionais ENTRE número e unidade (soft-hyphen/ZWSP colam no display)
+_INVIS_ENTRE = r"[\u00ad\u200b\u200c\u200d\u2060\ufeff\u200e\u200f\u034f]*"
+_UNIDADES_ALT = r"(?:unidades|unidade|peças|pecas|itens)"
+
+# Colado: dígitos + (só invisíveis) + unidade — NÃO inclui espaço normal
+_NUM_UNIDADE_COLADA = re.compile(
+    rf"(?i)(\d+)({_INVIS_ENTRE})({_UNIDADES_ALT})\b"
+)
+# Após strip: \d+unidades / \d+unidade / \d+peças / \d+pecas / \d+itens
+_NUM_UNIDADE_STRIPPED = re.compile(rf"(?i)\d+{_UNIDADES_ALT}\b")
+
 
 def _strip_invisiveis(texto: str) -> str:
     """Remove soft-hyphen, zero-width e categoria Unicode Cf (format)."""
@@ -75,10 +86,17 @@ def corrigir_mojibake_exibicao(texto: str) -> str:
     return reparar_mojibake(texto or "")
 
 
-# Número colado em unidade de estoque/catálogo (ex.: "89unidades")
-_NUM_UNIDADE_COLADA = re.compile(
-    r"(?i)(\d+)(unidades|unidade|peças|pecas|itens)\b"
-)
+def _separar_numero_unidade(texto: str) -> str:
+    """89unidades / 89\\u00adunidades → 89 unidades (espaço ASCII)."""
+    if not texto:
+        return ""
+    return _NUM_UNIDADE_COLADA.sub(r"\1 \3", texto)
+
+
+def resposta_tem_89unidades(texto: str) -> bool:
+    """True se a string (após strip de invisíveis) contém 89unidades colado."""
+    limpo = _strip_invisiveis(texto or "")
+    return "89unidades" in limpo
 
 
 def tem_espaco_colado(texto: str) -> bool:
@@ -103,7 +121,10 @@ def tem_espaco_colado(texto: str) -> bool:
         # algumas + só lixo invisível + op
         if re.search(r"(?i)algumas[\u00ad\u200b\u200c\u200d\ufeff]*op", t):
             return True
-        if _NUM_UNIDADE_COLADA.search(t):
+        # \d+unidades / \d+unidade / \d+peças / \d+pecas / \d+itens
+        if _NUM_UNIDADE_COLADA.search(t) or _NUM_UNIDADE_STRIPPED.search(t):
+            return True
+        if "89unidades" in t or "temos 89unidades" in tl:
             return True
     return False
 
@@ -122,8 +143,8 @@ def garantir_espacos_whatsapp(texto: str) -> str:
     out = re.sub(r"(?i)algumas(?=op)", "algumas ", out)
     out = re.sub(r"(?i)para(?=uso)", "para ", out)
     out = re.sub(r"\)\(", ") (", out)
-    # "89unidades" / "1unidade" / "10peças" / "5itens"
-    out = _NUM_UNIDADE_COLADA.sub(r"\1 \2", out)
+    # "89unidades" / "1unidade" / "10peças" / "5itens" (+ invisíveis no meio)
+    out = _separar_numero_unidade(out)
 
     correcoes = (
         (r"(?i)algumas\s+op(?:ç|c|Ã§)?(?:õ|o|Ãµ|Ãµes)?(?:es|ões|oes|Ãµes)?", "algumas opções"),
@@ -145,12 +166,18 @@ def garantir_espacos_whatsapp(texto: str) -> str:
         ("parauso", "para uso"),
         (")(", ") ("),
         (")(temos", ") (temos"),
+        ("89unidades", "89 unidades"),
+        ("1unidade", "1 unidade"),
+        ("10peças", "10 peças"),
+        ("10pecas", "10 pecas"),
+        ("5itens", "5 itens"),
+        ("temos 89unidades", "temos 89 unidades"),
     )
     for a, b in literais:
         out = out.replace(a, b)
 
     # Segunda passagem de número+unidade (após literais)
-    out = _NUM_UNIDADE_COLADA.sub(r"\1 \2", out)
+    out = _separar_numero_unidade(out)
 
     out = re.sub(r"([.,;:!?])([A-Za-zÁ-ú])", r"\1 \2", out)
     out = re.sub(r"[^\S\n]{2,}", " ", out)
@@ -184,10 +211,20 @@ def aplicar_formatador_final(texto: str) -> tuple[str, dict]:
         formatado = re.sub(r"(?i)para(?=uso)", "para ", formatado)
         formatado = re.sub(r"(?i)algumasop\S{0,12}", "algumas opções", formatado)
         formatado = re.sub(r"(?i)parauso", "para uso", formatado)
-        formatado = _NUM_UNIDADE_COLADA.sub(r"\1 \2", formatado)
+        formatado = _separar_numero_unidade(formatado)
+        formatado = formatado.replace("89unidades", "89 unidades")
+        formatado = formatado.replace("1unidade", "1 unidade")
+        formatado = formatado.replace("10peças", "10 peças")
+        formatado = formatado.replace("10pecas", "10 pecas")
+        formatado = formatado.replace("5itens", "5 itens")
         formatado = garantir_espacos_whatsapp(formatado)
 
     depois = tem_espaco_colado(formatado)
+    tem_89 = resposta_tem_89unidades(formatado)
+    # Se ainda tem 89unidades, o detector DEVE refletir true
+    if tem_89:
+        depois = True
+
     # Amostra da string FINAL (mesma que deve ir no JSON)
     amostra = formatado
     if "algumas" in formatado.lower():
@@ -199,15 +236,17 @@ def aplicar_formatador_final(texto: str) -> tuple[str, dict]:
             j = formatado.lower().find("temos")
         amostra = formatado[max(0, j - 12) : j + 36]
     else:
-        m_u = _NUM_UNIDADE_COLADA.search(formatado)
+        m_u = _NUM_UNIDADE_COLADA.search(formatado) or _NUM_UNIDADE_STRIPPED.search(
+            formatado
+        )
         if m_u:
             amostra = formatado[max(0, m_u.start() - 8) : m_u.end() + 12]
-
 
     debug = {
         "formatador_final_aplicado": True,
         "tinha_espaco_colado_antes": bool(tinha),
         "tem_espaco_colado_depois": bool(depois),
+        "resposta_final_tem_89unidades": bool(tem_89),
         "amostra_resposta_final": amostra[:80],
     }
     return formatado, debug
