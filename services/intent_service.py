@@ -148,10 +148,18 @@ def classificar_intencao(
 
     # --- ATENDIMENTO HUMANO ---
     if re.search(
-        r"\b(atendente|humano|pessoa\s+real|falar\s+com\s+(alguem|alguém|vendedor|atendente))"
-        r"|\b(quero|preciso)\s+(de\s+)?(um\s+)?(atendente|humano)"
-        r"|\bpassa\s+(pro|para\s+o)\s+(vendedor|atendente)"
-        r"|\bme\s+passa\s+(um\s+)?(humano|atendente)\b",
+        r"\b(atendente|humano|pessoa\s+real|"
+        r"falar\s+com\s+(alguem|alguém|vendedor|atendente|(uma\s+)?pessoa)|"
+        r"quero\s+falar\s+com\s+(o\s+)?(atendente|humano|(uma\s+)?pessoa)|"
+        r"(quero|preciso)\s+(de\s+)?(um\s+)?(atendente|humano)|"
+        r"passa\s+(pro|para\s+o)\s+(vendedor|atendente)|"
+        r"me\s+passa\s+(um\s+)?(humano|atendente)|"
+        r"tem\s+humano|"
+        r"chama\s+(algu[eé]m|atendente|humano|vendedor)|"
+        r"n[aã]o\s+quero\s+falar\s+com\s+(o\s+)?(rob[oô]|bot|ia)|"
+        r"(quero|preciso)\s+negociar|"
+        r"n[aã]o\s+entendi|"
+        r"isso\s+n[aã]o\s+resolveu)\b",
         t,
     ):
         return _resultado(
@@ -438,8 +446,9 @@ def intent_precisa_humano(intent_result: dict | None) -> bool:
 def resposta_atendimento_humano(nome_cliente: str = "") -> str:
     nome = nome_cliente or "Cliente"
     return (
-        f"Claro, {nome}! Vou te encaminhar para um atendimento humano. "
-        "Um momento que já te conecto com alguém da equipe."
+        f"Claro, {nome}! Vou te encaminhar para um atendimento humano agora. "
+        "Um momento que já te conecto com alguém da equipe — "
+        "eles vão continuar de onde paramos."
     )
 
 

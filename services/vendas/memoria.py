@@ -40,6 +40,11 @@ SESSAO_PADRAO: dict[str, Any] = {
     "forma_pagamento": "",
     "pedido_id": "",
     "checkout_resumo": "",
+    # Etapa 6 — handoff humano
+    "precisa_humano": False,
+    "motivo_handoff": "",
+    "handoff_status": "",
+    "resumo_vendedor": {},
 }
 
 # Cache em processo (fallback se coluna contexto_venda não existir no Supabase)

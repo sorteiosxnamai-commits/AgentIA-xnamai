@@ -45,7 +45,7 @@ def _payload_grupo(body: str = "oi no grupo"):
 
 
 def test_code_version_ultramsg_webhook_parser():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-invisivel-unidades"
+    assert api_mod.CODE_VERSION == "2026-07-13-etapa6-handoff-humano"
 
 
 def test_ultramsg_privado_aceito(monkeypatch):
@@ -196,7 +196,7 @@ def test_chat_continua_ok(monkeypatch):
         },
     )
     assert resp.status_code == 200
-    assert resp.json().get("code_version") == "2026-07-13-fix-invisivel-unidades"
+    assert resp.json().get("code_version") == "2026-07-13-etapa6-handoff-humano"
     assert resp.json().get("resposta")
 
 

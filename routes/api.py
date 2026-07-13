@@ -132,7 +132,7 @@ from services.supabase_service import (
     obter_ultimo_erro_historico,
 )
 
-CODE_VERSION = "2026-07-13-fix-invisivel-unidades"
+CODE_VERSION = "2026-07-13-etapa6-handoff-humano"
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
 from services.vendedor_service import (
@@ -156,6 +156,7 @@ def _montar_resultado(
     cliente_debug: dict | None = None,
     historico_debug: dict | None = None,
     formatacao_debug: dict | None = None,
+    handoff_debug: dict | None = None,
 ) -> dict:
     out = {
         "resposta": resposta,
@@ -169,6 +170,8 @@ def _montar_resultado(
         out["historico_debug"] = historico_debug
     if formatacao_debug is not None:
         out["formatacao_debug"] = formatacao_debug
+    if handoff_debug is not None:
+        out["handoff_debug"] = handoff_debug
     return out
 
 
@@ -299,6 +302,7 @@ def _processar_mensagem_locked(
 ):
     persistencia_ok = True
     resposta_ia = None
+    handoff_debug = None
     # Com persistir: começa False — só True após gravação real no banco
     etapas = {
         "cliente_ok": not persistir,
@@ -1148,8 +1152,33 @@ def _processar_mensagem_locked(
                 telefone=numero,
             )
         elif intent.get("intent") == "ATENDIMENTO_HUMANO":
-            resposta_ia = resposta_atendimento_humano(nome_conversa)
-            log_seguro("fluxo_intent", intent="ATENDIMENTO_HUMANO", telefone=numero)
+            from services.handoff_service import processar_handoff
+
+            handoff_out = processar_handoff(
+                sessao,
+                nome_cliente=nome_conversa,
+                telefone=numero,
+                motivo="cliente pediu atendimento humano",
+            )
+            sessao = handoff_out.get("sessao") or sessao
+            contexto_venda.memoria = sessao
+            if persistir and cliente_id:
+                _tentar_persistir(
+                    "atualizar_contexto",
+                    lambda: persistir_sessao(str(cliente_id), sessao),
+                    essencial=False,
+                )
+            resposta_ia = handoff_out.get("reply") or resposta_atendimento_humano(
+                nome_conversa
+            )
+            handoff_debug = handoff_out.get("debug")
+            log_seguro(
+                "fluxo_handoff",
+                intent="ATENDIMENTO_HUMANO",
+                telefone=numero,
+                precisa_humano=True,
+                handoff_status="pendente",
+            )
         elif intent.get("intent") == "SAC":
             resposta_ia = resposta_sac(nome_conversa)
             log_seguro("fluxo_intent", intent="SAC", telefone=numero)
@@ -1524,6 +1553,7 @@ def _processar_mensagem_locked(
             cliente_debug=cliente_debug,
             historico_debug=historico_debug,
             formatacao_debug=formatacao_debug if dry_run else None,
+            handoff_debug=handoff_debug if dry_run else None,
         )
         log_seguro(
             "chat_resposta_final",
@@ -1873,6 +1903,10 @@ async def chat_teste(payload: dict):
             "trecho_notebook_codepoints": nb.get("trecho_notebook_codepoints") or [],
             "amostra_resposta_final": (resp or "")[:120],
         }
+        from services.handoff_service import handoff_debug_vazio
+
+        hd = resultado.get("handoff_debug")
+        out["handoff_debug"] = hd if isinstance(hd, dict) else handoff_debug_vazio()
     return out
 
 
