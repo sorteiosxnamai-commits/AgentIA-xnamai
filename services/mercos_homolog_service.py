@@ -148,9 +148,9 @@ def criar_pedido(body: dict) -> dict:
 
 
 def alterar_pedido(pedido_id: int | str, body: dict) -> dict:
+    """PUT /v1/pedidos/{id} — id só na URL; nunca no JSON (Mercos rejeita extra keys)."""
     payload = dict(body or {})
-    if "id" not in payload:
-        payload["id"] = int(pedido_id) if str(pedido_id).isdigit() else pedido_id
+    payload.pop("id", None)
     return put_json(f"{_path('pedidos')}/{pedido_id}", payload)
 
 

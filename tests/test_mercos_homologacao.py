@@ -71,6 +71,44 @@ def test_get_clientes_categorias_etc(client, monkeypatch):
     assert client.get("/mercos/usuarios").status_code == 200
 
 
+def test_put_pedido_nao_envia_id_no_body(monkeypatch):
+    """Mercos rejeita extra keys @ data['id'] — id deve ir só na URL."""
+    capturado: dict = {}
+
+    def _fake_put(path, body):
+        capturado["path"] = path
+        capturado["body"] = body
+        return {"ok": True, "status_code": 200, "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.put_json",
+        _fake_put,
+    )
+    from services.mercos_homolog_service import alterar_pedido
+
+    body = {
+        "id": 999,  # se vier do cliente, deve ser removido
+        "cliente_id": 9289641,
+        "condicao_pagamento_id": 264893,
+        "data_emissao": "2026-07-13",
+        "itens": [
+            {
+                "produto_id": 20386169,
+                "quantidade": 2,
+                "preco_bruto": 249.90,
+            }
+        ],
+    }
+    out = alterar_pedido(2149596, body)
+    assert out["ok"] is True
+    assert capturado["path"] == "/v1/pedidos/2149596"
+    assert "id" not in capturado["body"]
+    assert capturado["body"]["cliente_id"] == 9289641
+    assert capturado["body"]["itens"][0]["produto_id"] == 20386169
+    assert capturado["body"]["itens"][0]["quantidade"] == 2
+    assert capturado["body"]["itens"][0]["preco_bruto"] == 249.90
+
+
 def test_post_put_clientes_pedidos_titulos(client, monkeypatch):
     monkeypatch.setattr(
         "services.mercos_homolog_service.criar_cliente",
