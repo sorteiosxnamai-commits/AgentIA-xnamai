@@ -21,7 +21,7 @@ PRODUTOS = [
 
 
 def test_code_version_formatacao():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-formatador-final"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-retorno-formatado"
 
 
 def test_catalogo_sem_palavras_coladas():

@@ -27,7 +27,7 @@ PRODUTOS_FAKE = [
 
 
 def test_code_version_catalogo_geral():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-formatador-final"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-retorno-formatado"
 
 
 def test_mande_catalogo_e_catalogo_geral():

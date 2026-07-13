@@ -24,16 +24,18 @@ _MARCAS_MOJIBAKE = (
     "Ã“",
 )
 
-# Hífen suave, zero-width, BOM — aparecem como “espaço sumido” no WhatsApp/JSON
-_INVISIVEIS = re.compile(r"[\u00ad\u200b\u200c\u200d\u2060\ufeff]")
+# Hífen suave, zero-width, BOM, marks de formato
+_INVISIVEIS = re.compile(r"[\u00ad\u200b\u200c\u200d\u2060\ufeff\u200e\u200f\u034f]")
 _ESPACOS_UNICODE = re.compile(r"[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+")
 
-_PADROES_COLADOS = (
-    re.compile(r"(?i)algumasop"),
-    re.compile(r"(?i)parauso"),
-    re.compile(r"\)\("),
-    re.compile(r"(?i)\)\s*\(\s*temos"),
-)
+
+def _strip_invisiveis(texto: str) -> str:
+    """Remove soft-hyphen, zero-width e categoria Unicode Cf (format)."""
+    if not texto:
+        return ""
+    out = _INVISIVEIS.sub("", texto)
+    out = "".join(c for c in out if unicodedata.category(c) != "Cf")
+    return out
 
 
 def parece_mojibake(texto: str) -> bool:
@@ -44,10 +46,7 @@ def parece_mojibake(texto: str) -> bool:
 
 
 def reparar_mojibake(texto: str) -> str:
-    """Repara mojibake comum sem alterar texto já correto.
-
-    Não usa isso para reescrever catálogo no banco — só entrada/exibição.
-    """
+    """Repara mojibake comum sem alterar texto já correto."""
     if not texto or not parece_mojibake(texto):
         return texto or ""
 
@@ -77,16 +76,27 @@ def corrigir_mojibake_exibicao(texto: str) -> str:
 
 
 def tem_espaco_colado(texto: str) -> bool:
-    """Detecta colagens conhecidas do bug de catálogo."""
-    t = texto or ""
-    if not t:
+    """Detecta colagens — inclusive com invisíveis/mojibake no meio."""
+    bruto = texto or ""
+    if not bruto:
         return False
-    if ")(" in t or ")(temos" in t.lower():
-        return True
-    if re.search(r"(?i)algumasop", t):
-        return True
-    if re.search(r"(?i)parauso", t):
-        return True
+    # Sempre analisa também a versão sem invisíveis
+    candidatos = (bruto, _strip_invisiveis(bruto), unicodedata.normalize("NFC", bruto))
+    for t in candidatos:
+        tl = t.lower()
+        if ")(" in t or ")(temos" in tl:
+            return True
+        if "algumasop" in tl or "algumasopã" in tl or "algumasopÃ".lower() in tl:
+            return True
+        if re.search(r"(?i)algumasop", t):
+            return True
+        if re.search(r"(?i)algumasopÃ", t):
+            return True
+        if "parauso" in tl:
+            return True
+        # algumas + só lixo invisível + op
+        if re.search(r"(?i)algumas[\u00ad\u200b\u200c\u200d\ufeff]*op", t):
+            return True
     return False
 
 
@@ -95,37 +105,41 @@ def garantir_espacos_whatsapp(texto: str) -> str:
     if not (texto or "").strip():
         return texto or ""
 
-    # NFC evita ç/õ decompostos quebrarem o regex
     out = unicodedata.normalize("NFC", texto)
-    out = _INVISIVEIS.sub("", out)
+    out = _strip_invisiveis(out)
     out = _ESPACOS_UNICODE.sub(" ", out)
 
-    # Preço colado no estoque: )(temos → ) (temos
-    out = re.sub(r"\)\s*\(", ") (", out)
+    # Inserção forçada: "algumas" colado em "op..." / "para" colado em "uso"
+    # NÃO usar ") (" com lookahead — isso duplicava o "(" restante.
+    out = re.sub(r"(?i)algumas(?=op)", "algumas ", out)
+    out = re.sub(r"(?i)para(?=uso)", "para ", out)
+    out = re.sub(r"\)\(", ") (", out)
 
-    # Frases conhecidas (com ou sem espaço / acento)
     correcoes = (
-        (r"(?i)algumas\s*op(?:ç|c)(?:[\u0301\u0327]*)?(?:õ|o|õ|o[\u0303]?)(?:es|és)", "algumas opções"),
-        (r"(?i)algumasop(?:ç|c)?(?:õ|o)?(?:es|ões|oes)", "algumas opções"),
-        (r"(?i)algumas\s*op\S{0,6}es", "algumas opções"),
-        (r"(?i)para\s*uso\s+pessoal", "para uso pessoal"),
+        (r"(?i)algumas\s+op(?:ç|c|Ã§)?(?:õ|o|Ãµ|Ãµes)?(?:es|ões|oes|Ãµes)?", "algumas opções"),
+        (r"(?i)algumasop(?:ç|c|Ã§)?(?:õ|o|Ãµ)?(?:es|ões|oes|Ãµes)?", "algumas opções"),
+        (r"(?i)algumasopÃ\S{0,8}", "algumas opções"),
+        (r"(?i)para\s+uso\s+pessoal", "para uso pessoal"),
         (r"(?i)parauso", "para uso"),
         (r"(?i)para\s*uso", "para uso"),
     )
     for padrao, repl in correcoes:
         out = re.sub(padrao, repl, out)
 
-    # Reforço literal (mesmo após regex)
-    out = out.replace("algumasopções", "algumas opções")
-    out = out.replace("algumasopcoes", "algumas opções")
-    out = out.replace("Algumasopções", "Algumas opções")
-    out = out.replace("parauso", "para uso")
-    out = out.replace("ParaUso", "Para uso")
-    out = out.replace(")(", ") (")
+    # Reforço literal
+    literais = (
+        ("algumasopções", "algumas opções"),
+        ("algumasopcoes", "algumas opções"),
+        ("Algumasopções", "Algumas opções"),
+        ("algumasopÃ§Ãµes", "algumas opções"),
+        ("parauso", "para uso"),
+        (")(", ") ("),
+        (")(temos", ") (temos"),
+    )
+    for a, b in literais:
+        out = out.replace(a, b)
 
-    # Espaço após pontuação se letra cola
     out = re.sub(r"([.,;:!?])([A-Za-zÁ-ú])", r"\1 \2", out)
-    # Colapsa só espaços múltiplos (preserva quebras de linha)
     out = re.sub(r"[^\S\n]{2,}", " ", out)
     return out.strip()
 
@@ -138,20 +152,43 @@ def texto_para_exibicao(texto: str) -> str:
 def aplicar_formatador_final(texto: str) -> tuple[str, dict]:
     """Última camada antes de /chat JSON e envio WhatsApp.
 
-    Retorna (texto_formatado, formatacao_debug).
+    Sempre aplica correções (não depende só do detector).
+    Debug é calculado sobre a string FINAL retornada.
     """
     bruto = texto or ""
     tinha = tem_espaco_colado(bruto)
-    formatado = garantir_espacos_whatsapp(corrigir_mojibake_exibicao(bruto))
-    # Segunda passagem — garante que nada escapou
+
+    # Ordem fixa: mojibake → espaços (sempre)
+    passo1 = corrigir_mojibake_exibicao(bruto)
+    formatado = garantir_espacos_whatsapp(passo1)
+    # Segunda passagem obrigatória
+    formatado = garantir_espacos_whatsapp(formatado)
+
+    # Nuclear: se ainda detectar colagem, força literais
     if tem_espaco_colado(formatado):
-        formatado = garantir_espacos_whatsapp(formatado)
         formatado = formatado.replace(")(", ") (")
-        formatado = re.sub(r"(?i)algumasop\S{0,8}", "algumas opções", formatado)
+        formatado = re.sub(r"(?i)algumas(?=op)", "algumas ", formatado)
+        formatado = re.sub(r"(?i)para(?=uso)", "para ", formatado)
+        formatado = re.sub(r"(?i)algumasop\S{0,12}", "algumas opções", formatado)
         formatado = re.sub(r"(?i)parauso", "para uso", formatado)
+        formatado = garantir_espacos_whatsapp(formatado)
+
+    depois = tem_espaco_colado(formatado)
+    # Amostra da string FINAL (mesma que deve ir no JSON)
+    amostra = formatado
+    if "algumas" in formatado.lower():
+        i = formatado.lower().find("algumas")
+        amostra = formatado[i : i + 48]
+    elif ")(" in formatado or "temos" in formatado.lower():
+        j = formatado.find(")(")
+        if j < 0:
+            j = formatado.lower().find("temos")
+        amostra = formatado[max(0, j - 12) : j + 36]
+
     debug = {
         "formatador_final_aplicado": True,
         "tinha_espaco_colado_antes": bool(tinha),
-        "tem_espaco_colado_depois": bool(tem_espaco_colado(formatado)),
+        "tem_espaco_colado_depois": bool(depois),
+        "amostra_resposta_final": amostra[:80],
     }
     return formatado, debug

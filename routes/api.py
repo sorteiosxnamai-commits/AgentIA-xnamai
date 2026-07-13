@@ -132,7 +132,7 @@ from services.supabase_service import (
     obter_ultimo_erro_historico,
 )
 
-CODE_VERSION = "2026-07-13-fix-formatador-final"
+CODE_VERSION = "2026-07-13-fix-retorno-formatado"
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
 from services.vendedor_service import (
@@ -1752,41 +1752,50 @@ async def chat_teste(payload: dict):
         None,
         lambda: processar_mensagem(data, dry_run=dry_run, persistir=persistir),
     )
-    resposta = _resposta_texto(resultado)
-    persistencia_ok = True
-    etapas = None
-    cliente_debug = None
-    historico_debug = None
-    formatacao_debug = None
-    if isinstance(resultado, dict):
-        persistencia_ok = bool(resultado.get("persistencia_ok", False))
-        if dry_run:
-            etapas = resultado.get("persistencia_etapas")
-            cliente_debug = resultado.get("cliente_debug")
-            historico_debug = resultado.get("historico_debug")
-            formatacao_debug = resultado.get("formatacao_debug")
-    elif resultado is None:
-        persistencia_ok = False
-
-    # Última camada no /chat — garante JSON sem espaços colados
-    from services.texto_seguro import aplicar_formatador_final
-
-    resposta, fmt_chat = aplicar_formatador_final(resposta or "")
-    if dry_run:
-        formatacao_debug = fmt_chat if formatacao_debug is None else {
-            **formatacao_debug,
-            **fmt_chat,
-            "formatador_final_chat": True,
+    if not isinstance(resultado, dict):
+        resultado = {
+            "resposta": resultado if isinstance(resultado, str) else "",
+            "persistencia_ok": False,
         }
 
+    persistencia_ok = bool(resultado.get("persistencia_ok", False))
+    etapas = resultado.get("persistencia_etapas") if dry_run else None
+    cliente_debug = resultado.get("cliente_debug") if dry_run else None
+    historico_debug = resultado.get("historico_debug") if dry_run else None
+
+    # =========================================================
+    # ÚLTIMO PONTO antes do return — atualiza resultado["resposta"]
+    # Debug é calculado SOBRE a string que vai no JSON.
+    # =========================================================
+    from services.texto_seguro import (
+        aplicar_formatador_final,
+        corrigir_mojibake_exibicao,
+        tem_espaco_colado,
+    )
+
+    resposta_bruta = str(resultado.get("resposta") or "")
+    tinha_antes = tem_espaco_colado(resposta_bruta)
+    resposta_final = corrigir_mojibake_exibicao(resposta_bruta)
+    resposta_final, fmt_chat = aplicar_formatador_final(resposta_final)
+    # Garante que o dict e o JSON usam EXATAMENTE a mesma string
+    resultado["resposta"] = resposta_final
+
+    formatacao_debug = {
+        "formatador_final_aplicado": True,
+        "formatador_final_chat": True,
+        "tinha_espaco_colado_antes": bool(tinha_antes or fmt_chat.get("tinha_espaco_colado_antes")),
+        "tem_espaco_colado_depois": bool(tem_espaco_colado(resultado["resposta"])),
+        "amostra_resposta_final": (resultado.get("resposta") or "")[:120],
+    }
+
     out = {
-        "status": "ok" if resposta else "erro",
+        "status": "ok" if resultado.get("resposta") else "erro",
         "telefone": telefone,
         "mensagem": mensagem,
-        "resposta": resposta,
+        "resposta": resultado["resposta"],
         "dry_run": dry_run,
         "persistir": persistir,
-        "persistencia_ok": persistencia_ok if resposta else False,
+        "persistencia_ok": persistencia_ok if resultado.get("resposta") else False,
         "code_version": CODE_VERSION,
     }
     if etapas is not None:
@@ -1795,7 +1804,7 @@ async def chat_teste(payload: dict):
         out["cliente_debug"] = cliente_debug
     if historico_debug is not None:
         out["historico_debug"] = historico_debug
-    if dry_run and formatacao_debug is not None:
+    if dry_run:
         out["formatacao_debug"] = formatacao_debug
     return out
 

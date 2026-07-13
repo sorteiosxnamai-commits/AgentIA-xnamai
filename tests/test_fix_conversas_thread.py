@@ -312,7 +312,7 @@ def test_persistir_false_continua(monkeypatch):
 # 10
 def test_webhook_existe():
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-formatador-final"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-retorno-formatado"
 
 
 # 11

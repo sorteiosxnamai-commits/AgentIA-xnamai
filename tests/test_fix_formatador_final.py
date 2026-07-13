@@ -1,14 +1,11 @@
-"""Integração: formatador final no /chat e no envio WhatsApp."""
+"""Integração: JSON /chat.resposta realmente formatado (não só debug)."""
 
 from __future__ import annotations
-
-from unittest.mock import patch
 
 import routes.api as api_mod
 from fastapi.testclient import TestClient
 from services.texto_seguro import (
     aplicar_formatador_final,
-    garantir_espacos_whatsapp,
     tem_espaco_colado,
 )
 from services.whatsapp_service import enviar_mensagem
@@ -20,42 +17,42 @@ PRODUTOS_FAKE = [
     {"nome": "Hub USB 4 Portas", "preco": 69.9, "saldo_estoque": 29},
 ]
 
+_RUINS = (
+    "algumasopções",
+    "algumasopcoes",
+    "algumasop",
+    "algumasopÃ",
+    "parauso",
+    ")(",
+    ")(temos",
+)
 
-def _assert_sem_colagem(texto: str) -> None:
+
+def _assert_json_resposta_limpa(texto: str) -> None:
     assert texto
-    for ruim in (
-        "algumasopções",
-        "algumasopcoes",
-        "algumasop",
-        "parauso",
-        ")(",
-        ")(temos",
-    ):
-        assert ruim not in texto, f"encontrou {ruim!r} em {texto!r}"
-    assert "algumas opções" in texto or "opções do nosso catálogo" in texto or "categoria" in texto.lower()
+    for ruim in _RUINS:
+        assert ruim not in texto, f"JSON resposta ainda tem {ruim!r}: {texto!r}"
+    assert tem_espaco_colado(texto) is False
 
 
-def test_code_version_formatador_final():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-formatador-final"
+def test_code_version_retorno_formatado():
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-retorno-formatado"
 
 
-def test_aplicar_formatador_final_corrige_producao():
-    sujo = (
-        "Claro, Tironi. Posso te mostrar algumasopções do nosso catálogo. "
-        "Temos produtos como: Hub USB 4 Portas (R$ 69,90)(temos 29 unidades). "
-        "Você procura algo parauso pessoal, trabalho ou gamer?"
+def test_detector_ve_soft_hyphen_e_zwsp():
+    assert tem_espaco_colado("algumas\u00adopções") is True
+    assert tem_espaco_colado("algumas\u200bopções") is True
+    assert tem_espaco_colado("algumasopÃ§Ãµes") is True
+    limpo, dbg = aplicar_formatador_final(
+        "mostrar algumas\u00adopções (R$ 1)(temos 2) parauso"
     )
-    assert tem_espaco_colado(sujo) is True
-    limpo, dbg = aplicar_formatador_final(sujo)
-    assert dbg["formatador_final_aplicado"] is True
-    assert dbg["tinha_espaco_colado_antes"] is True
+    _assert_json_resposta_limpa(limpo)
     assert dbg["tem_espaco_colado_depois"] is False
-    _assert_sem_colagem(limpo)
-    assert "(R$ 69,90) (temos 29 unidades)" in limpo
-    assert "para uso pessoal" in limpo
+    assert "algumas opções" in limpo
+    assert ") (" in limpo
 
 
-def test_chat_mande_catalogo_sem_colagem(monkeypatch):
+def test_chat_json_resposta_sem_colagem(monkeypatch):
     monkeypatch.setenv("CHECKOUT_CREATE_ORDER", "false")
     monkeypatch.setattr(
         "services.vendas.catalogo.montar_catalogo_geral",
@@ -101,21 +98,25 @@ def test_chat_mande_catalogo_sem_colagem(monkeypatch):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data.get("code_version") == "2026-07-13-fix-formatador-final"
-    texto = data.get("resposta") or ""
-    _assert_sem_colagem(texto)
-    fmt = data.get("formatacao_debug") or {}
-    assert fmt.get("formatador_final_aplicado") is True
-    assert fmt.get("tem_espaco_colado_depois") is False
+    assert data["code_version"] == "2026-07-13-fix-retorno-formatado"
+    # Valida o campo JSON, não variável interna
+    _assert_json_resposta_limpa(data["resposta"])
+    assert data["formatacao_debug"]["formatador_final_aplicado"] is True
+    assert data["formatacao_debug"]["tem_espaco_colado_depois"] is False
+    # Debug deve refletir a MESMA string do JSON
+    assert data["formatacao_debug"]["amostra_resposta_final"] in data["resposta"] or data[
+        "resposta"
+    ].startswith(data["formatacao_debug"]["amostra_resposta_final"][:20])
 
 
-def test_chat_reaplica_filtro_mesmo_com_resposta_suja(monkeypatch):
-    """Se o núcleo devolver texto colado, /chat ainda limpa na última camada."""
+def test_chat_atualiza_resultado_resposta_mesmo_com_sujeira(monkeypatch):
+    """processar_mensagem devolve colado; /chat deve sobrescrever resultado['resposta']."""
     monkeypatch.setenv("CHECKOUT_CREATE_ORDER", "false")
 
     sujo = (
-        "Claro, Tironi. Posso te mostrar algumasopções do nosso catálogo. "
-        "Hub (R$ 69,90)(temos 29 unidades). Você procura algo parauso pessoal?"
+        "Claro, Tironi. Posso te mostrar algumas\u00adopções do nosso catálogo. "
+        "Hub USB 4 Portas (R$ 69,90)(temos 29 unidades). "
+        "Você procura algo parauso pessoal, trabalho ou gamer?"
     )
 
     def _fake_processar(*_a, **_k):
@@ -124,7 +125,7 @@ def test_chat_reaplica_filtro_mesmo_com_resposta_suja(monkeypatch):
             "persistencia_ok": True,
             "formatacao_debug": {
                 "formatador_final_aplicado": True,
-                "tinha_espaco_colado_antes": True,
+                "tinha_espaco_colado_antes": False,  # detector antigo mentia
                 "tem_espaco_colado_depois": False,
             },
         }
@@ -145,29 +146,27 @@ def test_chat_reaplica_filtro_mesmo_com_resposta_suja(monkeypatch):
         },
     )
     data = resp.json()
-    texto = data.get("resposta") or ""
-    _assert_sem_colagem(texto)
-    assert data["formatacao_debug"]["formatador_final_aplicado"] is True
+    _assert_json_resposta_limpa(data["resposta"])
+    assert "algumas opções" in data["resposta"]
+    assert "(R$ 69,90) (temos 29 unidades)" in data["resposta"]
+    assert "para uso pessoal" in data["resposta"]
     assert data["formatacao_debug"]["tem_espaco_colado_depois"] is False
+    assert data["formatacao_debug"]["tinha_espaco_colado_antes"] is True
 
 
-def test_enviar_mensagem_whatsapp_passa_pelo_filtro(monkeypatch):
+def test_whatsapp_envio_filtra_json_equivalente(monkeypatch):
     capturado = {}
 
     def _fake_ultra(numero, mensagem):
         capturado["mensagem"] = mensagem
-        return {"ok": True, "provider": "ultramsg"}
+        return {"ok": True}
 
     monkeypatch.setenv("WHATSAPP_PROVIDER", "ultramsg")
-    monkeypatch.setattr(
-        "services.ultramsg_service.ultramsg_configurado", lambda: True
-    )
-    monkeypatch.setattr(
-        "services.ultramsg_service.enviar_mensagem", _fake_ultra
-    )
+    monkeypatch.setattr("services.ultramsg_service.ultramsg_configurado", lambda: True)
+    monkeypatch.setattr("services.ultramsg_service.enviar_mensagem", _fake_ultra)
 
-    sujo = "algumasopções (R$ 10,00)(temos 2 unidades) parauso pessoal"
-    enviar_mensagem("5543999999999", sujo)
-    texto = capturado.get("mensagem") or ""
-    _assert_sem_colagem(texto)
-    assert ")(" not in texto
+    enviar_mensagem(
+        "5543999999999",
+        "algumas\u00adopções (R$ 10,00)(temos 2) parauso",
+    )
+    _assert_json_resposta_limpa(capturado["mensagem"])
