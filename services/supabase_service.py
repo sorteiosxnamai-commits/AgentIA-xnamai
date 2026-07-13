@@ -6,7 +6,7 @@ from httpx import ConnectError, ReadError, TimeoutException
 
 from postgrest.exceptions import APIError
 
-from database.supabase import supabase
+from database.supabase import supabase, supabase_key_kind
 from services.config_tabelas import CLIENTES_TABLE, CONVERSAS_TABLE, normalizar_telefone
 from services.env_loader import carregar_env
 
@@ -43,6 +43,25 @@ _SCHEMA_FLAGS: dict[str, bool | None] = {
     "clientes_historico": None,
 }
 
+# Último erro seguro de busca/criação (para dry_run / debug)
+_ULTIMO_ERRO_CLIENTE: dict | None = None
+
+# Colunas conhecidas que o agente pode usar em clientes
+_COLS_CLIENTES_CONHECIDAS = (
+    "id",
+    "telefone",
+    "celular",
+    "nome",
+    "historico",
+    "contexto_venda",
+    "ativo",
+    "criado_em",
+    "mercos_cliente_id",
+    "mercos_id",
+    "email",
+    "cnpj",
+)
+
 # Sentinel no JSON historico quando a coluna contexto_venda ainda não existe
 _HIST_CTX_ROLE = "_contexto_venda"
 
@@ -74,15 +93,91 @@ def _texto_erro(exc: Exception) -> str:
     return " ".join(partes).lower()
 
 
+def _payload_api_error(exc: Exception) -> dict:
+    if isinstance(exc, APIError) and exc.args:
+        arg0 = exc.args[0]
+        if isinstance(arg0, dict):
+            return arg0
+    return {}
+
+
+def classificar_erro_supabase(exc: Exception) -> tuple[str, str, str]:
+    """Retorna (codigo, tipo, resumo) sem dados sensíveis."""
+    payload = _payload_api_error(exc)
+    code = str(payload.get("code") or "").strip()
+    message = str(payload.get("message") or exc)[:160]
+    text = f"{code} {message}".lower()
+
+    if (
+        "row-level security" in text
+        or "42501" in text
+        or code == "42501"
+        or "permission denied" in text
+        or "not allowed" in text
+    ):
+        return (
+            code or "42501",
+            "RLS",
+            "RLS/permissão bloqueou clientes — use SUPABASE_SERVICE_ROLE_KEY no Render",
+        )
+    if code.upper() == "PGRST204" or "pgrst204" in text or "schema cache" in text:
+        return code or "PGRST204", "SCHEMA", message[:120]
+    if code.upper() == "PGRST116" or "pgrst116" in text:
+        return code or "PGRST116", "NOT_FOUND", message[:120]
+    if "23505" in text or "duplicate" in text or "unique" in text:
+        return code or "23505", "DUPLICATE", "telefone/celular já existe"
+    if "23502" in text or ("null value" in text and "column" in text):
+        return code or "23502", "NOT_NULL", message[:120]
+    if isinstance(exc, _RETRY_ERRORS):
+        return "", "NETWORK", type(exc).__name__
+    return code or "", type(exc).__name__, message[:120]
+
+
+def limpar_ultimo_erro_cliente() -> None:
+    global _ULTIMO_ERRO_CLIENTE
+    _ULTIMO_ERRO_CLIENTE = None
+
+
+def obter_ultimo_erro_cliente() -> dict | None:
+    return dict(_ULTIMO_ERRO_CLIENTE) if _ULTIMO_ERRO_CLIENTE else None
+
+
+def registrar_erro_cliente(etapa: str, exc: Exception | None = None, *, codigo: str = "", tipo: str = "", resumo: str = "") -> dict:
+    global _ULTIMO_ERRO_CLIENTE
+    if exc is not None:
+        codigo, tipo, resumo = classificar_erro_supabase(exc)
+    _ULTIMO_ERRO_CLIENTE = {
+        "etapa": etapa,
+        "erro_codigo": codigo or "",
+        "erro_tipo": tipo or "",
+        "erro_resumido": (resumo or "")[:160],
+        "key_kind": supabase_key_kind(),
+        "tabela": TABELA_CLIENTES,
+    }
+    try:
+        from services.webhook_guard import log_seguro
+
+        log_seguro(
+            "cliente_criacao_erro" if "criar" in etapa or "rebusca" in etapa else "cliente_busca_nao_encontrado",
+            etapa=etapa,
+            erro=tipo or "erro",
+            detalhe=(resumo or "")[:120],
+            codigo=codigo or "-",
+            key_kind=supabase_key_kind(),
+        )
+    except Exception:
+        pass
+    return _ULTIMO_ERRO_CLIENTE
+
+
 def erro_coluna_ausente(exc: Exception, coluna: str | None = None) -> bool:
     """Detecta PGRST204 / column not in schema cache."""
     text = _texto_erro(exc)
     code = ""
-    if isinstance(exc, APIError) and exc.args:
-        arg0 = exc.args[0]
-        if isinstance(arg0, dict):
-            code = str(arg0.get("code") or "").lower()
-            text = f"{text} {arg0.get('message') or ''}".lower()
+    payload = _payload_api_error(exc)
+    if payload:
+        code = str(payload.get("code") or "").lower()
+        text = f"{text} {payload.get('message') or ''}".lower()
     if code == "pgrst204" or "pgrst204" in text:
         if not coluna:
             return True
@@ -92,6 +187,14 @@ def erro_coluna_ausente(exc: Exception, coluna: str | None = None) -> bool:
     ):
         return True
     return False
+
+
+def _null_violation_coluna(exc: Exception, coluna: str) -> bool:
+    text = _texto_erro(exc)
+    payload = _payload_api_error(exc)
+    if str(payload.get("code") or "") == "23502" or "23502" in text:
+        return coluna.lower() in text
+    return "null value" in text and coluna.lower() in text and "column" in text
 
 
 def conversas_e_thread() -> bool:
@@ -248,14 +351,28 @@ def _normalizar_produto(row: dict) -> dict:
 # =========================
 
 def _detectar_colunas_clientes() -> set[str]:
-    """Lê colunas da tabela clientes (cache em _SCHEMA_FLAGS via side-effects)."""
+    """Lê colunas da tabela clientes (funciona mesmo com tabela vazia)."""
     cols: set[str] = set()
     try:
         r = supabase.table(TABELA_CLIENTES).select("*").limit(1).execute()
         if r.data:
             cols = set(r.data[0].keys())
-    except Exception:
-        return cols
+    except Exception as exc:
+        registrar_erro_cliente("detectar_colunas", exc)
+        # Continua com probe individual se possível
+
+    if not cols:
+        for col in _COLS_CLIENTES_CONHECIDAS:
+            try:
+                supabase.table(TABELA_CLIENTES).select(col).limit(1).execute()
+                cols.add(col)
+            except Exception as exc:
+                if erro_coluna_ausente(exc, col):
+                    continue
+                # permissão / rede — aborta probe
+                registrar_erro_cliente("detectar_colunas", exc)
+                break
+
     if cols:
         _SCHEMA_FLAGS["clientes_celular"] = "celular" in cols
         _SCHEMA_FLAGS["clientes_historico"] = "historico" in cols
@@ -290,6 +407,7 @@ def _buscar_cliente_por_campo(campo: str, tel: str) -> dict | None:
             if campo == "celular":
                 _SCHEMA_FLAGS["clientes_celular"] = False
             return None
+        registrar_erro_cliente(f"buscar_cliente_{campo}", exc)
         raise
     return None
 
@@ -304,49 +422,55 @@ def buscar_cliente(telefone):
 
     log_seguro("cliente_busca_inicio", tel_sufixo=tel[-4:])
 
-    row = _buscar_cliente_por_campo("telefone", tel)
-    if row:
-        log_seguro("cliente_busca_ok", via="telefone", id_prefix=str(row.get("id") or "")[:8])
-        return row
-
-    # Só tenta celular se não sabemos que a coluna não existe
-    if _SCHEMA_FLAGS.get("clientes_celular") is not False:
-        row = _buscar_cliente_por_campo("celular", tel)
+    try:
+        row = _buscar_cliente_por_campo("telefone", tel)
         if row:
-            _SCHEMA_FLAGS["clientes_celular"] = True
-            log_seguro("cliente_busca_ok", via="celular", id_prefix=str(row.get("id") or "")[:8])
+            log_seguro("cliente_busca_ok", via="telefone", id_prefix=str(row.get("id") or "")[:8])
             return row
 
-    if _SCHEMA_FLAGS.get("clientes_celular") is not False:
-        try:
-            resultado = _executar(
-                lambda: (
-                    supabase.table(TABELA_CLIENTES)
-                    .select("*")
-                    .or_(f"telefone.eq.{tel},celular.eq.{tel}")
-                    .limit(1)
-                    .execute()
-                ),
-                "buscar_cliente_or",
-            )
-            if resultado.data:
-                row = resultado.data[0]
-                log_seguro(
-                    "cliente_busca_ok",
-                    via="or",
-                    id_prefix=str(row.get("id") or "")[:8],
-                )
+        # Só tenta celular se não sabemos que a coluna não existe
+        if _SCHEMA_FLAGS.get("clientes_celular") is not False:
+            row = _buscar_cliente_por_campo("celular", tel)
+            if row:
+                _SCHEMA_FLAGS["clientes_celular"] = True
+                log_seguro("cliente_busca_ok", via="celular", id_prefix=str(row.get("id") or "")[:8])
                 return row
-        except Exception as exc:
-            if erro_coluna_ausente(exc, "celular"):
-                _SCHEMA_FLAGS["clientes_celular"] = False
+
+        if _SCHEMA_FLAGS.get("clientes_celular") is not False:
+            try:
+                resultado = _executar(
+                    lambda: (
+                        supabase.table(TABELA_CLIENTES)
+                        .select("*")
+                        .or_(f"telefone.eq.{tel},celular.eq.{tel}")
+                        .limit(1)
+                        .execute()
+                    ),
+                    "buscar_cliente_or",
+                )
+                if resultado.data:
+                    row = resultado.data[0]
+                    log_seguro(
+                        "cliente_busca_ok",
+                        via="or",
+                        id_prefix=str(row.get("id") or "")[:8],
+                    )
+                    return row
+            except Exception as exc:
+                if erro_coluna_ausente(exc, "celular"):
+                    _SCHEMA_FLAGS["clientes_celular"] = False
+                else:
+                    registrar_erro_cliente("buscar_cliente_or", exc)
+    except Exception as exc:
+        registrar_erro_cliente("buscar_cliente", exc)
+        raise
 
     log_seguro("cliente_busca_nao_encontrado", tel_sufixo=tel[-4:])
     return None
 
 
 def criar_cliente(telefone, nome=""):
-    """Cria cliente com colunas mínimas existentes (telefone + nome; celular se houver)."""
+    """Cria cliente só com colunas existentes (sem email/CPF/CNPJ/endereço)."""
     from services.webhook_guard import log_seguro
 
     tel = normalizar_telefone(telefone)
@@ -355,15 +479,15 @@ def criar_cliente(telefone, nome=""):
 
     nome_ok = _nome_cliente_seguro(nome, tel)
     log_seguro("cliente_criacao_inicio", tel_sufixo=tel[-4:])
-    _detectar_colunas_clientes()
+    cols = _detectar_colunas_clientes()
 
-    # Insert mínimo — evita PGRST204 em schemas sem celular
-    dados: dict = {
-        "telefone": tel,
-        "nome": nome_ok,
-    }
-    if _SCHEMA_FLAGS.get("clientes_celular") is True:
+    # Payload mínimo seguro — NUNCA inclui email/cpf/cnpj/endereço
+    dados: dict = {"telefone": tel, "nome": nome_ok}
+    if "celular" in cols:
         dados["celular"] = tel
+        _SCHEMA_FLAGS["clientes_celular"] = True
+    else:
+        _SCHEMA_FLAGS["clientes_celular"] = False
 
     def _rebusca_ok(via: str):
         existente = buscar_cliente(tel)
@@ -376,112 +500,113 @@ def criar_cliente(telefone, nome=""):
             return existente
         return None
 
-    try:
-        resultado = _executar(
-            lambda: supabase.table(TABELA_CLIENTES).insert(dados).execute(),
-            "criar_cliente",
+    def _insert(payload: dict, rotulo: str):
+        return _executar(
+            lambda: supabase.table(TABELA_CLIENTES).insert(payload).execute(),
+            rotulo,
         )
-        if resultado.data:
-            row = resultado.data[0]
-            # Preenche celular depois, se a coluna existir e ainda não foi no insert
-            if (
-                _SCHEMA_FLAGS.get("clientes_celular") is True
-                and "celular" not in dados
-                and row.get("id")
-            ):
-                try:
-                    atualizar_cliente(cliente_id=row["id"], celular=tel)
-                except Exception:
-                    pass
-            log_seguro(
-                "cliente_criacao_ok",
-                id_prefix=str(row.get("id") or "")[:8],
-                via="insert",
-            )
-            return row
-        encontrado = _rebusca_ok("rebusca_pos_insert")
-        if encontrado:
-            return encontrado
-        log_seguro("cliente_criacao_erro", erro="insert_sem_retorno")
-        raise RuntimeError("criar_cliente_sem_retorno")
-    except Exception as exc:
-        text = _texto_erro(exc)
-        if "duplicate" in text or "unique" in text or "23505" in text:
-            encontrado = _rebusca_ok("duplicado_rebusca")
+
+    tentativas = [dict(dados)]
+    # Se celular conhecido, já está no payload. Se desconhecido (tabela vazia),
+    # NÃO inventa celular — só adiciona se NOT NULL exigir explicitamente.
+
+    ultimo_exc: Exception | None = None
+    for payload in tentativas:
+        try:
+            resultado = _insert(payload, "criar_cliente")
+            if resultado.data:
+                row = resultado.data[0]
+                log_seguro(
+                    "cliente_criacao_ok",
+                    id_prefix=str(row.get("id") or "")[:8],
+                    via="insert",
+                )
+                return row
+            encontrado = _rebusca_ok("rebusca_pos_insert")
             if encontrado:
                 return encontrado
-        # Schema com celular obrigatório / tentativa com celular
-        if erro_coluna_ausente(exc, "celular"):
-            _SCHEMA_FLAGS["clientes_celular"] = False
-            dados.pop("celular", None)
-            try:
-                resultado = _executar(
-                    lambda: supabase.table(TABELA_CLIENTES).insert(dados).execute(),
-                    "criar_cliente_sem_celular",
-                )
-                if resultado.data:
-                    row = resultado.data[0]
-                    log_seguro(
-                        "cliente_criacao_ok",
-                        id_prefix=str(row.get("id") or "")[:8],
-                        via="insert_sem_celular",
-                    )
-                    return row
-                encontrado = _rebusca_ok("rebusca_sem_celular")
+            registrar_erro_cliente(
+                "criar_cliente",
+                codigo="SEM_RETORNO",
+                tipo="INSERT_EMPTY",
+                resumo="insert sem data[0] e rebusca vazia",
+            )
+            raise RuntimeError("criar_cliente_sem_retorno")
+        except Exception as exc:
+            ultimo_exc = exc
+            text = _texto_erro(exc)
+
+            if "duplicate" in text or "unique" in text or "23505" in text:
+                encontrado = _rebusca_ok("duplicado_rebusca")
                 if encontrado:
                     return encontrado
-            except Exception as exc2:
-                text2 = _texto_erro(exc2)
-                if "duplicate" in text2 or "unique" in text2 or "23505" in text2:
-                    encontrado = _rebusca_ok("duplicado_rebusca")
+
+            # Remove coluna inexistente e tenta de novo uma vez
+            removida = False
+            for col in list(payload.keys()):
+                if erro_coluna_ausente(exc, col) and col not in ("telefone", "nome"):
+                    payload.pop(col, None)
+                    if col == "celular":
+                        _SCHEMA_FLAGS["clientes_celular"] = False
+                    removida = True
+            if removida:
+                try:
+                    resultado = _insert(payload, "criar_cliente_sem_coluna")
+                    if resultado.data:
+                        row = resultado.data[0]
+                        log_seguro(
+                            "cliente_criacao_ok",
+                            id_prefix=str(row.get("id") or "")[:8],
+                            via="insert_sem_coluna",
+                        )
+                        return row
+                    encontrado = _rebusca_ok("rebusca_sem_coluna")
                     if encontrado:
                         return encontrado
-                log_seguro(
-                    "cliente_criacao_erro",
-                    erro=type(exc2).__name__,
-                    detalhe=str(exc2)[:120],
-                )
-                raise
-        # Retry com celular se insert mínimo falhou por NOT NULL celular
-        if "celular" not in dados and (
-            "celular" in text or "null" in text or "23502" in text
-        ):
-            dados["celular"] = tel
-            try:
-                resultado = _executar(
-                    lambda: supabase.table(TABELA_CLIENTES).insert(dados).execute(),
-                    "criar_cliente_com_celular",
-                )
+                except Exception as exc2:
+                    ultimo_exc = exc2
+                    if "duplicate" in _texto_erro(exc2) or "23505" in _texto_erro(exc2):
+                        encontrado = _rebusca_ok("duplicado_rebusca")
+                        if encontrado:
+                            return encontrado
+
+            # NOT NULL em celular: só então inclui celular (schema exige)
+            if "celular" not in payload and _null_violation_coluna(exc, "celular"):
+                payload["celular"] = tel
                 _SCHEMA_FLAGS["clientes_celular"] = True
-                if resultado.data:
-                    row = resultado.data[0]
-                    log_seguro(
-                        "cliente_criacao_ok",
-                        id_prefix=str(row.get("id") or "")[:8],
-                        via="insert_com_celular",
-                    )
-                    return row
-                encontrado = _rebusca_ok("rebusca_com_celular")
-                if encontrado:
-                    return encontrado
-            except Exception as exc3:
-                text3 = _texto_erro(exc3)
-                if "duplicate" in text3 or "unique" in text3 or "23505" in text3:
-                    encontrado = _rebusca_ok("duplicado_rebusca")
+                try:
+                    resultado = _insert(payload, "criar_cliente_com_celular")
+                    if resultado.data:
+                        row = resultado.data[0]
+                        log_seguro(
+                            "cliente_criacao_ok",
+                            id_prefix=str(row.get("id") or "")[:8],
+                            via="insert_com_celular",
+                        )
+                        return row
+                    encontrado = _rebusca_ok("rebusca_com_celular")
                     if encontrado:
                         return encontrado
-                log_seguro(
-                    "cliente_criacao_erro",
-                    erro=type(exc3).__name__,
-                    detalhe=str(exc3)[:120],
-                )
-                raise
-        log_seguro(
-            "cliente_criacao_erro",
-            erro=type(exc).__name__,
-            detalhe=str(exc)[:120],
-        )
-        raise
+                except Exception as exc3:
+                    ultimo_exc = exc3
+                    if "duplicate" in _texto_erro(exc3) or "23505" in _texto_erro(exc3):
+                        encontrado = _rebusca_ok("duplicado_rebusca")
+                        if encontrado:
+                            return encontrado
+
+            # Não repetir heurística ampla com "null" genérico (causava PGRST204 em celular)
+            break
+
+    if ultimo_exc is not None:
+        registrar_erro_cliente("criar_cliente", ultimo_exc)
+        raise ultimo_exc
+    registrar_erro_cliente(
+        "criar_cliente",
+        codigo="DESCONHECIDO",
+        tipo="CRIAR_FALHOU",
+        resumo="falha ao criar cliente",
+    )
+    raise RuntimeError("criar_cliente_falhou")
 
 
 def atualizar_cliente(cliente_id, **campos):

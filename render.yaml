@@ -16,6 +16,12 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: CLIENTES_TABLE
+        value: clientes
+      - key: CONVERSAS_TABLE
+        value: conversas
       - key: MERCOS_BASE_URL
         value: https://sandbox.mercos.com/api
       - key: MERCOS_APPLICATION_TOKEN

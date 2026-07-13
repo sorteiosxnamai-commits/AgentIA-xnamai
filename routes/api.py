@@ -118,6 +118,9 @@ from services.supabase_service import (
     atualizar_historico_json,
     diagnosticar_schema_persistencia,
     atualizar_thread_conversa,
+    limpar_ultimo_erro_cliente,
+    obter_ultimo_erro_cliente,
+    registrar_erro_cliente,
 )
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
@@ -127,7 +130,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-12-fix-cliente-ok-final"
+CODE_VERSION = "2026-07-13-fix-cliente-supabase"
 
 
 def _resposta_texto(resultado) -> str | None:
@@ -329,6 +332,11 @@ def _processar_mensagem_locked(
         except Exception as exc:
             if etapa_flag:
                 etapas[etapa_flag] = False
+            if etapa in ("criar_cliente", "buscar_cliente") or etapa_flag == "cliente_ok":
+                try:
+                    registrar_erro_cliente(etapa, exc)
+                except Exception:
+                    pass
             if essencial:
                 persistencia_ok = False
                 log_seguro(
@@ -364,10 +372,14 @@ def _processar_mensagem_locked(
         # CLIENTE (isolado por telefone normalizado)
         # =========================
 
+        limpar_ultimo_erro_cliente()
+        cliente_debug_erro = None
+
         try:
             cliente = buscar_cliente(numero)
         except Exception as exc:
             cliente = None
+            cliente_debug_erro = registrar_erro_cliente("buscar_cliente", exc)
             log_seguro(
                 "cliente_busca_nao_encontrado",
                 telefone=numero,
@@ -392,6 +404,8 @@ def _processar_mensagem_locked(
                 essencial=True,
                 etapa_flag="cliente_ok",
             )
+            if not cliente:
+                cliente_debug_erro = obter_ultimo_erro_cliente() or cliente_debug_erro
             if cliente and cliente.get("id") and not str(cliente.get("id")).startswith("ephemeral-"):
                 origem_cliente = "criado"
                 etapas["cliente_ok"] = True
@@ -399,13 +413,21 @@ def _processar_mensagem_locked(
                 # Insert sem retorno / race: rebusca antes de ephemeral
                 try:
                     cliente = buscar_cliente(numero)
-                except Exception:
+                except Exception as exc:
                     cliente = None
+                    cliente_debug_erro = registrar_erro_cliente("rebusca", exc)
                 if cliente and cliente.get("id") and not str(cliente.get("id")).startswith("ephemeral-"):
                     origem_cliente = "rebuscado"
                     etapas["cliente_ok"] = True
                     log_seguro("cliente_novo", telefone=numero, message_id=msg_id or "-")
                 else:
+                    if not cliente_debug_erro:
+                        cliente_debug_erro = obter_ultimo_erro_cliente() or {
+                            "etapa": "criar_cliente",
+                            "erro_codigo": "EPHEMERAL",
+                            "erro_tipo": "FALLBACK",
+                            "erro_resumido": "busca/criação falhou — fallback ephemeral",
+                        }
                     cliente = {
                         "id": f"ephemeral-{numero}",
                         "telefone": numero,
@@ -1345,6 +1367,7 @@ def _processar_mensagem_locked(
 
         cliente_debug = None
         if dry_run:
+            dbg_erro = cliente_debug_erro or obter_ultimo_erro_cliente()
             cliente_debug = {
                 "tem_cliente_id": tem_cliente_id if persistir else False,
                 "origem_cliente": origem_cliente,
@@ -1353,6 +1376,13 @@ def _processar_mensagem_locked(
                 "contexto_salvo_em": contexto_salvo_em,
                 "historico_salvo_em": historico_salvo_em,
             }
+            if dbg_erro:
+                cliente_debug["cliente_debug_erro"] = {
+                    "etapa": str(dbg_erro.get("etapa") or ""),
+                    "erro_codigo": str(dbg_erro.get("erro_codigo") or ""),
+                    "erro_tipo": str(dbg_erro.get("erro_tipo") or ""),
+                    "erro_resumido": str(dbg_erro.get("erro_resumido") or "")[:160],
+                }
             log_seguro(
                 "cliente_resolvido",
                 telefone=numero,
@@ -1362,6 +1392,7 @@ def _processar_mensagem_locked(
                 origem_cliente=origem_cliente,
                 contexto_salvo_em=contexto_salvo_em,
                 historico_salvo_em=historico_salvo_em,
+                erro_tipo=(dbg_erro or {}).get("erro_tipo") or "-",
             )
 
         resultado_final = _montar_resultado(

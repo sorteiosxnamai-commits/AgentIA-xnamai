@@ -326,7 +326,7 @@ def test_persistir_false_continua(monkeypatch):
 # 12
 def test_webhook_continua():
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-12-fix-cliente-ok-final"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-cliente-supabase"
 
 
 # 13
@@ -417,5 +417,102 @@ def test_criar_cliente_insert_vazio_rebusca(monkeypatch):
             return MagicMock(data=[])
 
     monkeypatch.setattr(sb, "supabase", MagicMock(table=lambda n: FakeTable()))
+    monkeypatch.setattr(sb, "_detectar_colunas_clientes", lambda: {"telefone", "nome", "historico"})
+    sb._SCHEMA_FLAGS["clientes_celular"] = False
     row = sb.criar_cliente("5543999999993", nome="Arthur")
     assert row["id"] == "cli-re"
+
+
+def test_criar_cliente_sem_celular_no_schema(monkeypatch):
+    inserted = {}
+
+    class FakeTable:
+        def select(self, *_a, **_k):
+            return self
+
+        def limit(self, *_a, **_k):
+            return self
+
+        def insert(self, payload):
+            inserted.update(payload)
+            return self
+
+        def execute(self):
+            return MagicMock(data=[{"id": "cli-min", **inserted}])
+
+    monkeypatch.setattr(sb, "supabase", MagicMock(table=lambda n: FakeTable()))
+    monkeypatch.setattr(sb, "_detectar_colunas_clientes", lambda: {"id", "telefone", "nome", "historico"})
+    row = sb.criar_cliente("5543999999993", nome="Arthur")
+    assert row["id"] == "cli-min"
+    assert "celular" not in inserted
+    assert "email" not in inserted
+    assert "ativo" not in inserted
+
+
+def test_criar_cliente_nao_reinventa_celular_em_null_generico(monkeypatch):
+    """Regressão: erro genérico com 'null' NÃO deve forçar insert com celular."""
+    from postgrest.exceptions import APIError
+
+    calls = []
+
+    class FakeTable:
+        def select(self, *_a, **_k):
+            return self
+
+        def limit(self, *_a, **_k):
+            return self
+
+        def insert(self, payload):
+            calls.append(dict(payload))
+            return self
+
+        def execute(self):
+            raise APIError({
+                "message": "null value in column \"mercos_cliente_id\" of relation \"clientes\"",
+                "code": "23502",
+            })
+
+    monkeypatch.setattr(sb, "supabase", MagicMock(table=lambda n: FakeTable()))
+    monkeypatch.setattr(sb, "_detectar_colunas_clientes", lambda: {"telefone", "nome"})
+    sb._SCHEMA_FLAGS["clientes_celular"] = False
+    try:
+        sb.criar_cliente("5543999999993", nome="Arthur")
+        assert False, "deveria falhar"
+    except Exception:
+        pass
+    assert calls
+    assert all("celular" not in c for c in calls)
+    err = sb.obter_ultimo_erro_cliente()
+    assert err is not None
+    assert err.get("erro_tipo") in ("NOT_NULL", "APIError", "CRIAR_FALHOU") or err.get("erro_codigo")
+
+
+def test_classificar_erro_rls():
+    from postgrest.exceptions import APIError
+
+    code, tipo, resumo = sb.classificar_erro_supabase(
+        APIError({"message": "new row violates row-level security policy", "code": "42501"})
+    )
+    assert tipo == "RLS"
+    assert "SERVICE_ROLE" in resumo or "RLS" in resumo
+
+
+def test_chat_debug_erro_em_ephemeral(monkeypatch):
+    _patch_fluxo = __import__("tests.test_fix_cliente_ok_etapas", fromlist=["_patch_fluxo"])._patch_fluxo
+    _data = __import__("tests.test_fix_cliente_ok_etapas", fromlist=["_data"])._data
+    import routes.api as api_mod
+
+    _patch_fluxo(monkeypatch, cliente=None)
+
+    def boom(*_a, **_k):
+        from postgrest.exceptions import APIError
+
+        raise APIError({"message": "new row violates row-level security policy", "code": "42501"})
+
+    monkeypatch.setattr(api_mod, "criar_cliente", boom)
+    monkeypatch.setattr(api_mod, "buscar_cliente", lambda *_a, **_k: None)
+    out = api_mod.processar_mensagem(_data(mid="dbg-rls"), dry_run=True, persistir=True)
+    assert out["persistencia_etapas"]["cliente_ok"] is False
+    assert out["cliente_debug"]["origem_cliente"] == "ephemeral"
+    err = (out["cliente_debug"].get("cliente_debug_erro") or {})
+    assert err.get("erro_tipo") == "RLS" or err.get("erro_codigo") == "42501"
