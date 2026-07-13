@@ -27,12 +27,16 @@ def provider_nome() -> str:
 
 def enviar_mensagem(numero: str, mensagem: str):
     from services.webhook_guard import log_seguro
+    from services.texto_seguro import aplicar_formatador_final
+
+    # Última camada antes de qualquer provider (UltraMsg/Z-API)
+    texto, _dbg = aplicar_formatador_final(mensagem or "")
 
     prov = provider_nome()
     log_seguro("whatsapp_provider_usado", provider=prov)
     if prov == "ultramsg":
-        return ultramsg_service.enviar_mensagem(numero, mensagem)
-    return zapi_service.enviar_mensagem(numero, mensagem)
+        return ultramsg_service.enviar_mensagem(numero, texto)
+    return zapi_service.enviar_mensagem(numero, texto)
 
 
 def enviar_imagem(numero: str, url_imagem: str, legenda: str = ""):

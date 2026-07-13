@@ -132,7 +132,7 @@ from services.supabase_service import (
     obter_ultimo_erro_historico,
 )
 
-CODE_VERSION = "2026-07-13-fix-catalogo-formatacao"
+CODE_VERSION = "2026-07-13-fix-formatador-final"
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
 from services.vendedor_service import (
@@ -155,6 +155,7 @@ def _montar_resultado(
     persistencia_etapas: dict | None = None,
     cliente_debug: dict | None = None,
     historico_debug: dict | None = None,
+    formatacao_debug: dict | None = None,
 ) -> dict:
     out = {
         "resposta": resposta,
@@ -166,6 +167,8 @@ def _montar_resultado(
         out["cliente_debug"] = cliente_debug
     if historico_debug is not None:
         out["historico_debug"] = historico_debug
+    if formatacao_debug is not None:
+        out["formatacao_debug"] = formatacao_debug
     return out
 
 
@@ -1507,12 +1510,20 @@ def _processar_mensagem_locked(
                 erro_tipo=(cliente_debug.get("cliente_debug_erro") or {}).get("erro_tipo") or "-",
             )
 
+        # =========================
+        # FORMATADOR FINAL (última camada antes de retornar/enviar)
+        # =========================
+        from services.texto_seguro import aplicar_formatador_final
+
+        resposta_ia, formatacao_debug = aplicar_formatador_final(resposta_ia or "")
+
         resultado_final = _montar_resultado(
             resposta_ia,
             persistencia_ok,
             persistencia_etapas=etapas if dry_run else None,
             cliente_debug=cliente_debug,
             historico_debug=historico_debug,
+            formatacao_debug=formatacao_debug if dry_run else None,
         )
         log_seguro(
             "chat_resposta_final",
@@ -1526,6 +1537,8 @@ def _processar_mensagem_locked(
             contexto_ok=etapas.get("contexto_ok"),
             historico_ok=etapas.get("historico_ok"),
             thread_ok=etapas.get("thread_ok"),
+            formatador_final=True,
+            tinha_colado=formatacao_debug.get("tinha_espaco_colado_antes"),
         )
 
         if not enviar_wa:
@@ -1538,6 +1551,12 @@ def _processar_mensagem_locked(
             )
             finalizar_mensagem(data, sucesso=True)
             return resultado_final
+
+        # Reaplica imediatamente antes do envio WhatsApp (nada passa sem filtro)
+        resposta_ia, formatacao_debug = aplicar_formatador_final(resposta_ia or "")
+        resultado_final["resposta"] = resposta_ia
+        if dry_run:
+            resultado_final["formatacao_debug"] = formatacao_debug
 
         envio = enviar_mensagem(
             numero,
@@ -1571,6 +1590,9 @@ def _processar_mensagem_locked(
         finalizar_mensagem(data, sucesso=False)
         # Se já havia resposta comercial, devolve mesmo com falha
         if resposta_ia:
+            from services.texto_seguro import aplicar_formatador_final
+
+            resposta_ia, _fmt = aplicar_formatador_final(resposta_ia or "")
             log_seguro(
                 "chat_erro_persistencia",
                 telefone=numero,
@@ -1735,14 +1757,27 @@ async def chat_teste(payload: dict):
     etapas = None
     cliente_debug = None
     historico_debug = None
+    formatacao_debug = None
     if isinstance(resultado, dict):
         persistencia_ok = bool(resultado.get("persistencia_ok", False))
         if dry_run:
             etapas = resultado.get("persistencia_etapas")
             cliente_debug = resultado.get("cliente_debug")
             historico_debug = resultado.get("historico_debug")
+            formatacao_debug = resultado.get("formatacao_debug")
     elif resultado is None:
         persistencia_ok = False
+
+    # Última camada no /chat — garante JSON sem espaços colados
+    from services.texto_seguro import aplicar_formatador_final
+
+    resposta, fmt_chat = aplicar_formatador_final(resposta or "")
+    if dry_run:
+        formatacao_debug = fmt_chat if formatacao_debug is None else {
+            **formatacao_debug,
+            **fmt_chat,
+            "formatador_final_chat": True,
+        }
 
     out = {
         "status": "ok" if resposta else "erro",
@@ -1760,6 +1795,8 @@ async def chat_teste(payload: dict):
         out["cliente_debug"] = cliente_debug
     if historico_debug is not None:
         out["historico_debug"] = historico_debug
+    if dry_run and formatacao_debug is not None:
+        out["formatacao_debug"] = formatacao_debug
     return out
 
 
