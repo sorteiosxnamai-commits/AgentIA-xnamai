@@ -133,6 +133,18 @@ def classificar_erro_supabase(exc: Exception) -> tuple[str, str, str]:
     if "23505" in text or "duplicate" in text or "unique" in text:
         return code or "23505", "DUPLICATE", "telefone/celular já existe"
     if "23502" in text or ("null value" in text and "column" in text):
+        if "mercos_id" in text:
+            return (
+                code or "23502",
+                "NOT_NULL",
+                "mercos_id NOT NULL — rode supabase/017_clientes_mercos_id_nullable.sql",
+            )
+        if "mercos_cliente_id" in text:
+            return (
+                code or "23502",
+                "NOT_NULL",
+                "mercos_cliente_id NOT NULL — torne a coluna nullable (não inventar id fake)",
+            )
         return code or "23502", "NOT_NULL", message[:120]
     if isinstance(exc, _RETRY_ERRORS):
         return "", "NETWORK", type(exc).__name__
@@ -658,7 +670,11 @@ def buscar_cliente(telefone):
 
 
 def criar_cliente(telefone, nome=""):
-    """Cria cliente só com colunas existentes (sem email/CPF/CNPJ/endereço)."""
+    """Cria cliente só com colunas existentes (sem email/CPF/CNPJ/endereço).
+
+    Nunca inventa mercos_id / mercos_cliente_id (deixar null até sync Mercos).
+    Requer mercos_id nullable — ver supabase/017_clientes_mercos_id_nullable.sql.
+    """
     from services.webhook_guard import log_seguro
 
     tel = normalizar_telefone(telefone)
@@ -669,13 +685,17 @@ def criar_cliente(telefone, nome=""):
     log_seguro("cliente_criacao_inicio", tel_sufixo=tel[-4:])
     cols = _detectar_colunas_clientes()
 
-    # Payload mínimo seguro — NUNCA inclui email/cpf/cnpj/endereço
+    # Payload mínimo seguro — NUNCA inclui email/cpf/cnpj/endereço/mercos_id fake
     dados: dict = {"telefone": tel, "nome": nome_ok}
     if "celular" in cols:
         dados["celular"] = tel
         _SCHEMA_FLAGS["clientes_celular"] = True
     else:
         _SCHEMA_FLAGS["clientes_celular"] = False
+
+    # Guarda: jamais preencher mercos_* no create do WhatsApp
+    for proibido in ("mercos_id", "mercos_cliente_id"):
+        dados.pop(proibido, None)
 
     def _rebusca_ok(via: str):
         existente = buscar_cliente(tel)

@@ -133,7 +133,7 @@ from services.vendedor_service import (
     vendedor_configurado,
 )
 
-CODE_VERSION = "2026-07-13-fix-cliente-debug"
+CODE_VERSION = "2026-07-13-fix-mercos-id-nullable"
 
 
 def _resposta_texto(resultado) -> str | None:
