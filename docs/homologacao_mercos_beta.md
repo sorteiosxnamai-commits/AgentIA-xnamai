@@ -1,271 +1,143 @@
-# Homologação beta Mercos — checklist do projeto AgentIA
+# Homologação beta Mercos — plano atualizado (ata + rotas locais)
 
-Documento baseado **somente** no que o código em `agente-vendas-python` realmente implementa (`services/mercos_service.py`, `pedido_mercos_service.py`, `sync_mercos_service.py`, `routes/api.py`).
+Documento alinhado às rotas **implementadas no backend** em `/mercos/*`  
+(`routes/mercos_homolog.py` → `services/mercos_homolog_service.py` → API sandbox).
 
-**Ambiente alvo:** sandbox  
-**Não anexar tokens, `.env` ou Company Token em prints/tickets.**
+**Não anexar tokens / `.env`.**  
+**Agente IA:** manter `CHECKOUT_CREATE_ORDER=false` (pedido automático desligado).
 
----
+Company Token: variável **`MERCOS_COMPANY_TOKEN`** (header `CompanyToken`).  
+Application Token: **`MERCOS_APPLICATION_TOKEN`**.  
+Base: **`MERCOS_BASE_URL=https://sandbox.mercos.com/api`**.
 
-## 1. Inventário de rotas Mercos (código real)
-
-Todas as chamadas HTTP passam por `_executar_requisicao_mercos` em `services/mercos_service.py`.
-
-| Entidade | GET list | GET by id | POST | PUT | DELETE | Status no projeto |
-|----------|----------|-----------|------|-----|--------|-------------------|
-| **Clientes** | — | — | `/v1/clientes` | — | — | **POST pronto** |
-| **Produtos** | `/v1/produtos?pagina=N` | — | — | — | — | **GET list pronto** |
-| **Pedidos** | — | — | `/v2/pedidos` | — | — | **POST pronto** (gated) |
-| **Títulos** | — | — | — | — | — | Não implementado |
-| **Tabelas de preço** | — | — | — | — | — | Não implementado (só lê `preco_tabela` no JSON do produto) |
-| **Condições de pagamento** | — | — | — | — | — | Não implementado (envia texto livre no pedido, ex.: PIX) |
-| **Transportadoras** | — | — | — | — | — | Não implementado |
-| **Políticas comerciais** | — | — | — | — | — | Não implementado |
-| **Categorias** | — | — | — | — | — | Não implementado (campo local do produto) |
-| **Ajuste de estoque** | — | — | — | — | — | Não implementado (só lê `saldo_estoque` na listagem) |
-| **Oportunidades / Funis** | — | — | — | — | — | Não implementado |
-
-### Rotas prontas para homologar (3)
-
-1. `GET /v1/produtos` — listagem paginada  
-2. `POST /v1/clientes` — criação de cliente  
-3. `POST /v2/pedidos` — criação de pedido  
-
-### Rotas que ainda faltam (não homologar neste ciclo)
-
-- Clientes: GET/PUT/DELETE  
-- Produtos: GET by id / POST / PUT / DELETE  
-- Pedidos: GET / PUT / DELETE  
-- Títulos (qualquer método)  
-- Tabelas de preço, condições de pagamento, transportadoras, políticas, categorias, ajuste de estoque, oportunidades/funis  
+Proteção das rotas locais: `SYNC_TOKEN` (query `token=`) ou `DIAGNOSTICOS_ABERTOS=true`.
 
 ---
 
-## 2. Configuração e gates
+## 1. O que já existia (antes desta entrega)
 
-| Item | Valor / comportamento |
-|------|------------------------|
-| Base URL | `MERCOS_BASE_URL` — default `https://sandbox.mercos.com/api` |
-| Sandbox? | `mercos_ambiente_sandbox()` → `true` se `"sandbox"` estiver na URL |
-| Company Token | **`MERCOS_COMPANY_TOKEN`** (header `CompanyToken`) |
-| Application Token | `MERCOS_APPLICATION_TOKEN` (header `ApplicationToken`) |
-| Fallback app token | `MERCOS_APPLICATION_TOKEN_FALLBACK` (opcional) |
-| Criar pedido no checkout do agente | **`CHECKOUT_CREATE_ORDER=false`** (padrão — **manter assim**) |
-| Flag Mercos pedido | `MERCOS_CRIAR_PEDIDO` (também precisa estar coerente; agente não deve criar pedido automático) |
+| Método | Endpoint Mercos | Uso no projeto |
+|--------|-----------------|----------------|
+| GET | `/v1/produtos` | Catálogo / sync |
+| POST | `/v1/clientes` | Checkout (gated) |
+| POST | `/v2/pedidos` | Checkout (gated) |
 
-### Throttling (429)
+## 2. Rotas locais criadas agora (`/mercos/...`)
 
-Implementado em `_executar_requisicao_mercos`:
+| Ata (obrigatório) | Método | Rota local | Endpoint Mercos | Status sandbox Xnamai |
+|-------------------|--------|------------|-----------------|------------------------|
+| Categorias de Produtos | GET | `GET /mercos/categorias` | `/v1/categorias` | **OK (200)** |
+| Clientes | GET | `GET /mercos/clientes` | `/v1/clientes` | **OK (200)** |
+| Clientes | POST | `POST /mercos/clientes` | `/v1/clientes` | **OK** (já existia service) |
+| Clientes | PUT | `PUT /mercos/clientes/{id}` | `/v1/clientes/{id}` | **Rota pronta** |
+| Condições de Pagamento | GET | `GET /mercos/condicoes-pagamento` | `/v1/condicoes_pagamento` | **OK (200)** |
+| Produtos | GET | `GET /mercos/produtos` | `/v1/produtos` | **OK (200)** |
+| Segmentos de Clientes | GET | `GET /mercos/segmentos` | `/v1/segmentos` | **OK (200)** |
+| Tabelas de Preço | GET | `GET /mercos/tabelas-preco` | `/v1/tabelas_preco` | **OK (200)** |
+| Tabelas de Preço por Produto | GET | `GET /mercos/tabelas-preco/{id}/produtos` | `/v1/tabelas_preco/{id}/produtos` | **Rota pronta — confirmar path se 404** |
+| Tabelas de Preço por Produto | GET | `GET /mercos/tabelas-preco-produtos` | `MERCOS_PATH_TABELAS_PRECO_PRODUTO` | Path global **não encontrado** no probe |
+| Tipo de Pedido | GET | `GET /mercos/tipos-pedido` | `MERCOS_PATH_TIPOS_PEDIDO` (default `/v1/tipos_pedido`) | **404 no sandbox** — confirmar com Mercos |
+| Usuários | GET | `GET /mercos/usuarios` | `/v1/usuarios` | **OK (200)** |
+| Pedidos | POST | `POST /mercos/pedidos` | `/v2/pedidos` | **Rota pronta** |
+| Pedidos | PUT | `PUT /mercos/pedidos/{id}` | `/v1/pedidos/{id}` | **Rota pronta** |
+| Títulos | POST | `POST /mercos/titulos` | `/v1/titulos` | **Rota pronta** (GET list OK) |
+| Títulos | PUT | `PUT /mercos/titulos/{id}` | `/v1/titulos/{id}` | **Rota pronta** |
+| Inventário | GET | `GET /mercos/homologacao` | — | Flags + mapa |
 
-- Até **3 tentativas** por application token  
-- Em **429**: `sleep(10 * (tentativa + 1))` e retry  
-- Após esgotar: erro pedindo aguardar ~1 minuto  
-- Entre páginas de produtos: `sleep(0.3)`  
-
-Não há parsing de header `Retry-After`.
-
-### Paginação
-
-Só em produtos (`buscar_produtos_mercos`):
-
-- Query `?pagina=1,2,…`  
-- Para quando o lote vem vazio **ou** `len(lote) < 50` (assume página de 50)  
-- Aceita lista JSON ou chaves `produtos` / `data` / `results`  
-
-### Sync Mercos → Supabase
-
-| O quê | Como |
-|-------|------|
-| **Produtos** | `sincronizar_produtos_mercos` → upsert em `produtos` |
-| CLI | `python sync_produtos.py` |
-| HTTP | `GET|POST /sync-produtos?token=…` |
-| Clientes / pedidos | **Não** há sync de listagem; só grava `mercos_cliente_id` após POST cliente |
-
-### Scripts / rotas de teste (sem expor token)
-
-| Rota / script | O que faz | Cria registro na Mercos? |
-|---------------|-----------|--------------------------|
-| `GET /status` | Flags sandbox, base URL, checkout | Não |
-| `GET /teste-mercos?q=…` | Busca catálogo (Mercos/Supabase) | Não |
-| `GET|POST /sync-produtos` | Sync produtos | Não |
-| Checkout WhatsApp / `/chat` | Fluxo comercial | **Não** com `CHECKOUT_CREATE_ORDER=false` |
-| MCP `pedidos.criar_mercos` | Escrita gated | Só se `MCP_WRITE_ORDERS` ligado |
-
-Não existe rota dedicada “criar cliente/pedido de teste na sandbox” isolada do checkout. Para evidência de POST na homologação, usar **sandbox** com script/controle manual ou flag temporária — **nunca** ligar pedido automático em produção/WhatsApp sem alinhamento.
-
-### Logs e tokens
-
-- Headers `CompanyToken` / `ApplicationToken` **não** são impressos de propósito.  
-- `log_seguro` omite chaves `token` / `key` / `authorization`.  
-- **Não** colar `.env`, tokens ou Company Token em prints para a Mercos.  
-- Respostas de erro podem incluir trecho do body da API (não o token de saída).
-
-### Respostas úteis para print
-
-| Endpoint local | Evidência típica |
-|----------------|------------------|
-| `/status` | `mercos_configurado`, `mercos_sandbox`, `mercos_base_url`, `checkout_create_order: false` |
-| `/teste-mercos` | `fonte`, `total`, lista `produtos` (nome, preço, estoque) |
-| `/sync-produtos` | contagens de sync (inseridos/atualizados) |
+DELETE: **não implementado** (não requerido na ata).
 
 ---
 
-## 3. Ordem recomendada de homologação
+## 3. Ainda falta / a confirmar com a Mercos
 
-1. **Status / ambiente** — provar sandbox + tokens configurados (sem mostrar o valor do token).  
-2. **GET produtos** — listagem + paginação + (opcional) sync Supabase.  
-3. **POST clientes** — criar 1 cliente de teste na sandbox (evidência: ID / header MeusPedidosID).  
-4. **POST pedidos** — 1 pedido mínimo na sandbox ligado a esse cliente (**somente sandbox**, flags explícitas, sem WhatsApp em massa).  
-5. **Encerrar** — documentar o que **não** foi homologado por não existir no código.
+1. **Path oficial de “Tabelas de Preço por Produto”** (listagem global) — vários paths testados retornaram 404.  
+2. **Path oficial de “Tipo de Pedido”** — `/v1/tipos_pedido` retornou 404 no sandbox.  
+   → Após a Mercos informar o path, setar no Render:  
+   - `MERCOS_PATH_TABELAS_PRECO_PRODUTO`  
+   - `MERCOS_PATH_TIPOS_PEDIDO`
 
 ---
 
-## 4. Comandos PowerShell / curl
+## 4. Ordem recomendada de homologação
 
-Substitua `$BASE` pela URL do Render (ex.: `https://agent-ia-xnamai.onrender.com`) e `$SYNC` pelo `SYNC_TOKEN` se `DIAGNOSTICOS_ABERTOS=false`.  
-**Não** imprima tokens no terminal compartilhado / ticket.
+1. `GET /mercos/homologacao` + `GET /status` (sandbox + `checkout_create_order: false`)  
+2. GETs: categorias → produtos → clientes → condições → segmentos → tabelas-preço → usuários  
+3. POST cliente (sandbox) → PUT cliente  
+4. POST pedido (sandbox, payload mínimo) → PUT pedido  
+5. POST título → PUT título  
+6. Tabelas preço por produto / tipo pedido (após confirmação de path)  
 
-### 4.1 Status (sandbox + checkout off)
+Espaçamento entre chamadas por causa de **429**.
+
+---
+
+## 5. Comandos PowerShell / curl
 
 ```powershell
 $BASE = "https://agent-ia-xnamai.onrender.com"
-Invoke-RestMethod "$BASE/status" | ConvertTo-Json -Depth 6
+$T = $env:SYNC_TOKEN   # se DIAGNOSTICOS_ABERTOS=false
+
+# Inventário
+Invoke-RestMethod "$BASE/mercos/homologacao?token=$T" | ConvertTo-Json -Depth 6
+
+# GETs (um por vez; espere se 429)
+Invoke-RestMethod "$BASE/mercos/categorias?token=$T&max_paginas=2" | ConvertTo-Json -Depth 4
+Invoke-RestMethod "$BASE/mercos/produtos?token=$T&max_paginas=2" | ConvertTo-Json -Depth 4
+Invoke-RestMethod "$BASE/mercos/clientes?token=$T&max_paginas=2" | ConvertTo-Json -Depth 4
+Invoke-RestMethod "$BASE/mercos/condicoes-pagamento?token=$T" | ConvertTo-Json -Depth 4
+Invoke-RestMethod "$BASE/mercos/segmentos?token=$T" | ConvertTo-Json -Depth 4
+Invoke-RestMethod "$BASE/mercos/tabelas-preco?token=$T" | ConvertTo-Json -Depth 4
+Invoke-RestMethod "$BASE/mercos/usuarios?token=$T" | ConvertTo-Json -Depth 4
+
+# POST cliente (sandbox) — ajuste o JSON ao layout Mercos
+$body = @{ razao_social = "Homolog Teste"; nome_fantasia = "Homolog"; tipo = "F" } | ConvertTo-Json
+Invoke-RestMethod -Method Post "$BASE/mercos/clientes?token=$T" -ContentType "application/json" -Body $body
 ```
 
 ```bash
-curl -s "$BASE/status"
+curl -s "$BASE/mercos/homologacao?token=$T"
+curl -s "$BASE/mercos/produtos?token=$T&max_paginas=1"
 ```
 
-**Print sugerido:** trecho com  
-`mercos_sandbox: true`,  
-`mercos_base_url` contendo `sandbox.mercos.com`,  
-`checkout_create_order: false`.
-
-### 4.2 GET produtos (via diagnóstico do agente)
-
-```powershell
-$BASE = "https://agent-ia-xnamai.onrender.com"
-$SYNC = $env:SYNC_TOKEN   # se necessário
-Invoke-RestMethod "$BASE/teste-mercos?q=headset&token=$SYNC" | ConvertTo-Json -Depth 8
-```
-
-```bash
-curl -s "$BASE/teste-mercos?q=headset&token=$SYNC"
-```
-
-**Print sugerido:** `status: ok`, `fonte` (mercos/supabase), `total` > 0, amostra de 1–2 produtos **sem** dados sensíveis de cliente.
-
-### 4.3 Sync Mercos → Supabase (produtos)
-
-```powershell
-Invoke-RestMethod -Method Post "$BASE/sync-produtos?token=$SYNC" | ConvertTo-Json -Depth 6
-```
-
-```bash
-curl -s -X POST "$BASE/sync-produtos?token=$SYNC"
-```
-
-Local:
-
-```powershell
-cd agente-vendas-python
-python sync_produtos.py
-```
-
-**Print sugerido:** resultado do sync (totais), sem tokens.
-
-### 4.4 POST cliente / POST pedido (sandbox controlado)
-
-Não há endpoint HTTP público “só para homolog” que ignore o checkout. Opções alinhadas ao código:
-
-1. **Sandbox + flags temporárias** em ambiente de teste (não produção WhatsApp):  
-   - `MERCOS_BASE_URL=https://sandbox.mercos.com/api`  
-   - Manter produção do agente com `CHECKOUT_CREATE_ORDER=false`  
-   - Exercitar create apenas em sessão controlada / script interno / MCP com write guard  
-
-2. Evidências mínimas na Mercos (painel sandbox):  
-   - Cliente criado (ID)  
-   - Pedido criado (ID / número)  
-
-**Não** usar o WhatsApp real de clientes para “provar” POST em massa.  
-**Não** anexar Company Token nos prints.
-
-### 4.5 Confirmar que o agente NÃO cria pedido automático
-
-```powershell
-(Invoke-RestMethod "$BASE/status").checkout_create_order
-# Esperado: False
-```
-
-```bash
-curl -s "$BASE/status" | findstr /i checkout_create_order
-```
+Script de apoio: `scripts/homologacao_mercos/smoke_gets.ps1`
 
 ---
 
-## 5. Evidências / prints para anexar na Mercos
+## 6. Prints / evidências para a Mercos
 
-| # | Evidência | Como obter | Cuidado |
-|---|-----------|------------|--------|
-| 1 | Ambiente sandbox | `/status` → `mercos_sandbox` + `mercos_base_url` | Não mostrar token |
-| 2 | Listagem de produtos | `/teste-mercos` ou painel sandbox | Omitir dados irrelevantes |
-| 3 | Paginação | Log/print de sync com múltiplas páginas ou captura de `?pagina=` no código/teste | — |
-| 4 | Tratamento 429 | (Opcional) print do código `_executar_requisicao_mercos` ou log de retry | Sem token |
-| 5 | Cliente criado | Painel sandbox / ID retornado | Sem PII desnecessária |
-| 6 | Pedido criado | Painel sandbox / ID | Só sandbox |
-| 7 | Pedido automático off | `/status` → `checkout_create_order: false` | Obrigatório para o agente |
-
----
-
-## 6. Cuidados
-
-### Sandbox
-
-- URL deve conter `sandbox.mercos.com`.  
-- Não apontar Company Token de produção no sandbox e vice-versa.  
-- Dados de teste podem ser baratos/exemplos; `MERCOS_OCULTAR_EXEMPLOS=true` filtra `[exemplo]` no catálogo do agente.
-
-### Paginação
-
-- Homologar listagem com mais de uma página se o sandbox tiver ≥ 50 produtos.  
-- Critério de parada do código: lote vazio ou `< 50` itens.
-
-### Throttling
-
-- Evitar loops agressivos de sync/teste.  
-- Em 429, aguardar conforme mensagem do serviço (~1 min após 3 falhas).  
-- Espaçamento de 0,3 s entre páginas já existe.
-
-### O que NÃO homologar (ainda não implementado)
-
-- CRUD completo de clientes/produtos/pedidos além do descrito  
-- Títulos financeiros  
-- Tabelas de preço / condições / transportadoras / políticas / categorias / ajuste de estoque como APIs  
-- Oportunidades e funis  
-- Qualquer PUT/DELETE Mercos  
+| # | Evidência | Como |
+|---|-----------|------|
+| 1 | Sandbox ativo | `/status` → `mercos_sandbox: true` |
+| 2 | Pedido automático off | `/status` → `checkout_create_order: false` |
+| 3 | Cada GET 200 | Resposta `/mercos/...` com `total` / amostra (sem token) |
+| 4 | POST/PUT | ID retornado + painel sandbox |
+| 5 | 429 tratado | (opcional) log/mensagem “throttling” sem token |
+| 6 | Paginação | `paginas_lidas` > 1 quando houver volume |
 
 ---
 
-## 7. Mapa rápido código ↔ rota
+## 7. Cuidados
 
-| Função | Arquivo | Rota Mercos |
-|--------|---------|-------------|
-| `buscar_produtos_mercos` | `mercos_service.py` | `GET /v1/produtos` |
-| `criar_cliente_mercos` | `mercos_service.py` | `POST /v1/clientes` |
-| `criar_pedido_mercos` | `mercos_service.py` | `POST /v2/pedidos` |
-| `sincronizar_produtos_mercos` | `sync_mercos_service.py` | usa GET produtos |
-| `criar_pedido_fechamento_mercos` | `pedido_mercos_service.py` | orquestra POST cliente + pedido |
+- **Sandbox only** para POST/PUT de teste.  
+- **Throttling:** retry limitado (3x) com sleep; não martelar a API.  
+- **Paginação:** `pagina` + `max_paginas` (teto); para se lote vazio ou curto.  
+- **Não** versionar `.env` nem colar Company Token.  
+- **Não** ligar `CHECKOUT_CREATE_ORDER` no agente por causa da homologação.
 
 ---
 
-## 8. Resumo executivo
+## 8. Variáveis Render
 
-**Prontas (3):** GET produtos · POST clientes · POST pedidos (v2).  
-
-**Faltantes:** restante do catálogo Mercos (títulos, tabelas, transportadoras, políticas, categorias, estoque API, oportunidades, CRUD completo).  
-
-**Agente:** manter `CHECKOUT_CREATE_ORDER=false` — homologação Mercos ≠ ligar pedido automático no WhatsApp.
+| Variável | Obrigatória | Notas |
+|----------|-------------|-------|
+| `MERCOS_BASE_URL` | sim | `https://sandbox.mercos.com/api` |
+| `MERCOS_COMPANY_TOKEN` | sim | Company Token |
+| `MERCOS_APPLICATION_TOKEN` | sim | Application Token |
+| `SYNC_TOKEN` | recomendado | Protege `/mercos/*` |
+| `CHECKOUT_CREATE_ORDER` | manter `false` | Agente |
+| `MERCOS_PATH_TIPOS_PEDIDO` | opcional | Se Mercos informar path |
+| `MERCOS_PATH_TABELAS_PRECO_PRODUTO` | opcional | Se Mercos informar path |
 
 ---
 
-*Gerado para o plano de homologação beta. Atualizar este arquivo quando novas rotas Mercos forem implementadas.*
+*Atualizado com implementação das rotas locais de homologação.*
