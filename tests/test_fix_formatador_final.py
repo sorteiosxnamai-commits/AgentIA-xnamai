@@ -25,6 +25,11 @@ _RUINS = (
     "parauso",
     ")(",
     ")(temos",
+    "89unidades",
+    "1unidade",
+    "10peças",
+    "10pecas",
+    "5itens",
 )
 
 
@@ -36,7 +41,33 @@ def _assert_json_resposta_limpa(texto: str) -> None:
 
 
 def test_code_version_retorno_formatado():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-ultramsg-webhook-parser"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-espaco-unidades"
+
+
+def test_detector_e_fix_numero_unidade_colada():
+    assert tem_espaco_colado("89unidades") is True
+    assert tem_espaco_colado("1unidade") is True
+    assert tem_espaco_colado("10peças") is True
+    assert tem_espaco_colado("5itens") is True
+    assert tem_espaco_colado("89 unidades") is False
+
+    limpo, dbg = aplicar_formatador_final(
+        "Notebook Intel i5 (R$ 3499,90) (temos 89unidades) "
+        "Mouse (R$ 39,90) (temos 1unidade) "
+        "Cabo (R$ 19,90) (temos 10peças) "
+        "Hub (R$ 69,90) (temos 5itens)"
+    )
+    assert "89 unidades" in limpo
+    assert "1 unidade" in limpo
+    assert "10 peças" in limpo
+    assert "5 itens" in limpo
+    assert "89unidades" not in limpo
+    assert "1unidade" not in limpo
+    assert "10peças" not in limpo
+    assert "5itens" not in limpo
+    assert dbg["tem_espaco_colado_depois"] is False
+    assert dbg["tinha_espaco_colado_antes"] is True
+    _assert_json_resposta_limpa(limpo)
 
 
 def test_detector_ve_soft_hyphen_e_zwsp():
@@ -98,7 +129,7 @@ def test_chat_json_resposta_sem_colagem(monkeypatch):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["code_version"] == "2026-07-13-fix-ultramsg-webhook-parser"
+    assert data["code_version"] == "2026-07-13-fix-espaco-unidades"
     # Valida o campo JSON, não variável interna
     _assert_json_resposta_limpa(data["resposta"])
     assert data["formatacao_debug"]["formatador_final_aplicado"] is True
@@ -107,6 +138,59 @@ def test_chat_json_resposta_sem_colagem(monkeypatch):
     assert data["formatacao_debug"]["amostra_resposta_final"] in data["resposta"] or data[
         "resposta"
     ].startswith(data["formatacao_debug"]["amostra_resposta_final"][:20])
+
+
+def test_chat_json_resposta_separa_numero_unidade(monkeypatch):
+    """Valida resp_json['resposta'] com número colado em unidade de estoque."""
+    monkeypatch.setenv("CHECKOUT_CREATE_ORDER", "false")
+
+    sujo = (
+        "Claro, Tironi. Posso te mostrar algumas opções do nosso catálogo. "
+        "Notebook Intel i5 (R$ 3499,90) (temos 89unidades). "
+        "Mouse Óptico (R$ 39,90) (temos 1unidade). "
+        "Cabo HDMI (R$ 49,90) (temos 10peças). "
+        "Hub USB (R$ 69,90) (temos 5itens). "
+        "Você procura algo para uso pessoal, trabalho ou gamer?"
+    )
+
+    def _fake_processar(*_a, **_k):
+        return {
+            "resposta": sujo,
+            "persistencia_ok": True,
+        }
+
+    monkeypatch.setattr(api_mod, "processar_mensagem", _fake_processar)
+
+    from main import app
+
+    client = TestClient(app)
+    resp = client.post(
+        "/chat",
+        json={
+            "telefone": "5543999999999",
+            "mensagem": "mande o catalogo",
+            "nome": "Tironi",
+            "dry_run": True,
+            "persistir": False,
+        },
+    )
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    assert resp_json["code_version"] == "2026-07-13-fix-espaco-unidades"
+    # Campo JSON final — não variável interna
+    resposta = resp_json["resposta"]
+    assert "89 unidades" in resposta
+    assert "1 unidade" in resposta
+    assert "10 peças" in resposta
+    assert "5 itens" in resposta
+    assert "89unidades" not in resposta
+    assert "1unidade" not in resposta
+    assert "10peças" not in resposta
+    assert "5itens" not in resposta
+    assert "(R$ 3499,90) (temos 89 unidades)" in resposta
+    assert resp_json["formatacao_debug"]["tem_espaco_colado_depois"] is False
+    assert resp_json["formatacao_debug"]["tinha_espaco_colado_antes"] is True
+    _assert_json_resposta_limpa(resposta)
 
 
 def test_chat_atualiza_resultado_resposta_mesmo_com_sujeira(monkeypatch):

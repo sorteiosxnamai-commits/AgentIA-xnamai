@@ -373,7 +373,7 @@ def test_lock_liberado_mesmo_com_exception():
 def test_webhook_continua():
     assert hasattr(api_mod, "receber_webhook")
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-ultramsg-webhook-parser"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-espaco-unidades"
 
 
 def test_dry_run_nao_chama_bridge_cliente(monkeypatch):

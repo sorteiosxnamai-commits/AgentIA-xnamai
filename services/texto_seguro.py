@@ -75,6 +75,12 @@ def corrigir_mojibake_exibicao(texto: str) -> str:
     return reparar_mojibake(texto or "")
 
 
+# Número colado em unidade de estoque/catálogo (ex.: "89unidades")
+_NUM_UNIDADE_COLADA = re.compile(
+    r"(?i)(\d+)(unidades|unidade|peças|pecas|itens)\b"
+)
+
+
 def tem_espaco_colado(texto: str) -> bool:
     """Detecta colagens — inclusive com invisíveis/mojibake no meio."""
     bruto = texto or ""
@@ -97,6 +103,8 @@ def tem_espaco_colado(texto: str) -> bool:
         # algumas + só lixo invisível + op
         if re.search(r"(?i)algumas[\u00ad\u200b\u200c\u200d\ufeff]*op", t):
             return True
+        if _NUM_UNIDADE_COLADA.search(t):
+            return True
     return False
 
 
@@ -114,6 +122,8 @@ def garantir_espacos_whatsapp(texto: str) -> str:
     out = re.sub(r"(?i)algumas(?=op)", "algumas ", out)
     out = re.sub(r"(?i)para(?=uso)", "para ", out)
     out = re.sub(r"\)\(", ") (", out)
+    # "89unidades" / "1unidade" / "10peças" / "5itens"
+    out = _NUM_UNIDADE_COLADA.sub(r"\1 \2", out)
 
     correcoes = (
         (r"(?i)algumas\s+op(?:ç|c|Ã§)?(?:õ|o|Ãµ|Ãµes)?(?:es|ões|oes|Ãµes)?", "algumas opções"),
@@ -138,6 +148,9 @@ def garantir_espacos_whatsapp(texto: str) -> str:
     )
     for a, b in literais:
         out = out.replace(a, b)
+
+    # Segunda passagem de número+unidade (após literais)
+    out = _NUM_UNIDADE_COLADA.sub(r"\1 \2", out)
 
     out = re.sub(r"([.,;:!?])([A-Za-zÁ-ú])", r"\1 \2", out)
     out = re.sub(r"[^\S\n]{2,}", " ", out)
@@ -171,6 +184,7 @@ def aplicar_formatador_final(texto: str) -> tuple[str, dict]:
         formatado = re.sub(r"(?i)para(?=uso)", "para ", formatado)
         formatado = re.sub(r"(?i)algumasop\S{0,12}", "algumas opções", formatado)
         formatado = re.sub(r"(?i)parauso", "para uso", formatado)
+        formatado = _NUM_UNIDADE_COLADA.sub(r"\1 \2", formatado)
         formatado = garantir_espacos_whatsapp(formatado)
 
     depois = tem_espaco_colado(formatado)
@@ -184,6 +198,11 @@ def aplicar_formatador_final(texto: str) -> tuple[str, dict]:
         if j < 0:
             j = formatado.lower().find("temos")
         amostra = formatado[max(0, j - 12) : j + 36]
+    else:
+        m_u = _NUM_UNIDADE_COLADA.search(formatado)
+        if m_u:
+            amostra = formatado[max(0, m_u.start() - 8) : m_u.end() + 12]
+
 
     debug = {
         "formatador_final_aplicado": True,
