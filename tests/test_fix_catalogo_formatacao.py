@@ -21,7 +21,7 @@ PRODUTOS = [
 
 
 def test_code_version_formatacao():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-montagem-estoque"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-invisivel-unidades"
 
 
 def test_catalogo_sem_palavras_coladas():

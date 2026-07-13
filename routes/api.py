@@ -132,7 +132,7 @@ from services.supabase_service import (
     obter_ultimo_erro_historico,
 )
 
-CODE_VERSION = "2026-07-13-fix-catalogo-montagem-estoque"
+CODE_VERSION = "2026-07-13-fix-invisivel-unidades"
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
 from services.vendedor_service import (
@@ -1820,30 +1820,21 @@ async def chat_teste(payload: dict):
     from services.texto_seguro import (
         aplicar_formatador_final,
         corrigir_mojibake_exibicao,
+        debug_trecho_notebook,
         resposta_tem_89unidades,
         tem_espaco_colado,
+        tem_numero_unidade_colado,
+        _separar_numero_unidade,
     )
 
     resposta_bruta = str(resultado.get("resposta") or "")
     tinha_antes = tem_espaco_colado(resposta_bruta)
+    # Mojibake → formatador (que normaliza número+unidade) → return
     resposta_final = corrigir_mojibake_exibicao(resposta_bruta)
     resposta_final, fmt_chat = aplicar_formatador_final(resposta_final)
-    # Garante que o dict e o JSON usam EXATAMENTE a mesma string
+    # Cinto: normalização número+unidade imediatamente antes do JSON
+    resposta_final = _separar_numero_unidade(resposta_final)
     resultado["resposta"] = resposta_final
-
-    # Debug SEMPRE sobre out["resposta"] (mesma referência)
-    resp_json_final = resultado["resposta"]
-    tem_89 = resposta_tem_89unidades(resp_json_final)
-    colado_depois = bool(tem_espaco_colado(resp_json_final) or tem_89)
-
-    formatacao_debug = {
-        "formatador_final_aplicado": True,
-        "formatador_final_chat": True,
-        "tinha_espaco_colado_antes": bool(tinha_antes or fmt_chat.get("tinha_espaco_colado_antes")),
-        "tem_espaco_colado_depois": colado_depois,
-        "resposta_final_tem_89unidades": bool(tem_89),
-        "amostra_resposta_final": (resp_json_final or "")[:120],
-    }
 
     out = {
         "status": "ok" if resultado.get("resposta") else "erro",
@@ -1862,15 +1853,25 @@ async def chat_teste(payload: dict):
     if historico_debug is not None:
         out["historico_debug"] = historico_debug
     if dry_run:
-        # Recalcula sobre a MESMA string que sai no JSON
+        # Debug SEMPRE sobre out["resposta"] (string final do JSON)
+        resp = out["resposta"]
+        nb = debug_trecho_notebook(resp)
+        tem_89 = resposta_tem_89unidades(resp)
+        num_colado = tem_numero_unidade_colado(resp)
         out["formatacao_debug"] = {
-            **formatacao_debug,
-            "tem_espaco_colado_depois": bool(
-                tem_espaco_colado(out["resposta"])
-                or resposta_tem_89unidades(out["resposta"])
+            "formatador_final_aplicado": True,
+            "formatador_final_chat": True,
+            "tinha_espaco_colado_antes": bool(
+                tinha_antes or fmt_chat.get("tinha_espaco_colado_antes")
             ),
-            "resposta_final_tem_89unidades": resposta_tem_89unidades(out["resposta"]),
-            "amostra_resposta_final": (out["resposta"] or "")[:120],
+            "tem_espaco_colado_depois": bool(
+                tem_espaco_colado(resp) or tem_89 or num_colado
+            ),
+            "resposta_final_tem_89unidades": bool(tem_89),
+            "tem_numero_unidade_colado": bool(num_colado),
+            "trecho_notebook": nb.get("trecho_notebook") or "",
+            "trecho_notebook_codepoints": nb.get("trecho_notebook_codepoints") or [],
+            "amostra_resposta_final": (resp or "")[:120],
         }
     return out
 

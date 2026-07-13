@@ -27,7 +27,7 @@ PRODUTOS_FAKE = [
 
 
 def test_code_version_catalogo_geral():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-montagem-estoque"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-invisivel-unidades"
 
 
 def test_mande_catalogo_e_catalogo_geral():

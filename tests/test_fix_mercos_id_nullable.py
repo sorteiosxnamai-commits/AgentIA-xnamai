@@ -146,4 +146,4 @@ def test_chat_persistir_ok_sem_mercos_id(monkeypatch):
 
 
 def test_code_version_mercos_nullable():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-montagem-estoque"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-invisivel-unidades"

@@ -28,16 +28,19 @@ _MARCAS_MOJIBAKE = (
 _INVISIVEIS = re.compile(r"[\u00ad\u200b\u200c\u200d\u2060\ufeff\u200e\u200f\u034f]")
 _ESPACOS_UNICODE = re.compile(r"[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+")
 
-# Invisíveis opcionais ENTRE número e unidade (soft-hyphen/ZWSP colam no display)
-_INVIS_ENTRE = r"[\u00ad\u200b\u200c\u200d\u2060\ufeff\u200e\u200f\u034f]*"
-_UNIDADES_ALT = r"(?:unidades|unidade|peças|pecas|itens)"
+_UNIDADES_ALT = r"(unidades|unidade|peças|pecas|itens)"
 
-# Colado: dígitos + (só invisíveis) + unidade — NÃO inclui espaço normal
-_NUM_UNIDADE_COLADA = re.compile(
-    rf"(?i)(\d+)({_INVIS_ENTRE})({_UNIDADES_ALT})\b"
+# Qualquer separador (vazio, espaço, NBSP, ZWSP, soft-hyphen…) → espaço ASCII
+# (\d+)[\s\u00A0\u200B\u200C\u200D\u2060\uFEFF\u00AD]*(unidades|…)
+_NUM_UNIDADE_SEP = (
+    r"[\s\u00A0\u200B\u200C\u200D\u2060\uFEFF\u00AD\u200E\u200F\u034F"
+    r"\u2000-\u200A\u202F\u205F\u3000]*"
 )
-# Após strip: \d+unidades / \d+unidade / \d+peças / \d+pecas / \d+itens
-_NUM_UNIDADE_STRIPPED = re.compile(rf"(?i)\d+{_UNIDADES_ALT}\b")
+_NUM_UNIDADE_NORMALIZAR = re.compile(
+    rf"(?i)(\d+)({_NUM_UNIDADE_SEP})({_UNIDADES_ALT})\b"
+)
+# Após remover invisíveis: dígito colado na unidade
+_NUM_UNIDADE_STRIPPED = re.compile(rf"(?i)\d+(?:unidades|unidade|peças|pecas|itens)\b")
 
 
 def _strip_invisiveis(texto: str) -> str:
@@ -87,24 +90,84 @@ def corrigir_mojibake_exibicao(texto: str) -> str:
 
 
 def _separar_numero_unidade(texto: str) -> str:
-    """89unidades / 89\\u00adunidades → 89 unidades (espaço ASCII)."""
+    """Normaliza número+unidade para sempre ter espaço ASCII.
+
+    89unidades / 89\\u200bunidades / 89\\u00a0unidades / 89 unidades → 89 unidades
+    """
     if not texto:
         return ""
-    return _NUM_UNIDADE_COLADA.sub(r"\1 \3", texto)
+    return _NUM_UNIDADE_NORMALIZAR.sub(r"\1 \3", texto)
 
 
-def resposta_tem_89unidades(texto: str) -> bool:
-    """True se a string (após strip de invisíveis) contém 89unidades colado."""
-    limpo = _strip_invisiveis(texto or "")
-    return "89unidades" in limpo
+def tem_numero_unidade_colado(texto: str) -> bool:
+    """True se há dígito + (vazio/invisível/NBSP/espaços estranhos) + unidade.
 
-
-def tem_espaco_colado(texto: str) -> bool:
-    """Detecta colagens — inclusive com invisíveis/mojibake no meio."""
+    '89 unidades' (um espaço ASCII) NÃO conta como colado.
+    """
     bruto = texto or ""
     if not bruto:
         return False
-    # Sempre analisa também a versão sem invisíveis
+    for m in _NUM_UNIDADE_NORMALIZAR.finditer(bruto):
+        mid = m.group(2)
+        if mid != " ":
+            return True
+    # Após strip de invisíveis, \d+unidades sem espaço
+    limpo = _strip_invisiveis(bruto)
+    limpo_nbsp = limpo.replace("\u00a0", "")
+    if _NUM_UNIDADE_STRIPPED.search(limpo_nbsp):
+        return True
+    if "89unidades" in limpo_nbsp or "temos 89unidades" in limpo_nbsp.lower():
+        return True
+    return False
+
+
+def resposta_tem_89unidades(texto: str) -> bool:
+    """True se ainda há 89 + (não-espaço-ASCII) + unidades."""
+    bruto = texto or ""
+    for m in re.finditer(r"(?i)89(.{0,8})unidades\b", bruto):
+        mid = m.group(1)
+        if mid != " ":
+            return True
+    limpo = _strip_invisiveis(bruto).replace("\u00a0", "")
+    return "89unidades" in limpo
+
+
+def codepoints_seguros(texto: str, limite: int = 120) -> list[str]:
+    """Lista 'c:XXXX' para debug sem quebrar JSON."""
+    out: list[str] = []
+    for c in (texto or "")[:limite]:
+        if c.isprintable() and c not in "\r\n\t":
+            out.append(f"{c}:{ord(c):04X}")
+        else:
+            out.append(f"U+{ord(c):04X}")
+    return out
+
+
+def debug_trecho_notebook(texto: str) -> dict:
+    """Amostra segura ao redor de 'Notebook' com codepoints."""
+    bruto = texto or ""
+    idx = bruto.lower().find("notebook")
+    if idx < 0:
+        return {
+            "trecho_notebook": "",
+            "trecho_notebook_codepoints": [],
+            "tem_numero_unidade_colado": bool(tem_numero_unidade_colado(bruto)),
+        }
+    trecho = bruto[idx : idx + 90]
+    return {
+        "trecho_notebook": trecho,
+        "trecho_notebook_codepoints": codepoints_seguros(trecho, 90),
+        "tem_numero_unidade_colado": bool(tem_numero_unidade_colado(trecho) or tem_numero_unidade_colado(bruto)),
+    }
+
+
+def tem_espaco_colado(texto: str) -> bool:
+    """Detecta colagens — inclusive número + invisível + unidade."""
+    bruto = texto or ""
+    if not bruto:
+        return False
+    if tem_numero_unidade_colado(bruto):
+        return True
     candidatos = (bruto, _strip_invisiveis(bruto), unicodedata.normalize("NFC", bruto))
     for t in candidatos:
         tl = t.lower()
@@ -118,11 +181,7 @@ def tem_espaco_colado(texto: str) -> bool:
             return True
         if "parauso" in tl:
             return True
-        # algumas + só lixo invisível + op
         if re.search(r"(?i)algumas[\u00ad\u200b\u200c\u200d\ufeff]*op", t):
-            return True
-        # \d+unidades / \d+unidade / \d+peças / \d+pecas / \d+itens
-        if _NUM_UNIDADE_COLADA.search(t) or _NUM_UNIDADE_STRIPPED.search(t):
             return True
         if "89unidades" in t or "temos 89unidades" in tl:
             return True
@@ -139,11 +198,10 @@ def garantir_espacos_whatsapp(texto: str) -> str:
     out = _ESPACOS_UNICODE.sub(" ", out)
 
     # Inserção forçada: "algumas" colado em "op..." / "para" colado em "uso"
-    # NÃO usar ") (" com lookahead — isso duplicava o "(" restante.
     out = re.sub(r"(?i)algumas(?=op)", "algumas ", out)
     out = re.sub(r"(?i)para(?=uso)", "para ", out)
     out = re.sub(r"\)\(", ") (", out)
-    # "89unidades" / "1unidade" / "10peças" / "5itens" (+ invisíveis no meio)
+    # Normaliza SEMPRE número + qualquer separador + unidade → "N unidade"
     out = _separar_numero_unidade(out)
 
     correcoes = (
@@ -157,7 +215,6 @@ def garantir_espacos_whatsapp(texto: str) -> str:
     for padrao, repl in correcoes:
         out = re.sub(padrao, repl, out)
 
-    # Reforço literal
     literais = (
         ("algumasopções", "algumas opções"),
         ("algumasopcoes", "algumas opções"),
@@ -176,11 +233,11 @@ def garantir_espacos_whatsapp(texto: str) -> str:
     for a, b in literais:
         out = out.replace(a, b)
 
-    # Segunda passagem de número+unidade (após literais)
     out = _separar_numero_unidade(out)
-
     out = re.sub(r"([.,;:!?])([A-Za-zÁ-ú])", r"\1 \2", out)
     out = re.sub(r"[^\S\n]{2,}", " ", out)
+    # Última passagem: garante espaço ASCII em número+unidade
+    out = _separar_numero_unidade(out)
     return out.strip()
 
 
@@ -192,26 +249,21 @@ def texto_para_exibicao(texto: str) -> str:
 def aplicar_formatador_final(texto: str) -> tuple[str, dict]:
     """Última camada antes de /chat JSON e envio WhatsApp.
 
-    Sempre aplica correções (não depende só do detector).
-    Debug é calculado sobre a string FINAL retornada.
+    Ordem: mojibake → espaços → normalização número+unidade → debug na string final.
     """
     bruto = texto or ""
     tinha = tem_espaco_colado(bruto)
 
-    # Ordem fixa: mojibake → espaços (sempre)
     passo1 = corrigir_mojibake_exibicao(bruto)
     formatado = garantir_espacos_whatsapp(passo1)
-    # Segunda passagem obrigatória
     formatado = garantir_espacos_whatsapp(formatado)
 
-    # Nuclear: se ainda detectar colagem, força literais
     if tem_espaco_colado(formatado):
         formatado = formatado.replace(")(", ") (")
         formatado = re.sub(r"(?i)algumas(?=op)", "algumas ", formatado)
         formatado = re.sub(r"(?i)para(?=uso)", "para ", formatado)
         formatado = re.sub(r"(?i)algumasop\S{0,12}", "algumas opções", formatado)
         formatado = re.sub(r"(?i)parauso", "para uso", formatado)
-        formatado = _separar_numero_unidade(formatado)
         formatado = formatado.replace("89unidades", "89 unidades")
         formatado = formatado.replace("1unidade", "1 unidade")
         formatado = formatado.replace("10peças", "10 peças")
@@ -219,34 +271,32 @@ def aplicar_formatador_final(texto: str) -> tuple[str, dict]:
         formatado = formatado.replace("5itens", "5 itens")
         formatado = garantir_espacos_whatsapp(formatado)
 
+    # Obrigatório: normalizar número+unidade DEPOIS do mojibake e ANTES do return
+    formatado = _separar_numero_unidade(formatado)
+
     depois = tem_espaco_colado(formatado)
     tem_89 = resposta_tem_89unidades(formatado)
-    # Se ainda tem 89unidades, o detector DEVE refletir true
-    if tem_89:
+    num_colado = tem_numero_unidade_colado(formatado)
+    if tem_89 or num_colado:
         depois = True
 
-    # Amostra da string FINAL (mesma que deve ir no JSON)
     amostra = formatado
     if "algumas" in formatado.lower():
         i = formatado.lower().find("algumas")
         amostra = formatado[i : i + 48]
-    elif ")(" in formatado or "temos" in formatado.lower():
-        j = formatado.find(")(")
-        if j < 0:
-            j = formatado.lower().find("temos")
+    elif "temos" in formatado.lower():
+        j = formatado.lower().find("temos")
         amostra = formatado[max(0, j - 12) : j + 36]
-    else:
-        m_u = _NUM_UNIDADE_COLADA.search(formatado) or _NUM_UNIDADE_STRIPPED.search(
-            formatado
-        )
-        if m_u:
-            amostra = formatado[max(0, m_u.start() - 8) : m_u.end() + 12]
 
+    nb = debug_trecho_notebook(formatado)
     debug = {
         "formatador_final_aplicado": True,
         "tinha_espaco_colado_antes": bool(tinha),
         "tem_espaco_colado_depois": bool(depois),
         "resposta_final_tem_89unidades": bool(tem_89),
+        "tem_numero_unidade_colado": bool(num_colado),
+        "trecho_notebook": nb["trecho_notebook"],
+        "trecho_notebook_codepoints": nb["trecho_notebook_codepoints"],
         "amostra_resposta_final": amostra[:80],
     }
     return formatado, debug

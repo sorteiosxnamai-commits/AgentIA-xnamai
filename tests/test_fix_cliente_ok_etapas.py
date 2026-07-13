@@ -312,7 +312,7 @@ def test_persistir_false(monkeypatch):
 # 13
 def test_webhook_e_version():
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-montagem-estoque"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-invisivel-unidades"
 
 
 # 14

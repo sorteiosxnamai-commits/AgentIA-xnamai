@@ -79,7 +79,7 @@ def test_status_mostra_ultramsg(monkeypatch):
     assert api_mod.provider_nome() == "ultramsg"
     assert api_mod.ultramsg_svc.ultramsg_configurado() is True
     assert api_mod.whatsapp_configurado() is True
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-montagem-estoque"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-invisivel-unidades"
 
 
 def test_webhook_normaliza_ultramsg():

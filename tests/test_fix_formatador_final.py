@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from services.texto_seguro import (
     aplicar_formatador_final,
     tem_espaco_colado,
+    tem_numero_unidade_colado,
 )
 from services.whatsapp_service import enviar_mensagem
 
@@ -73,7 +74,7 @@ def _assert_json_resposta_limpa(texto: str) -> None:
 
 
 def test_code_version_retorno_formatado():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-montagem-estoque"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-invisivel-unidades"
 
 
 def test_detector_e_fix_numero_unidade_colada():
@@ -106,11 +107,49 @@ def test_detector_e_fix_numero_unidade_colada():
 def test_detector_numero_unidade_com_invisivel():
     assert tem_espaco_colado("89\u00adunidades") is True
     assert tem_espaco_colado("89\u200bunidades") is True
+    assert tem_espaco_colado("89\u00a0unidades") is True
+    assert tem_numero_unidade_colado("89\u200bunidades") is True
+    assert tem_numero_unidade_colado("89 unidades") is False
+
     limpo, dbg = aplicar_formatador_final("(temos 89\u00adunidades)")
     assert "89 unidades" in limpo
     assert "89unidades" not in limpo
+    assert "\u00ad" not in limpo
     assert dbg["resposta_final_tem_89unidades"] is False
     assert dbg["tem_espaco_colado_depois"] is False
+    assert dbg["tem_numero_unidade_colado"] is False
+
+
+def test_normaliza_zwsp_soft_hyphen_nbsp_entre_numero_unidade():
+    """ZWSP, soft-hyphen e NBSP entre número e unidade → espaço ASCII."""
+    sujo = (
+        "Notebook Intel i5 (R$ 3499,90) (temos 89\u200bunidades) "
+        "Mouse (R$ 39,90) (temos 1\u00adunidade) "
+        "Cabo (R$ 19,90) (temos 10\u00a0peças) "
+        "Hub (R$ 69,90) (temos 5\u200citens)"
+    )
+    assert tem_espaco_colado(sujo) is True
+    limpo, dbg = aplicar_formatador_final(sujo)
+    assert "89 unidades" in limpo
+    assert "1 unidade" in limpo
+    assert "10 peças" in limpo
+    assert "5 itens" in limpo
+    assert "89\u200bunidades" not in limpo
+    assert "89unidades" not in limpo
+    assert "\u200b" not in limpo
+    assert "\u00ad" not in limpo
+    assert "\u00a0" not in limpo
+    assert dbg["tem_espaco_colado_depois"] is False
+    assert dbg["tem_numero_unidade_colado"] is False
+    assert dbg["resposta_final_tem_89unidades"] is False
+    assert "Notebook" in dbg["trecho_notebook"]
+    assert any(x.endswith(":0020") for x in dbg["trecho_notebook_codepoints"])
+    # Entre 89 e unidades no trecho final deve ser espaço ASCII
+    idx = limpo.find("89")
+    assert limpo[idx : idx + 11] == "89 unidades"
+    assert limpo[idx + 2] == " "
+    assert ord(limpo[idx + 2]) == 0x20
+    _assert_json_resposta_limpa(limpo)
 
 
 def test_detector_ve_soft_hyphen_e_zwsp():
@@ -172,7 +211,7 @@ def test_chat_json_resposta_sem_colagem(monkeypatch):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["code_version"] == "2026-07-13-fix-catalogo-montagem-estoque"
+    assert data["code_version"] == "2026-07-13-fix-invisivel-unidades"
     # Valida o campo JSON, não variável interna
     _assert_json_resposta_limpa(data["resposta"])
     assert data["formatacao_debug"]["formatador_final_aplicado"] is True
@@ -242,7 +281,7 @@ def test_chat_catalogo_real_resp_json_sem_estoque_colado(monkeypatch):
     )
     assert resp.status_code == 200
     resp_json = resp.json()
-    assert resp_json["code_version"] == "2026-07-13-fix-catalogo-montagem-estoque"
+    assert resp_json["code_version"] == "2026-07-13-fix-invisivel-unidades"
 
     resposta = resp_json["resposta"]
     # Falha explícita se ainda colar número+unidade
@@ -260,8 +299,17 @@ def test_chat_catalogo_real_resp_json_sem_estoque_colado(monkeypatch):
     assert "1 unidade" in resposta
     assert "(temos 89 unidades)" in resposta
     assert "(temos 1 unidade)" in resposta
+    # Espaço ASCII literal entre 89 e unidades
+    i = resposta.find("89")
+    assert i >= 0
+    assert resposta[i : i + 11] == "89 unidades"
+    assert ord(resposta[i + 2]) == 0x20
     assert resp_json["formatacao_debug"]["tem_espaco_colado_depois"] is False
     assert resp_json["formatacao_debug"]["resposta_final_tem_89unidades"] is False
+    assert resp_json["formatacao_debug"]["tem_numero_unidade_colado"] is False
+    assert "Notebook" in resp_json["formatacao_debug"]["trecho_notebook"]
+    assert isinstance(resp_json["formatacao_debug"]["trecho_notebook_codepoints"], list)
+    assert len(resp_json["formatacao_debug"]["trecho_notebook_codepoints"]) > 0
     _assert_json_resposta_limpa(resposta)
 
 
@@ -301,7 +349,7 @@ def test_chat_json_resposta_separa_numero_unidade(monkeypatch):
     )
     assert resp.status_code == 200
     resp_json = resp.json()
-    assert resp_json["code_version"] == "2026-07-13-fix-catalogo-montagem-estoque"
+    assert resp_json["code_version"] == "2026-07-13-fix-invisivel-unidades"
     # Campo JSON final — não variável interna
     resposta = resp_json["resposta"]
     assert "89 unidades" in resposta

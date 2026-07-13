@@ -153,4 +153,4 @@ def test_checkout_sequencia_contexto():
 
 
 def test_code_version_historico():
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-montagem-estoque"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-invisivel-unidades"
