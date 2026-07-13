@@ -582,8 +582,14 @@ def _estoque_linha_catalogo(produto: dict) -> str:
     """Só afirma unidade se estoque confirmado; senão silêncio."""
     from services.mercos_service import estoque_confirmado
 
-    if not estoque_confirmado(produto):
+    # Product Service: stock_confirmed=false nunca inventa disponibilidade
+    if "stock_confirmed" in produto and not produto.get("stock_confirmed"):
         return ""
+
+    confirmado = estoque_confirmado(produto)
+    if not confirmado and not produto.get("stock_confirmed"):
+        return ""
+
     for campo in (
         "saldo_estoque",
         "estoque",
@@ -600,7 +606,7 @@ def _estoque_linha_catalogo(produto: dict) -> str:
             continue
         if qtd > 0:
             n = int(qtd) if qtd == int(qtd) else qtd
-            return f" (temos {n} unidades)"
+            return f"temos {n} unidades"
     return ""
 
 
@@ -609,11 +615,13 @@ def resposta_mostrar_catalogo(
     produtos: list | None = None,
 ) -> str:
     """Lista produtos reais quando o cliente pede catálogo geral."""
-    nome = nome_cliente or "Cliente"
+    from services.texto_seguro import texto_para_exibicao
+
+    nome = texto_para_exibicao(nome_cliente or "Cliente") or "Cliente"
     itens = produtos or []
 
     if not itens:
-        return (
+        return texto_para_exibicao(
             f"Consigo te ajudar sim, {nome}. "
             "No momento não consegui carregar a lista completa do catálogo, "
             "mas posso verificar por categoria. Você procura informática, "
@@ -621,10 +629,12 @@ def resposta_mostrar_catalogo(
         )
 
     amostra = itens[:8]
-    nomes_fmt = []
+    nomes_fmt: list[str] = []
     algum_estoque_ok = False
     for produto in amostra:
-        nome_p = produto.get("nome") or produto.get("name") or "Produto"
+        nome_p = texto_para_exibicao(
+            str(produto.get("nome") or produto.get("name") or "Produto")
+        )
         preco = _fmt_preco_item(produto)
         if not preco and produto.get("price") not in (None, ""):
             try:
@@ -634,21 +644,27 @@ def resposta_mostrar_catalogo(
         est = _estoque_linha_catalogo(produto)
         if est:
             algum_estoque_ok = True
-        trecho = nome_p
+
+        # Montagem explícita com espaços ASCII — evita )( e palavras coladas
+        pedacos = [nome_p]
         if preco:
-            trecho += f" ({preco})"
-        trecho += est
-        nomes_fmt.append(trecho)
+            pedacos.append(f"({preco})")
+        if est:
+            pedacos.append(f"({est})")
+        nomes_fmt.append(" ".join(pedacos))
 
     lista = ", ".join(nomes_fmt)
-    partes = [
-        f"Claro, {nome}. Posso te mostrar algumas opções do nosso catálogo. "
+    # Frases em blocos separados (join com espaço ASCII explícito)
+    intro = (
+        f"Claro, {nome}. "
+        "Posso te mostrar algumas opções do nosso catálogo. "
         f"Temos produtos como: {lista}."
-    ]
+    )
+    blocos = [intro]
     if not algum_estoque_ok:
-        partes.append("A disponibilidade eu confirmo antes de finalizar.")
-    partes.append("Você procura algo para uso pessoal, trabalho ou gamer?")
-    return " ".join(partes)
+        blocos.append("A disponibilidade eu confirmo antes de finalizar.")
+    blocos.append("Você procura algo para uso pessoal, trabalho ou gamer?")
+    return texto_para_exibicao(" ".join(blocos))
 
 
 def resposta_abrir_nova_venda(

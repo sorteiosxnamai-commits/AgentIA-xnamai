@@ -132,7 +132,7 @@ from services.supabase_service import (
     obter_ultimo_erro_historico,
 )
 
-CODE_VERSION = "2026-07-13-fix-catalogo-geral"
+CODE_VERSION = "2026-07-13-fix-catalogo-formatacao"
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
 from services.vendedor_service import (
@@ -241,8 +241,11 @@ def processar_mensagem(data: dict, dry_run: bool = False, persistir: bool = True
             return None
 
         numero = normalizar_telefone(numero_raw.split("@")[0])
-        mensagem = (evento.get("body") or "").strip()
-        nome_cliente = evento.get("pushname") or ""
+        # Mojibake só para intenção/resposta — não reescreve catálogo no banco
+        from services.texto_seguro import reparar_mojibake
+
+        mensagem = reparar_mojibake((evento.get("body") or "").strip())
+        nome_cliente = reparar_mojibake(evento.get("pushname") or "")
 
         if evento.get("type") and evento.get("type") != "chat":
             log_seguro("tipo_ignorado", tipo=evento.get("type"), message_id=msg_id or "-")
@@ -1311,6 +1314,9 @@ def _processar_mensagem_locked(
             pedido_criado=pedido_real,
             pix_gerado=False,
         )
+        from services.texto_seguro import garantir_espacos_whatsapp, reparar_mojibake
+
+        resposta_ia = garantir_espacos_whatsapp(reparar_mojibake(resposta_ia or ""))
 
         log_seguro(
             "resposta_pronta",
@@ -1673,8 +1679,14 @@ async def chat_teste(payload: dict):
     telefone = normalizar_telefone(
         str(payload.get("telefone") or payload.get("phone") or "")
     )
-    mensagem = str(payload.get("mensagem") or payload.get("message") or "").strip()
-    nome = str(payload.get("nome") or payload.get("name") or "Cliente").strip()
+    from services.texto_seguro import reparar_mojibake
+
+    mensagem = reparar_mojibake(
+        str(payload.get("mensagem") or payload.get("message") or "").strip()
+    )
+    nome = reparar_mojibake(
+        str(payload.get("nome") or payload.get("name") or "Cliente").strip()
+    )
 
     dry_run_raw = payload.get("dry_run", True)
     if isinstance(dry_run_raw, str):

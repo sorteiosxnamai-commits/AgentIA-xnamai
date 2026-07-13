@@ -326,7 +326,7 @@ def test_persistir_false_continua(monkeypatch):
 # 12
 def test_webhook_continua():
     assert hasattr(api_mod, "webhook")
-    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-geral"
+    assert api_mod.CODE_VERSION == "2026-07-13-fix-catalogo-formatacao"
 
 
 # 13
