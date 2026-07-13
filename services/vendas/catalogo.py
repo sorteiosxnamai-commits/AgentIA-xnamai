@@ -29,9 +29,14 @@ def _usar_somente_supabase() -> bool:
 PADROES_CATALOGO = (
     r"o que (mais )?(voce|voces|vc|vcs) tem",
     r"o que (voce|voces|vc|vcs) (tem|vende|oferece|oferecem)",
+    r"o que (voce|voces|vc|vcs) vendem",
     r"quais (produtos|opcoes|opções)",
-    r"(mostra|manda|passa|envia) (o )?(catalogo|produtos)",
+    r"(mostra|manda|mande|passa|envia|envie) (o |as |os )?(catalogo|produtos|opcoes|opções)",
+    r"me (manda|mande|passa|mostra|envia) (o |as |os )?(catalogo|produtos|opcoes|opções)",
     r"catalogo|produtos disponiveis",
+    r"tem (o )?catalogo",
+    r"lista (os )?produtos",
+    r"tem algo disponivel",
     r"o que mais",
     r"oferecer|oferece|oferecem",
     r"tem ai|tem pra vender|tem disponivel",
@@ -39,7 +44,6 @@ PADROES_CATALOGO = (
     r"me mostra",
     r"conferiu|conferir|verificou|checou",
     r"algo mais|mais alguma",
-    r"disponivel|estoque",
     # Pedidos genéricos de opções — NÃO são nome de produto
     r"tem\s+mais\s+(opcoes|opções|produtos|itens)",
     r"mais\s+(opcoes|opções)\s+(de\s+)?produtos?",
@@ -47,6 +51,7 @@ PADROES_CATALOGO = (
     r"tem\s+(outras|mais)\s+(opcoes|opções)",
     r"quais\s+(outras\s+)?(opcoes|opções)",
     r"tem\s+opcoes|tem\s+opções",
+    r"me\s+passa\s+(as\s+)?(opcoes|opções)",
 )
 
 
@@ -110,6 +115,9 @@ TERMOS_NAO_PRODUTO = TERMOS_ESTETICOS | {
     "produto", "produtos", "opcao", "opcoes", "item", "itens",
     "tipo", "tipos", "categoria", "categorias", "linha", "linhas",
     "modelo", "modelos", "variedade", "variedades",
+    "mande", "manda", "passa", "envia", "envie", "mostra", "mostrar",
+    "lista", "vender", "vendem", "vende", "favor", "porfavor",
+    "quais", "algo", "disponiveis", "geral", "completo", "saber",
     # Envio / NF / confirmações — NUNCA tratar como produto
     "retirar", "retirada", "retiro", "buscar", "pego", "envio", "enviar",
     "frete", "correios", "entrega", "entregar", "mandar", "local",

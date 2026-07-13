@@ -48,7 +48,60 @@ def ia_ofereceu_catalogo(ultima_resposta_ia: str) -> bool:
     return any(ind in ultima for ind in indicadores)
 
 
+# Termos genéricos — nunca viram nome de produto / query de inexistente
+TERMOS_GENERICOS_CATALOGO = frozenset(
+    {
+        "catalogo",
+        "produto",
+        "produtos",
+        "disponivel",
+        "opcao",
+        "opcoes",
+        "lista",
+        "vender",
+        "vendem",
+        "vende",
+        "tem",
+        "mande",
+        "manda",
+        "passa",
+        "envia",
+        "envie",
+        "mostra",
+        "mostrar",
+        "favor",
+        "porfavor",
+        "quais",
+        "algo",
+        "geral",
+        "completo",
+        "disponiveis",
+        "opcoes",
+        "saber",
+        "queria",
+        "quero",
+        "voce",
+        "voces",
+    }
+)
+
+
+def eh_termo_generico_catalogo(termo: str) -> bool:
+    t = _normalizar(str(termo or "")).strip()
+    return not t or t in TERMOS_GENERICOS_CATALOGO or len(t) < 3
+
+
+def query_apenas_generica(texto: str) -> bool:
+    """True se a frase só tem palavras genéricas (ex.: 'mande o catálogo')."""
+    tokens = re.findall(r"[a-z0-9]+", _normalizar(texto or ""))
+    uteis = [t for t in tokens if len(t) >= 3 and t not in {"por", "com", "para", "uma", "uns"}]
+    if not uteis:
+        return True
+    return all(eh_termo_generico_catalogo(t) for t in uteis)
+
+
 def cliente_quer_ver_catalogo(mensagem: str, ultima_resposta_ia: str = "") -> bool:
+    """Pedido de CATÁLOGO GERAL / produtos disponíveis (não busca específica)."""
     texto = _normalizar(mensagem).rstrip("!?.,")
 
     if ia_ofereceu_catalogo(ultima_resposta_ia):
@@ -57,6 +110,7 @@ def cliente_quer_ver_catalogo(mensagem: str, ultima_resposta_ia: str = "") -> bo
             r"^quero ver$",
             r"^pode mostrar$",
             r"^manda$",
+            r"^mande$",
             r"^mostra$",
             r"^tem\??$",
         )
@@ -64,16 +118,29 @@ def cliente_quer_ver_catalogo(mensagem: str, ultima_resposta_ia: str = "") -> bo
             return True
 
     padroes_diretos = (
-        r"mostra(r)? (o )?(catalogo|catálogo|produtos)",
-        r"o que\s+.*(voce|voces|vocês|vc|vcs)\s+tem",
-        r"quais produtos",
-        r"me mostra",
-        r"ver (o )?(catalogo|catálogo|produtos)",
-        r"produtos?\s+para\s+vender",
-        r"mais\s+de\s+produtos",
-        r"o\s+que\s+mais",
-        r"lista\s+(de\s+)?produtos",
-        r"manda\s+(o\s+)?catalogo",
+        r"\b(mostra(r)?|manda|mande|passa|envia|envie|manda|me\s+passa|me\s+manda|me\s+mande)\s+"
+        r"(o\s+|as\s+|os\s+)?(catalogo|catálogo|produtos|opcoes|opções)\b",
+        r"\b(tem|têm)\s+(o\s+)?(catalogo|catálogo)\b",
+        r"\bcatalogo\b|\bcatálogo\b",
+        r"\bquais\s+(produtos|opcoes|opções)\b",
+        r"\bquais\s+produtos\s+(tem|têm|voces|vocês)\b",
+        r"\b(produtos?\s+)?(tem|têm)\s+disponivel\b",
+        r"\b(tem|têm)\s+(quais\s+)?produtos\b",
+        r"\btem\s+algo\s+disponivel\b",
+        r"\bo\s+que\s+(voce|voces|vocês|vc|vcs)\s+(tem|têm|vende|vendem|oferece|oferecem)\b",
+        r"\bo\s+que\s+(mais\s+)?(voce|voces|vocês)\s+tem\b",
+        r"\bme\s+mostra\s+(os?\s+)?(produtos|catalogo|catálogo|opcoes|opções)\b",
+        r"\bme\s+mostra\s*$",
+        r"\bme\s+mostra\s+(o\s+)?que\s+(tem|voces|voce)\b",
+        r"\bver\s+(o\s+)?(catalogo|catálogo|produtos)\b",
+        r"\blista(\s+os?)?\s+produtos\b",
+        r"\blista\s+(de\s+)?produtos\b",
+        r"\bprodutos?\s+para\s+vender\b",
+        r"\bmais\s+de\s+produtos\b",
+        r"\bo\s+que\s+mais\b",
+        r"\bme\s+passa\s+(as\s+)?(opcoes|opções)\b",
+        r"\bquais\s+opcoes\s+tem\b",
+        r"\bprodutos\s+disponiveis\b",
     )
     return any(re.search(p, texto) for p in padroes_diretos)
 
@@ -123,7 +190,7 @@ def cliente_pediu_mais_opcoes(mensagem: str) -> bool:
         # opções / alternativas
         r"\b(tem|têm|temos|voce tem|voces tem|vocês têm)\s+(outras|mais)\s+(opcoes|opções|alternativas)\b",
         r"\b(outras|mais)\s+(opcoes|opções|alternativas)\b",
-        r"\bquais\s+(outras\s+)?(opcoes|opções|alternativas)\b",
+        r"\bquais\s+(outras|mais)\s+(opcoes|opções|alternativas)\b",
         r"\bquero\s+ver\s+mais\s+(opcoes|opções)\b",
         r"\btem\s+mais\s+(opcoes|opções|produtos|itens)\b",
         r"\bmais\s+(opcoes|opções)(\s+de\s+produtos?)?\b",
@@ -473,8 +540,16 @@ def resposta_fora_catalogo(
     nome = nome_cliente or "Cliente"
     termos_uteis = [
         t for t in (termos or [])
-        if t and len(str(t)) >= 3
+        if t and len(str(t)) >= 3 and not eh_termo_generico_catalogo(str(t))
     ]
+    # Proteção: "mande catálogo" / "produtos disponíveis" nunca viram pedido
+    if not termos_uteis:
+        return (
+            f"Consigo te ajudar sim, {nome}. "
+            "No momento não consegui carregar a lista completa do catálogo, "
+            "mas posso verificar por categoria. Você procura informática, "
+            "periféricos, celular, acessórios ou outro item?"
+        )
     pedido = " ".join(str(t) for t in termos_uteis[:4]).strip()
     if not pedido:
         pedido = "esse item"
@@ -503,26 +578,77 @@ def resposta_fora_catalogo(
     )
 
 
+def _estoque_linha_catalogo(produto: dict) -> str:
+    """Só afirma unidade se estoque confirmado; senão silêncio."""
+    from services.mercos_service import estoque_confirmado
+
+    if not estoque_confirmado(produto):
+        return ""
+    for campo in (
+        "saldo_estoque",
+        "estoque",
+        "quantidade_estoque",
+        "saldo",
+        "stock_quantity",
+    ):
+        bruto = produto.get(campo)
+        if bruto in (None, ""):
+            continue
+        try:
+            qtd = float(str(bruto).replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+        if qtd > 0:
+            n = int(qtd) if qtd == int(qtd) else qtd
+            return f" (temos {n} unidades)"
+    return ""
+
+
 def resposta_mostrar_catalogo(
     nome_cliente: str = "",
     produtos: list | None = None,
 ) -> str:
-    """Lista produtos reais quando o cliente aceita ver o catálogo."""
+    """Lista produtos reais quando o cliente pede catálogo geral."""
     nome = nome_cliente or "Cliente"
     itens = produtos or []
 
     if not itens:
-        return f"{nome}, me diz o que você procura que eu te ajudo."
+        return (
+            f"Consigo te ajudar sim, {nome}. "
+            "No momento não consegui carregar a lista completa do catálogo, "
+            "mas posso verificar por categoria. Você procura informática, "
+            "periféricos, celular, acessórios ou outro item?"
+        )
 
-    # Lista o catálogo completo (WhatsApp aguenta bem ~20–30 itens)
-    linhas = [f"Olha o que temos, {nome}:"]
-    for produto in itens:
-        nome_p = produto.get("nome", "Produto")
+    amostra = itens[:8]
+    nomes_fmt = []
+    algum_estoque_ok = False
+    for produto in amostra:
+        nome_p = produto.get("nome") or produto.get("name") or "Produto"
         preco = _fmt_preco_item(produto)
-        linhas.append(f"• {nome_p}" + (f" — {preco}" if preco else ""))
+        if not preco and produto.get("price") not in (None, ""):
+            try:
+                preco = f"R$ {float(produto['price']):.2f}".replace(".", ",")
+            except (TypeError, ValueError):
+                preco = ""
+        est = _estoque_linha_catalogo(produto)
+        if est:
+            algum_estoque_ok = True
+        trecho = nome_p
+        if preco:
+            trecho += f" ({preco})"
+        trecho += est
+        nomes_fmt.append(trecho)
 
-    linhas.append("Qual te interessa?")
-    return "\n".join(linhas)
+    lista = ", ".join(nomes_fmt)
+    partes = [
+        f"Claro, {nome}. Posso te mostrar algumas opções do nosso catálogo. "
+        f"Temos produtos como: {lista}."
+    ]
+    if not algum_estoque_ok:
+        partes.append("A disponibilidade eu confirmo antes de finalizar.")
+    partes.append("Você procura algo para uso pessoal, trabalho ou gamer?")
+    return " ".join(partes)
 
 
 def resposta_abrir_nova_venda(

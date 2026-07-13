@@ -232,7 +232,18 @@ def resposta_estoque_disponibilidade(nome_cliente: str = "") -> str:
 
 
 def cliente_perguntou_estoque(mensagem: str) -> bool:
+    """Pergunta de estoque/disponibilidade de um item — não catálogo geral."""
+    from services.vendas.respostas import cliente_quer_ver_catalogo
+
+    # "quais produtos tem disponível" = catálogo, não estoque unitário
+    if cliente_quer_ver_catalogo(mensagem):
+        return False
     t = _normalizar(mensagem)
+    if re.search(
+        r"\b(quais|lista|catalogo|produtos|vende|vendem|opcoes|opções)\b",
+        t,
+    ) and re.search(r"\b(disponivel|disponível)\b", t):
+        return False
     return bool(
         re.search(
             r"\b(tem\s+todos|vai\s+ter\s+tudo|estoque|disponivel|disponível|falta)\b",
@@ -265,8 +276,12 @@ def cliente_perguntou_como_trabalham(mensagem: str) -> bool:
 
 def mensagem_nao_e_busca_produto(mensagem: str) -> bool:
     """Saudação, processo, estoque, envio/retirada — não dispara 'fora do catálogo'."""
+    from services.vendas.respostas import cliente_quer_ver_catalogo, query_apenas_generica
+
     t = _normalizar(mensagem).rstrip("!?.,")
     if not t:
+        return True
+    if cliente_quer_ver_catalogo(mensagem) or query_apenas_generica(mensagem):
         return True
     if cliente_perguntou_como_trabalham(mensagem):
         return True

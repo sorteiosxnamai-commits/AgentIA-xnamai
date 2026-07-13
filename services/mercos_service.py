@@ -32,8 +32,11 @@ STOPWORDS = {
     "e", "em", "no", "na", "nos", "nas", "por", "para", "com", "sem", "que", "qual",
     "quais", "quanto", "quero", "preciso", "tem", "têm", "voce", "voces", "vc", "vcs",
     "oi", "ola", "bom", "dia", "tarde", "noite", "favor", "porfavor", "ver", "mostra",
-    "manda", "me", "ta", "está", "esta", "isso", "esse", "essa", "aqui", "la", "lá",
+    "manda", "mande", "passa", "envia", "envie", "me", "ta", "está", "esta", "isso",
+    "esse", "essa", "aqui", "la", "lá",
     "valor", "preco", "preço", "custa", "sobre", "algum", "alguma",
+    "catalogo", "produtos", "produto", "opcoes", "opcao", "lista", "disponivel",
+    "vender", "vendem", "vende", "algo", "disponiveis",
 }
 
 

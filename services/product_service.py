@@ -132,6 +132,40 @@ def _buscar_brutos(mensagem: str, historico_texto: str = "") -> tuple[list[dict]
     return produtos, fonte, sem_match
 
 
+def listar_produtos_catalogo(limit: int = 8) -> dict[str, Any]:
+    """Catálogo geral sem termo específico — amostra real do Product Service."""
+    from services.vendas.catalogo import montar_catalogo_geral
+
+    limite = max(1, min(int(limit or 8), 20))
+    geral = montar_catalogo_geral(limite=limite)
+    fonte = geral.get("fonte") or "supabase"
+    produtos = [
+        normalizar_produto_servico(p, source=fonte)
+        for p in (geral.get("produtos") or [])
+    ]
+    produtos = [p for p in produtos if p][:limite]
+    if not produtos:
+        return _resultado(
+            found=False,
+            query="",
+            category="",
+            products=[],
+            message=(
+                "Catálogo geral vazio ou indisponível. "
+                "Perguntar categoria (informática, periféricos, celular, acessórios)."
+            ),
+            fonte=fonte,
+        )
+    return _resultado(
+        found=True,
+        query="",
+        category="",
+        products=produtos,
+        message="Catálogo geral — amostra de produtos reais.",
+        fonte=fonte,
+    )
+
+
 def buscar_por_intencao(
     *,
     mensagem: str,
@@ -146,9 +180,24 @@ def buscar_por_intencao(
     Busca produtos relevantes para a intenção.
     Nunca inventa itens — só o que veio do catálogo.
     """
+    from services.vendas.respostas import query_apenas_generica
+
     intent_u = (intent or "").upper().strip()
     query = (product_query or mensagem or "").strip()
     categoria = (categoria_ativa or "").strip()
+
+    # CATÁLOGO GERAL / produtos disponíveis
+    if intent_u in ("CATALOGO_GERAL", "PRODUTOS_DISPONIVEIS"):
+        return listar_produtos_catalogo(limit=limite)
+
+    # Query só com genéricos ("mande catálogo") → lista geral, nunca "não encontrei"
+    if query and query_apenas_generica(query) and intent_u in (
+        "BUSCA_PRODUTO",
+        "DUVIDA_PRODUTO",
+        "",
+        "INDEFINIDO",
+    ):
+        return listar_produtos_catalogo(limit=limite)
 
     # MAIS_OPCOES: prioriza categoria ativa
     if intent_u == "MAIS_OPCOES":
@@ -177,6 +226,10 @@ def buscar_por_intencao(
     if intent_u == "COMPRA" and produto_ativo and len((mensagem or "").split()) <= 6:
         # Confirma produto ativo antes de avançar
         return buscar_produto_por_nome(produto_ativo, historico_texto=historico_texto)
+
+    # Proteção extra: genéricos nunca viram produto inexistente
+    if query_apenas_generica(busca):
+        return listar_produtos_catalogo(limit=limite)
 
     brutos, fonte, sem_match = _buscar_brutos(busca, historico_texto)
     normalizados = [

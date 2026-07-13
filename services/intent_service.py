@@ -9,11 +9,13 @@ import re
 import unicodedata
 from typing import Any
 
-from services.vendas.respostas import cliente_pediu_mais_opcoes
+from services.vendas.respostas import cliente_pediu_mais_opcoes, cliente_quer_ver_catalogo
 
 INTENTS = (
     "SAUDACAO",
     "BUSCA_PRODUTO",
+    "CATALOGO_GERAL",
+    "PRODUTOS_DISPONIVEIS",
     "MAIS_OPCOES",
     "DUVIDA_PRODUTO",
     "PRECO",
@@ -204,7 +206,7 @@ def classificar_intencao(
     ):
         return _resultado("SAUDACAO", 0.95, reason="saudacao_simples")
 
-    # --- MAIS OPÇÕES (reusa detector existente — não quebrar fluxo) ---
+    # --- MAIS OPÇÕES (antes do catálogo geral — "me mostra outros") ---
     if cliente_pediu_mais_opcoes(msg):
         cat = _extrair_categoria(t, ctx) or categoria or _extrair_categoria(hist, ctx)
         return _resultado(
@@ -214,6 +216,17 @@ def classificar_intencao(
             product_query=_extrair_product_query(msg, cat),
             category=cat,
             reason="pedido_mais_opcoes",
+        )
+
+    # --- CATÁLOGO GERAL / produtos disponíveis ---
+    if cliente_quer_ver_catalogo(msg):
+        return _resultado(
+            "CATALOGO_GERAL",
+            0.95,
+            needs_catalog=True,
+            product_query="",
+            category="",
+            reason="pedido_catalogo_geral",
         )
 
     # --- PREÇO ---

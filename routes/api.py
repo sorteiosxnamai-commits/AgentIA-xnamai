@@ -132,7 +132,7 @@ from services.supabase_service import (
     obter_ultimo_erro_historico,
 )
 
-CODE_VERSION = "2026-07-13-feat-ultramsg-beta"
+CODE_VERSION = "2026-07-13-fix-catalogo-geral"
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
 from services.vendedor_service import (
@@ -812,6 +812,8 @@ def _processar_mensagem_locked(
             and intent_nome
             in (
                 "BUSCA_PRODUTO",
+                "CATALOGO_GERAL",
+                "PRODUTOS_DISPONIVEIS",
                 "MAIS_OPCOES",
                 "PRECO",
                 "COMPARACAO",
@@ -1150,6 +1152,42 @@ def _processar_mensagem_locked(
             log_seguro("fluxo_intent", intent="FORA_DO_ESCOPO", telefone=numero)
         elif saudacao or intent.get("intent") == "SAUDACAO":
             resposta_ia = resposta_saudacao(nome_conversa)
+        elif (
+            intent.get("intent") == "MAIS_OPCOES"
+            or cliente_pediu_mais_opcoes(mensagem)
+        ) and not pedido_encerrado:
+            # Fluxo especial MAIS_OPCOES — Product Service por baixo
+            produtos_op = produtos
+            if resultado_produtos and resultado_produtos.get("products"):
+                produtos_op = resultado_produtos["products"]
+            elif not produtos_op:
+                cat_geral = montar_catalogo_geral()
+                produtos_op = cat_geral.get("produtos") or []
+            resposta_ia = resposta_mais_opcoes(
+                nome_cliente=nome_conversa,
+                historico_texto=historico_venda,
+                produtos=produtos_op,
+                categoria=str(
+                    sessao.get("categoria_interesse")
+                    or (resultado_produtos or {}).get("category")
+                    or ""
+                ),
+            )
+            print("MAIS OPCOES: resposta consultiva (Product Service)")
+        elif (
+            intent.get("intent") in ("CATALOGO_GERAL", "PRODUTOS_DISPONIVEIS")
+            or cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia)
+        ) and not pedido_encerrado:
+            produtos_cat = []
+            if resultado_produtos and resultado_produtos.get("products"):
+                produtos_cat = resultado_produtos["products"]
+            if not produtos_cat:
+                cat_geral = montar_catalogo_geral(limite=8)
+                produtos_cat = cat_geral.get("produtos") or []
+                catalogo = cat_geral.get("catalogo") or catalogo
+            produtos = produtos_cat
+            resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos_cat)
+            print("CATALOGO GERAL: lista de produtos reais")
         elif cliente_perguntou_como_trabalham(mensagem) and not pedido_encerrado:
             resposta_ia = resposta_como_trabalham(nome_conversa)
             print("SCRIPT XNAMAI: como trabalhamos (não é produto)")
@@ -1166,35 +1204,6 @@ def _processar_mensagem_locked(
             resposta_ia = resposta_ja_informado(com_foto[0])
         elif pediu_foto and com_foto:
             resposta_ia = resposta_com_foto(com_foto[0])
-        elif (
-            intent.get("intent") == "MAIS_OPCOES"
-            or cliente_pediu_mais_opcoes(mensagem)
-        ) and not pedido_encerrado:
-            # Fluxo especial MAIS_OPCOES — Product Service por baixo
-            produtos_op = produtos
-            if resultado_produtos and resultado_produtos.get("products"):
-                produtos_op = resultado_produtos["products"]
-            elif not produtos_op:
-                from services.vendas.catalogo import montar_catalogo_geral
-
-                cat_geral = montar_catalogo_geral()
-                produtos_op = cat_geral.get("produtos") or []
-            resposta_ia = resposta_mais_opcoes(
-                nome_cliente=nome_conversa,
-                historico_texto=historico_venda,
-                produtos=produtos_op,
-                categoria=str(
-                    sessao.get("categoria_interesse")
-                    or (resultado_produtos or {}).get("category")
-                    or ""
-                ),
-            )
-            print("MAIS OPCOES: resposta consultiva (Product Service)")
-        elif cliente_quer_ver_catalogo(mensagem, ultima_resposta_ia):
-            cat_geral = montar_catalogo_geral()
-            produtos = cat_geral["produtos"]
-            catalogo = cat_geral["catalogo"]
-            resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos)
         elif (
             intent.get("intent") == "PRECO" or cliente_perguntou_preco(mensagem)
         ) and not pedido_encerrado:
