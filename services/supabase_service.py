@@ -580,6 +580,106 @@ def _detectar_colunas_clientes() -> set[str]:
     return cols
 
 
+def clientes_tem_historico() -> bool:
+    """True se clientes.historico existe no schema."""
+    flag = _SCHEMA_FLAGS.get("clientes_historico")
+    if flag is not None:
+        return bool(flag)
+    cols = _detectar_colunas_clientes()
+    return bool(_SCHEMA_FLAGS.get("clientes_historico"))
+
+
+def diagnostico_coluna_historico() -> dict:
+    """Metadados seguros da coluna clientes.historico."""
+    cols = _detectar_colunas_clientes()
+    existe = "historico" in cols
+    tipo = "ausente"
+    if existe:
+        tipo = "jsonb"
+        try:
+            r = (
+                supabase.table(TABELA_CLIENTES)
+                .select("historico")
+                .limit(1)
+                .execute()
+            )
+            if r.data:
+                val = r.data[0].get("historico")
+                if isinstance(val, str):
+                    tipo = "text"
+                elif isinstance(val, (list, dict)) or val is None:
+                    tipo = "jsonb"
+        except Exception as exc:
+            if erro_coluna_ausente(exc, "historico"):
+                _SCHEMA_FLAGS["clientes_historico"] = False
+                return {
+                    "historico_coluna_existe": False,
+                    "historico_tipo": "ausente",
+                }
+            tipo = "desconhecido"
+    return {
+        "historico_coluna_existe": bool(existe and _SCHEMA_FLAGS.get("clientes_historico") is not False),
+        "historico_tipo": tipo if existe else "ausente",
+    }
+
+
+_ULTIMO_ERRO_HISTORICO: dict | None = None
+
+
+def limpar_ultimo_erro_historico() -> None:
+    global _ULTIMO_ERRO_HISTORICO
+    _ULTIMO_ERRO_HISTORICO = None
+
+
+def obter_ultimo_erro_historico() -> dict | None:
+    return dict(_ULTIMO_ERRO_HISTORICO) if _ULTIMO_ERRO_HISTORICO else None
+
+
+def registrar_erro_historico(
+    etapa: str,
+    exc: Exception | None = None,
+    *,
+    codigo: str = "",
+    tipo: str = "",
+    resumo: str = "",
+) -> dict:
+    global _ULTIMO_ERRO_HISTORICO
+    if exc is not None:
+        codigo, tipo, resumo = classificar_erro_supabase(exc)
+    if not tipo:
+        tipo = type(exc).__name__ if exc is not None else "DESCONHECIDO"
+    if not resumo:
+        resumo = str(exc)[:120] if exc is not None else "erro historico"
+    text = f"{codigo} {resumo}".lower()
+    if "historico" in text and (
+        "pgrst204" in text or codigo.upper() == "PGRST204" or "schema cache" in text
+    ):
+        _SCHEMA_FLAGS["clientes_historico"] = False
+        resumo = (
+            "coluna clientes.historico ausente — "
+            "rode supabase/018_clientes_historico.sql ou trate histórico como opcional"
+        )
+    _ULTIMO_ERRO_HISTORICO = {
+        "etapa": etapa,
+        "codigo": codigo or "",
+        "tipo": tipo,
+        "resumo": resumo[:160],
+    }
+    try:
+        from services.webhook_guard import log_seguro
+
+        log_seguro(
+            "salvar_mensagem_erro",
+            etapa=etapa,
+            erro=tipo,
+            detalhe=resumo[:120],
+            codigo=codigo or "-",
+        )
+    except Exception:
+        pass
+    return dict(_ULTIMO_ERRO_HISTORICO)
+
+
 def _nome_cliente_seguro(nome: str, tel: str) -> str:
     limpo = (nome or "").strip()
     if limpo:
@@ -888,13 +988,35 @@ def _salvar_mensagem_no_historico_cliente(
     """Grava mensagem no JSON clientes.historico (modo thread / sem tabela de msgs)."""
     from datetime import datetime, timezone
 
-    atual = (
-        supabase.table(TABELA_CLIENTES)
-        .select("historico")
-        .eq("id", cliente_id)
-        .limit(1)
-        .execute()
-    )
+    if not clientes_tem_historico():
+        return {
+            "ok": True,
+            "skipped": True,
+            "motivo": "sem_coluna_historico",
+            "modo": "skip",
+        }
+
+    try:
+        atual = (
+            supabase.table(TABELA_CLIENTES)
+            .select("historico")
+            .eq("id", cliente_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        if erro_coluna_ausente(exc, "historico"):
+            _SCHEMA_FLAGS["clientes_historico"] = False
+            registrar_erro_historico("select_historico", exc)
+            return {
+                "ok": True,
+                "skipped": True,
+                "motivo": "sem_coluna_historico",
+                "modo": "skip",
+            }
+        registrar_erro_historico("select_historico", exc)
+        raise
+
     hist_raw = (atual.data[0].get("historico") if atual.data else None) or []
     msgs = _mensagens_do_historico_json(hist_raw)
     ctx = extrair_contexto_do_historico_json(hist_raw)
@@ -927,9 +1049,22 @@ def _salvar_mensagem_no_historico_cliente(
     if _SCHEMA_FLAGS.get("contexto_venda") is True:
         payload = msgs
 
-    supabase.table(TABELA_CLIENTES).update({"historico": payload}).eq(
-        "id", cliente_id
-    ).execute()
+    try:
+        supabase.table(TABELA_CLIENTES).update({"historico": payload}).eq(
+            "id", cliente_id
+        ).execute()
+    except Exception as exc:
+        if erro_coluna_ausente(exc, "historico"):
+            _SCHEMA_FLAGS["clientes_historico"] = False
+            registrar_erro_historico("update_historico", exc)
+            return {
+                "ok": True,
+                "skipped": True,
+                "motivo": "sem_coluna_historico",
+                "modo": "skip",
+            }
+        registrar_erro_historico("update_historico", exc)
+        raise
     return {"ok": True, "duplicado": False, "modo": "historico_json"}
 
 
@@ -1055,29 +1190,39 @@ def salvar_mensagem(
 ):
     """Persiste mensagem do turno.
 
-    - Se conversas é thread PulseDesk: grava em clientes.historico (essencial).
+    - Se conversas é thread PulseDesk: grava em clientes.historico (se a coluna existir).
     - Se conversas é tabela de mensagens legada: insert na tabela.
+    - Sem coluna historico: skip seguro (contexto_venda continua essencial).
     """
     from services.webhook_guard import log_seguro
 
     mid = (message_id or "").strip()
+    tem_hist = clientes_tem_historico()
     log_seguro(
         "salvar_mensagem_inicio",
         tipo=tipo,
         message_id=mid or "-",
         chars=len(mensagem or ""),
         modo="thread" if conversas_e_thread() else "mensagens",
+        historico_coluna=tem_hist,
     )
 
     # Modo thread: NÃO inserir cliente_id/tipo/mensagem em conversas
     if conversas_e_thread():
+        if not tem_hist:
+            return {
+                "ok": True,
+                "skipped": True,
+                "motivo": "sem_coluna_historico",
+                "modo": "skip",
+            }
         try:
             result = _salvar_mensagem_no_historico_cliente(
                 str(cliente_id), tipo, mensagem, mid or None
             )
-            # Thread update é opcional — feito pelo caller se quiser
             return result
         except Exception as exc:
+            registrar_erro_historico("salvar_mensagem_thread", exc)
             log_seguro(
                 "salvar_mensagem_erro",
                 tipo=tipo,
@@ -1129,6 +1274,7 @@ def salvar_mensagem(
             return _salvar_mensagem_no_historico_cliente(
                 str(cliente_id), tipo, mensagem, mid or None
             )
+        registrar_erro_historico("salvar_mensagem_legado", exc)
         raise
 
 
@@ -1187,6 +1333,8 @@ def buscar_historico(cliente_id, limit: int | None = None):
     """Retorna lista [{tipo, mensagem, criado_em}] para o fluxo do agente."""
     # Modo thread / historico JSON em clientes
     if conversas_e_thread():
+        if not clientes_tem_historico():
+            return []
         try:
             r = (
                 supabase.table(TABELA_CLIENTES)
@@ -1211,6 +1359,8 @@ def buscar_historico(cliente_id, limit: int | None = None):
                 return out[-limit:]
             return out
         except Exception as exc:
+            if erro_coluna_ausente(exc, "historico"):
+                _SCHEMA_FLAGS["clientes_historico"] = False
             print("AVISO buscar_historico (json):", type(exc).__name__, str(exc)[:120])
             return []
 

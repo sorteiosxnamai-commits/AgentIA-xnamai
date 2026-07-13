@@ -124,7 +124,13 @@ from services.supabase_service import (
     obter_ultimo_erro_cliente,
     registrar_erro_cliente,
     erro_cliente_para_debug,
+    clientes_tem_historico,
+    diagnostico_coluna_historico,
+    limpar_ultimo_erro_historico,
+    obter_ultimo_erro_historico,
 )
+
+CODE_VERSION = "2026-07-13-fix-historico-opcional"
 from services.sync_mercos_service import sincronizar_produtos_mercos
 from services.pulsedesk_bridge import espelhar_mensagem_agente, espelhar_mensagem_cliente
 from services.vendedor_service import (
@@ -132,8 +138,6 @@ from services.vendedor_service import (
     processar_lead_e_notificar,
     vendedor_configurado,
 )
-
-CODE_VERSION = "2026-07-13-fix-mercos-id-nullable"
 
 
 def _resposta_texto(resultado) -> str | None:
@@ -148,6 +152,7 @@ def _montar_resultado(
     persistencia_ok: bool = True,
     persistencia_etapas: dict | None = None,
     cliente_debug: dict | None = None,
+    historico_debug: dict | None = None,
 ) -> dict:
     out = {
         "resposta": resposta,
@@ -157,6 +162,8 @@ def _montar_resultado(
         out["persistencia_etapas"] = persistencia_etapas
     if cliente_debug is not None:
         out["cliente_debug"] = cliente_debug
+    if historico_debug is not None:
+        out["historico_debug"] = historico_debug
     return out
 
 
@@ -376,7 +383,12 @@ def _processar_mensagem_locked(
         # =========================
 
         limpar_ultimo_erro_cliente()
+        limpar_ultimo_erro_historico()
         cliente_debug_erro = None
+        historico_tentou_salvar = False
+        historico_erro_dbg = None
+        historico_coluna_meta = diagnostico_coluna_historico()
+        historico_essencial = bool(historico_coluna_meta.get("historico_coluna_existe"))
 
         try:
             cliente = buscar_cliente(numero)
@@ -515,25 +527,41 @@ def _processar_mensagem_locked(
             )
 
         # =========================
-        # SALVA MENSAGEM (histórico essencial; thread opcional)
+        # SALVA MENSAGEM (histórico se coluna existir; thread opcional)
         # =========================
 
         if persistir and not str(cliente_id).startswith("ephemeral-"):
-            _tentar_persistir(
-                "salvar_mensagem_cliente",
-                lambda: salvar_mensagem(
-                    cliente_id,
-                    "cliente",
-                    mensagem,
-                    message_id=msg_id or None,
-                    telefone=numero,
-                    nome=nome_cliente,
-                ),
-                essencial=True,
-                etapa_flag="historico_ok",
-            )
-            if etapas.get("historico_ok"):
-                historico_salvo_em = "banco"
+            if historico_essencial:
+                historico_tentou_salvar = True
+                _tentar_persistir(
+                    "salvar_mensagem_cliente",
+                    lambda: salvar_mensagem(
+                        cliente_id,
+                        "cliente",
+                        mensagem,
+                        message_id=msg_id or None,
+                        telefone=numero,
+                        nome=nome_cliente,
+                    ),
+                    essencial=True,
+                    etapa_flag="historico_ok",
+                )
+                if etapas.get("historico_ok"):
+                    historico_salvo_em = "banco"
+                else:
+                    historico_erro_dbg = obter_ultimo_erro_historico()
+                    historico_salvo_em = "nenhum"
+                    # Se a coluna sumiu no meio do caminho, deixa de ser essencial
+                    if not clientes_tem_historico():
+                        historico_essencial = False
+                        etapas["historico_ok"] = True
+                        historico_salvo_em = "nenhum"
+            else:
+                # Sem coluna historico: não essencial — contexto_venda cobre a sessão
+                etapas["historico_ok"] = True
+                historico_salvo_em = "nenhum"
+                historico_tentou_salvar = False
+
             # Thread PulseDesk — opcional
             _tentar_persistir(
                 "atualizar_thread",
@@ -549,7 +577,9 @@ def _processar_mensagem_locked(
                 etapa_flag="thread_ok",
             )
             # Bridge PulseDesk só em tráfego real (não dry_run de /chat)
-            if not dry_run:
+            if dry_run:
+                etapas["message_log_ok"] = True  # bridge não aplicável em dry_run
+            elif not dry_run:
                 try:
                     espelhar_mensagem_cliente(numero, nome_cliente, mensagem)
                     etapas["message_log_ok"] = True
@@ -562,11 +592,12 @@ def _processar_mensagem_locked(
                         etapa="espelhar_cliente",
                         erro=type(exc).__name__,
                     )
-            _tentar_persistir(
-                "atualizar_historico_json",
-                lambda: atualizar_historico_json(cliente_id),
-                essencial=False,
-            )
+            if historico_essencial:
+                _tentar_persistir(
+                    "atualizar_historico_json",
+                    lambda: atualizar_historico_json(cliente_id),
+                    essencial=False,
+                )
 
         # =========================
         # HISTÓRICO
@@ -1282,21 +1313,34 @@ def _processar_mensagem_locked(
         # =========================
 
         if persistir and not str(cliente_id).startswith("ephemeral-"):
-            _tentar_persistir(
-                "salvar_mensagem_ia",
-                lambda: salvar_mensagem(
-                    cliente_id,
-                    "ia",
-                    resposta_ia,
-                    telefone=numero,
-                    nome=nome_cliente,
-                ),
-                essencial=True,
-                etapa_flag="historico_ok",
-            )
-            if etapas.get("historico_ok"):
-                historico_salvo_em = "banco"
-            if not dry_run:
+            if historico_essencial and clientes_tem_historico():
+                historico_tentou_salvar = True
+                _tentar_persistir(
+                    "salvar_mensagem_ia",
+                    lambda: salvar_mensagem(
+                        cliente_id,
+                        "ia",
+                        resposta_ia,
+                        telefone=numero,
+                        nome=nome_cliente,
+                    ),
+                    essencial=True,
+                    etapa_flag="historico_ok",
+                )
+                if etapas.get("historico_ok"):
+                    historico_salvo_em = "banco"
+                else:
+                    historico_erro_dbg = obter_ultimo_erro_historico() or historico_erro_dbg
+                    if not clientes_tem_historico():
+                        historico_essencial = False
+                        etapas["historico_ok"] = True
+                        historico_salvo_em = "nenhum"
+            elif not historico_essencial:
+                etapas["historico_ok"] = True
+
+            if dry_run:
+                etapas["message_log_ok"] = True
+            else:
                 try:
                     espelhar_mensagem_agente(numero, nome_cliente, resposta_ia)
                 except Exception as exc:
@@ -1320,11 +1364,12 @@ def _processar_mensagem_locked(
                 essencial=False,
                 etapa_flag="thread_ok",
             )
-            _tentar_persistir(
-                "atualizar_historico_json",
-                lambda: atualizar_historico_json(cliente_id),
-                essencial=False,
-            )
+            if historico_essencial and clientes_tem_historico():
+                _tentar_persistir(
+                    "atualizar_historico_json",
+                    lambda: atualizar_historico_json(cliente_id),
+                    essencial=False,
+                )
 
             # Atualiza última pergunta do agente na sessão
             from services.historico_service import extrair_ultima_pergunta_ia
@@ -1370,28 +1415,29 @@ def _processar_mensagem_locked(
             cliente_id and not str(cliente_id).startswith("ephemeral-")
         )
 
-        # Essenciais: cliente + historico + contexto (somente banco real)
-        # Regra: id real OU historico+contexto no banco => cliente_ok
+        # Essenciais: cliente + contexto (+ historico só se a coluna existir)
+        # thread_ok e message_log_ok são opcionais
         if persistir and tem_cliente_id:
             etapas["cliente_ok"] = True
-            if etapas.get("historico_ok") and etapas.get("contexto_ok"):
-                etapas["cliente_ok"] = True
+            if not historico_essencial:
+                etapas["historico_ok"] = True
             persistencia_ok = bool(
                 etapas.get("cliente_ok")
-                and etapas.get("historico_ok")
                 and etapas.get("contexto_ok")
+                and (etapas.get("historico_ok") if historico_essencial else True)
             )
         elif persistir:
             etapas["cliente_ok"] = False
             etapas["contexto_ok"] = False
-            etapas["historico_ok"] = False
+            if historico_essencial:
+                etapas["historico_ok"] = False
             contexto_salvo_em = "fallback"
             historico_salvo_em = "fallback"
             persistencia_ok = False
 
+        historico_debug = None
         cliente_debug = None
         if dry_run:
-            # Sempre objeto estruturado — nunca string vazia
             if origem_cliente == "ephemeral" or not tem_cliente_id:
                 dbg_erro = cliente_debug_erro or erro_cliente_para_debug("criar_cliente")
             else:
@@ -1416,6 +1462,21 @@ def _processar_mensagem_locked(
                 }
             elif origem_cliente == "ephemeral":
                 cliente_debug["cliente_debug_erro"] = erro_cliente_para_debug("criar_cliente")
+
+            hist_meta = diagnostico_coluna_historico()
+            hist_err = historico_erro_dbg or obter_ultimo_erro_historico()
+            historico_debug = {
+                "historico_coluna_existe": bool(hist_meta.get("historico_coluna_existe")),
+                "historico_tipo": str(hist_meta.get("historico_tipo") or "desconhecido"),
+                "historico_tentou_salvar": bool(historico_tentou_salvar),
+                "historico_salvo_em": historico_salvo_em,
+                "historico_essencial": bool(historico_essencial),
+                "historico_erro": {
+                    "codigo": str((hist_err or {}).get("codigo") or ""),
+                    "tipo": str((hist_err or {}).get("tipo") or ""),
+                    "resumo": str((hist_err or {}).get("resumo") or "")[:160],
+                },
+            }
             log_seguro(
                 "cliente_resolvido",
                 telefone=numero,
@@ -1425,6 +1486,7 @@ def _processar_mensagem_locked(
                 origem_cliente=origem_cliente,
                 contexto_salvo_em=contexto_salvo_em,
                 historico_salvo_em=historico_salvo_em,
+                historico_coluna=hist_meta.get("historico_coluna_existe"),
                 erro_tipo=(cliente_debug.get("cliente_debug_erro") or {}).get("erro_tipo") or "-",
             )
 
@@ -1433,6 +1495,7 @@ def _processar_mensagem_locked(
             persistencia_ok,
             persistencia_etapas=etapas if dry_run else None,
             cliente_debug=cliente_debug,
+            historico_debug=historico_debug,
         )
         log_seguro(
             "chat_resposta_final",
@@ -1648,11 +1711,13 @@ async def chat_teste(payload: dict):
     persistencia_ok = True
     etapas = None
     cliente_debug = None
+    historico_debug = None
     if isinstance(resultado, dict):
         persistencia_ok = bool(resultado.get("persistencia_ok", False))
         if dry_run:
             etapas = resultado.get("persistencia_etapas")
             cliente_debug = resultado.get("cliente_debug")
+            historico_debug = resultado.get("historico_debug")
     elif resultado is None:
         persistencia_ok = False
 
@@ -1670,6 +1735,8 @@ async def chat_teste(payload: dict):
         out["persistencia_etapas"] = etapas
     if cliente_debug is not None:
         out["cliente_debug"] = cliente_debug
+    if historico_debug is not None:
+        out["historico_debug"] = historico_debug
     return out
 
 
