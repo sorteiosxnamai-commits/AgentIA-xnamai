@@ -45,6 +45,8 @@ _SCHEMA_FLAGS: dict[str, bool | None] = {
     # True = tabela CONVERSAS é thread/atendimento (PulseDesk)
     # False = tabela legada de mensagens (cliente_id/tipo/mensagem)
     "conversas_thread": None,
+    # True = conversas.cliente_id uuid (FK clientes.id) existe
+    "conversas_cliente_id_uuid": None,
     "clientes_celular": None,
     "clientes_historico": None,
 }
@@ -1068,6 +1070,45 @@ def _salvar_mensagem_no_historico_cliente(
     return {"ok": True, "duplicado": False, "modo": "historico_json"}
 
 
+def resolver_cliente_id_conversa(
+    *,
+    cliente_mercos_id: str | int | None = None,
+    telefone: str | None = None,
+) -> str | None:
+    """Resolve clientes.id (uuid) para vincular conversas.cliente_id.
+
+    Ordem: mercos_id → telefone/celular. Retorna None se não achar.
+    Não altera cliente_mercos_id.
+    """
+    if cliente_mercos_id is not None and str(cliente_mercos_id).strip():
+        texto = str(cliente_mercos_id).strip()
+        if texto.isdigit():
+            try:
+                r = _executar(
+                    lambda: (
+                        supabase.table(TABELA_CLIENTES)
+                        .select("id")
+                        .eq("mercos_id", int(texto))
+                        .limit(1)
+                        .execute()
+                    ),
+                    "resolver_cliente_id_mercos",
+                )
+                if r.data and r.data[0].get("id"):
+                    return str(r.data[0]["id"])
+            except Exception as exc:
+                registrar_erro_cliente("resolver_cliente_id_mercos", exc)
+
+    if telefone:
+        try:
+            row = buscar_cliente(telefone)
+            if row and row.get("id"):
+                return str(row["id"])
+        except Exception as exc:
+            registrar_erro_cliente("resolver_cliente_id_telefone", exc)
+    return None
+
+
 def atualizar_thread_conversa(
     telefone: str,
     nome: str,
@@ -1075,6 +1116,7 @@ def atualizar_thread_conversa(
     *,
     message_id: str | None = None,
     inbound: bool = True,
+    cliente_mercos_id: str | int | None = None,
 ) -> bool:
     """Atualiza thread PulseDesk em conversas (colunas existentes apenas). Opcional."""
     from datetime import datetime, timezone
@@ -1092,7 +1134,7 @@ def atualizar_thread_conversa(
             try:
                 r = (
                     supabase.table(TABELA_HISTORICO)
-                    .select("id,unread_count")
+                    .select("id,unread_count,cliente_id,cliente_mercos_id")
                     .eq(campo, tel)
                     .limit(1)
                     .execute()
@@ -1102,6 +1144,22 @@ def atualizar_thread_conversa(
                     break
             except Exception as exc:
                 if erro_coluna_ausente(exc, campo):
+                    continue
+                # Select sem colunas novas se o banco ainda não tiver FK
+                if erro_coluna_ausente(exc, "cliente_id") or erro_coluna_ausente(
+                    exc, "cliente_mercos_id"
+                ):
+                    _SCHEMA_FLAGS["conversas_cliente_id_uuid"] = False
+                    r = (
+                        supabase.table(TABELA_HISTORICO)
+                        .select("id,unread_count")
+                        .eq(campo, tel)
+                        .limit(1)
+                        .execute()
+                    )
+                    if r.data:
+                        row = r.data[0]
+                        break
                     continue
                 raise
 
@@ -1123,15 +1181,33 @@ def atualizar_thread_conversa(
             if inbound:
                 unread += 1
             patch["unread_count"] = unread
+            if (
+                _SCHEMA_FLAGS.get("conversas_cliente_id_uuid") is not False
+                and not row.get("cliente_id")
+            ):
+                mercos = cliente_mercos_id or row.get("cliente_mercos_id")
+                cid = resolver_cliente_id_conversa(
+                    cliente_mercos_id=mercos,
+                    telefone=tel,
+                )
+                if cid:
+                    patch["cliente_id"] = cid
             try:
                 supabase.table(TABELA_HISTORICO).update(patch).eq(
                     "id", row["id"]
                 ).execute()
             except Exception as exc:
-                # Remove message_id se coluna sumiu
+                # Remove message_id / cliente_id se coluna sumiu
+                removido = False
                 if "message_id" in patch and erro_coluna_ausente(exc, "message_id"):
                     _SCHEMA_FLAGS["message_id"] = False
                     patch.pop("message_id", None)
+                    removido = True
+                if "cliente_id" in patch and erro_coluna_ausente(exc, "cliente_id"):
+                    _SCHEMA_FLAGS["conversas_cliente_id_uuid"] = False
+                    patch.pop("cliente_id", None)
+                    removido = True
+                if removido:
                     supabase.table(TABELA_HISTORICO).update(patch).eq(
                         "id", row["id"]
                     ).execute()
@@ -1156,15 +1232,33 @@ def atualizar_thread_conversa(
         canal = os.getenv("PULSEDESK_AGENT_CANAL_ID", "").strip()
         if canal:
             insert["canal_id"] = canal
+        if cliente_mercos_id is not None and str(cliente_mercos_id).strip():
+            insert["cliente_mercos_id"] = str(cliente_mercos_id).strip()
+        if _SCHEMA_FLAGS.get("conversas_cliente_id_uuid") is not False:
+            cid = resolver_cliente_id_conversa(
+                cliente_mercos_id=cliente_mercos_id or insert.get("cliente_mercos_id"),
+                telefone=tel,
+            )
+            if cid:
+                insert["cliente_id"] = cid
         try:
             supabase.table(TABELA_HISTORICO).insert(insert).execute()
         except Exception as exc:
             # Remove campos opcionais que não existem
-            for campo in ("message_id", "canal_id", "external_thread_id", "unread_count"):
+            for campo in (
+                "message_id",
+                "canal_id",
+                "external_thread_id",
+                "unread_count",
+                "cliente_id",
+                "cliente_mercos_id",
+            ):
                 if campo in insert and erro_coluna_ausente(exc, campo):
                     insert.pop(campo, None)
                     if campo == "message_id":
                         _SCHEMA_FLAGS["message_id"] = False
+                    if campo == "cliente_id":
+                        _SCHEMA_FLAGS["conversas_cliente_id_uuid"] = False
             supabase.table(TABELA_HISTORICO).insert(insert).execute()
         return True
     except Exception as exc:

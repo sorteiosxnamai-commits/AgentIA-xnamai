@@ -19,6 +19,23 @@ def _agora_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _resolver_cliente_id(
+    *,
+    telefone: str,
+    cliente_mercos_id: str | int | None = None,
+) -> str | None:
+    try:
+        from services.supabase_service import resolver_cliente_id_conversa
+
+        return resolver_cliente_id_conversa(
+            cliente_mercos_id=cliente_mercos_id,
+            telefone=telefone,
+        )
+    except Exception as exc:
+        print("PULSEDESK BRIDGE (resolver cliente_id) falhou:", exc)
+        return None
+
+
 def _buscar_conversa_pulsedesk(telefone: str) -> dict | None:
     resposta = (
         supabase.table("conversas")
@@ -32,7 +49,13 @@ def _buscar_conversa_pulsedesk(telefone: str) -> dict | None:
     return rows[0] if rows else None
 
 
-def _criar_conversa_pulsedesk(telefone: str, nome: str, ultima_mensagem: str) -> dict:
+def _criar_conversa_pulsedesk(
+    telefone: str,
+    nome: str,
+    ultima_mensagem: str,
+    *,
+    cliente_mercos_id: str | int | None = None,
+) -> dict:
     protocolo = f"AG-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{telefone[-4:]}"
     dados = {
         "canal_id": CANAL_AGENT_ID,
@@ -47,32 +70,63 @@ def _criar_conversa_pulsedesk(telefone: str, nome: str, ultima_mensagem: str) ->
         "last_message_at": _agora_iso(),
         "protocol": protocolo,
     }
+    if cliente_mercos_id is not None and str(cliente_mercos_id).strip():
+        dados["cliente_mercos_id"] = str(cliente_mercos_id).strip()
+    cliente_id = _resolver_cliente_id(
+        telefone=telefone,
+        cliente_mercos_id=cliente_mercos_id or dados.get("cliente_mercos_id"),
+    )
+    if cliente_id:
+        dados["cliente_id"] = cliente_id
     resposta = supabase.table("conversas").insert(dados).execute()
     rows = resposta.data or []
     return rows[0] if rows else dados
 
 
-def _atualizar_conversa(conversa_id: str, ultima_mensagem: str, incrementar_nao_lidas: bool) -> None:
-    conversa = (
-        supabase.table("conversas")
-        .select("unread_count")
-        .eq("id", conversa_id)
-        .limit(1)
-        .execute()
-    )
+def _atualizar_conversa(
+    conversa_id: str,
+    ultima_mensagem: str,
+    incrementar_nao_lidas: bool,
+    *,
+    telefone: str | None = None,
+    conversa: dict | None = None,
+    cliente_mercos_id: str | int | None = None,
+) -> None:
     unread = 0
-    if conversa.data:
-        unread = int(conversa.data[0].get("unread_count") or 0)
+    if conversa is not None:
+        unread = int(conversa.get("unread_count") or 0)
+    else:
+        row = (
+            supabase.table("conversas")
+            .select("unread_count,cliente_id,cliente_mercos_id,contact_phone")
+            .eq("id", conversa_id)
+            .limit(1)
+            .execute()
+        )
+        if row.data:
+            conversa = row.data[0]
+            unread = int(conversa.get("unread_count") or 0)
     if incrementar_nao_lidas:
         unread += 1
 
-    supabase.table("conversas").update({
+    patch: dict = {
         "last_message": ultima_mensagem[:500],
         "last_message_at": _agora_iso(),
         "unread_count": unread,
         "status": "active",
         "updated_at": _agora_iso(),
-    }).eq("id", conversa_id).execute()
+    }
+    if conversa and not conversa.get("cliente_id"):
+        tel = telefone or conversa.get("contact_phone") or conversa.get(
+            "external_thread_id"
+        )
+        mercos = cliente_mercos_id or conversa.get("cliente_mercos_id")
+        if tel:
+            cid = _resolver_cliente_id(telefone=str(tel), cliente_mercos_id=mercos)
+            if cid:
+                patch["cliente_id"] = cid
+
+    supabase.table("conversas").update(patch).eq("id", conversa_id).execute()
 
 
 def _inserir_mensagem_pulsedesk(
@@ -102,7 +156,13 @@ def espelhar_mensagem_cliente(telefone: str, nome: str, mensagem: str) -> None:
         if not conversa:
             conversa = _criar_conversa_pulsedesk(telefone, nome, mensagem)
         else:
-            _atualizar_conversa(str(conversa["id"]), mensagem, incrementar_nao_lidas=True)
+            _atualizar_conversa(
+                str(conversa["id"]),
+                mensagem,
+                incrementar_nao_lidas=True,
+                telefone=telefone,
+                conversa=conversa,
+            )
 
         _inserir_mensagem_pulsedesk(
             str(conversa["id"]),
@@ -122,7 +182,13 @@ def espelhar_mensagem_agente(telefone: str, nome: str, mensagem: str) -> None:
         if not conversa:
             conversa = _criar_conversa_pulsedesk(telefone, nome, mensagem)
         else:
-            _atualizar_conversa(str(conversa["id"]), mensagem, incrementar_nao_lidas=False)
+            _atualizar_conversa(
+                str(conversa["id"]),
+                mensagem,
+                incrementar_nao_lidas=False,
+                telefone=telefone,
+                conversa=conversa,
+            )
 
         _inserir_mensagem_pulsedesk(
             str(conversa["id"]),
