@@ -334,6 +334,7 @@
               <input type="text" id="input-tipos-alterado-apos" value="2026-07-15 00:00:00" />
             </label>
             <input type="hidden" id="input-tipos-exc-alterado" value="2026-07-14 00:00:00" />
+            <input type="hidden" id="input-tipos-excluido" value="true" />
             <input type="hidden" id="input-tipos-excluidos" value="true" />
             <input type="hidden" id="input-tipos-somente-excluidos" value="true" />
             <input type="hidden" id="input-tipos-incluir-excluidos" value="true" />
@@ -354,6 +355,17 @@
               data-target="res-tipos"
               data-fields="alterado_apos:input-tipos-exc-alterado,excluidos:input-tipos-excluidos,somente_excluidos:input-tipos-somente-excluidos,incluir_excluidos:input-tipos-incluir-excluidos">
               Buscar excluídos/alterados
+            </button>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/tipos-pedido"
+              data-target="res-tipos"
+              data-fields="alterado_apos:input-tipos-exc-alterado,excluido:input-tipos-excluido">
+              Buscar excluído singular
+            </button>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/tipos-pedido-combinacoes"
+              data-target="res-tipos">
+              Tentar todos os filtros
             </button>
           </div>
           <div class="resultado" id="res-tipos"></div>

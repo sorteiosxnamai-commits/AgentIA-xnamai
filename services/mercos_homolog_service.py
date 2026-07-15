@@ -175,51 +175,60 @@ def _valor_query_opcional(valor: Any) -> str | None:
     return texto or None
 
 
+_PARAMS_INTERNO_TIPOS = frozenset(
+    {
+        "pagina_inicial",
+        "max_paginas",
+        "page_size_hint",
+        "params_extra",
+        "params_mercos",
+    }
+)
+
+
 def _kw_filtros_tipos_pedido(
-    *,
-    alterado_apos: str | None = None,
-    excluidos: str | bool | None = None,
-    somente_excluidos: str | bool | None = None,
-    incluir_excluidos: str | bool | None = None,
+    params_mercos: dict | None = None,
     **kw,
 ) -> tuple[dict, dict]:
-    """Monta kwargs de listar_paginado + mapa dos filtros enviados à Mercos."""
+    """Monta kwargs de listar_paginado + mapa dos filtros enviados à Mercos.
+
+    Aceita dict livre em params_mercos e também kwargs nomeados (legado).
+    Não faz filtro local — só repassa query params.
+    """
     params_extra = dict(kw.pop("params_extra", None) or {})
     filtros: dict[str, str] = {}
-    for chave, valor in (
-        ("alterado_apos", alterado_apos),
-        ("excluidos", excluidos),
-        ("somente_excluidos", somente_excluidos),
-        ("incluir_excluidos", incluir_excluidos),
-    ):
+    unidos: dict[str, Any] = {}
+    if params_mercos:
+        unidos.update(params_mercos)
+
+    kwargs_paginacao: dict[str, Any] = {}
+    for chave, valor in kw.items():
+        if chave in ("pagina_inicial", "max_paginas", "page_size_hint"):
+            kwargs_paginacao[chave] = valor
+        elif chave in _PARAMS_INTERNO_TIPOS:
+            continue
+        else:
+            unidos[chave] = valor
+
+    for chave, valor in unidos.items():
         normalizado = _valor_query_opcional(valor)
         if normalizado is not None:
-            params_extra[chave] = normalizado
-            filtros[chave] = normalizado
-    if params_extra:
-        kw["params_extra"] = params_extra
-    return kw, filtros
+            params_extra[str(chave)] = normalizado
+            filtros[str(chave)] = normalizado
 
+    if params_extra:
+        kwargs_paginacao["params_extra"] = params_extra
+    return kwargs_paginacao, filtros
 
 def listar_tipos_pedido(
-    alterado_apos: str | None = None,
-    excluidos: str | bool | None = None,
-    somente_excluidos: str | bool | None = None,
-    incluir_excluidos: str | bool | None = None,
+    params_mercos: dict | None = None,
     **kw,
 ) -> dict:
     """GET tipos de pedido — path /v1/pedidos/tipo (ou MERCOS_PATH_TIPOS_PEDIDO).
 
-    Repassa filtros de alteração/excluídos como query params da Mercos
-    (sem filtro local no Python).
+    Repassa query params à Mercos (sem filtro local no Python).
     """
-    kw, filtros = _kw_filtros_tipos_pedido(
-        alterado_apos=alterado_apos,
-        excluidos=excluidos,
-        somente_excluidos=somente_excluidos,
-        incluir_excluidos=incluir_excluidos,
-        **kw,
-    )
+    kw, filtros = _kw_filtros_tipos_pedido(params_mercos=params_mercos, **kw)
     data = listar_paginado(_path("tipos_pedido"), **kw)
     if filtros:
         data["filtros"] = filtros
@@ -227,10 +236,7 @@ def listar_tipos_pedido(
 
 
 def listar_tipos_pedido_descoberta(
-    alterado_apos: str | None = None,
-    excluidos: str | bool | None = None,
-    somente_excluidos: str | bool | None = None,
-    incluir_excluidos: str | bool | None = None,
+    params_mercos: dict | None = None,
     **kw,
 ) -> dict:
     """Lista Tipo de Pedido tentando paths alternativos até achar HTTP 200.
@@ -239,13 +245,7 @@ def listar_tipos_pedido_descoberta(
     """
     global _CACHE_PATH_TIPOS_PEDIDO
 
-    kw, filtros = _kw_filtros_tipos_pedido(
-        alterado_apos=alterado_apos,
-        excluidos=excluidos,
-        somente_excluidos=somente_excluidos,
-        incluir_excluidos=incluir_excluidos,
-        **kw,
-    )
+    kw, filtros = _kw_filtros_tipos_pedido(params_mercos=params_mercos, **kw)
     candidatos = caminhos_candidatos_tipos_pedido()
     testados: list[str] = []
     path_ok: str | None = _CACHE_PATH_TIPOS_PEDIDO
@@ -293,11 +293,96 @@ def listar_tipos_pedido_descoberta(
         "descoberta": True,
         "status_code": 404,
         "filtros": filtros or None,
-        "alterado_apos": filtros.get("alterado_apos"),
+        "alterado_apos": (filtros or {}).get("alterado_apos"),
         "mensagem": (
             "Não foi possível localizar o endpoint oficial de Tipo de Pedido no sandbox. "
             f"Paths testados: {', '.join(testados)}"
         ),
+    }
+
+
+COMBINACOES_FILTROS_TIPOS_PEDIDO: tuple[dict[str, str], ...] = (
+    {"alterado_apos": "2026-07-14 00:00:00", "excluido": "true"},
+    {"alterado_apos": "2026-07-14 00:00:00", "excluido": "1"},
+    {"alterado_apos": "2026-07-14 00:00:00", "excluidos": "true"},
+    {"alterado_apos": "2026-07-14 00:00:00", "somente_excluidos": "true"},
+    {"alterado_apos": "2026-07-14 00:00:00", "incluir_excluidos": "true"},
+    {
+        "alterado_apos": "2026-07-14 00:00:00",
+        "excluido": "true",
+        "incluir_excluidos": "true",
+    },
+)
+
+
+def explorar_filtros_tipos_pedido(
+    combinacoes: tuple[dict[str, str], ...] | list[dict[str, str]] | None = None,
+    *,
+    max_paginas: int = 3,
+) -> dict[str, Any]:
+    """Tenta várias combinações de filtro e agrega registros com rótulo do filtro."""
+    combos = list(combinacoes or COMBINACOES_FILTROS_TIPOS_PEDIDO)
+    por_chave: dict[str, dict[str, Any]] = {}
+    tentativas: list[dict[str, Any]] = []
+
+    for combo in combos:
+        label = "&".join(f"{k}={v}" for k, v in combo.items())
+        try:
+            data = listar_tipos_pedido_descoberta(
+                params_mercos=combo,
+                pagina_inicial=1,
+                max_paginas=max_paginas,
+            )
+        except MercosApiError as exc:
+            tentativas.append(
+                {
+                    "filtro": label,
+                    "ok": False,
+                    "total": 0,
+                    "erro": exc.message[:180],
+                }
+            )
+            continue
+
+        ok = bool(data.get("ok", True)) and data.get("status_code") != 404
+        itens = list(data.get("itens") or []) if ok else []
+        tentativas.append(
+            {
+                "filtro": label,
+                "ok": ok,
+                "total": len(itens),
+            }
+        )
+        if not ok:
+            continue
+        for item in itens:
+            if not isinstance(item, dict):
+                continue
+            chave = str(item.get("id") or item.get("nome") or item.get("name") or "")
+            if not chave:
+                continue
+            if chave not in por_chave:
+                por_chave[chave] = {
+                    "item": item,
+                    "filtros_encontrados": [label],
+                }
+            elif label not in por_chave[chave]["filtros_encontrados"]:
+                por_chave[chave]["filtros_encontrados"].append(label)
+
+    itens_agregados = []
+    for entry in por_chave.values():
+        item = dict(entry["item"])
+        item["_filtros_encontrados"] = entry["filtros_encontrados"]
+        itens_agregados.append(item)
+
+    return {
+        "ok": True,
+        "descoberta": True,
+        "status_code": 200,
+        "total": len(itens_agregados),
+        "itens": itens_agregados,
+        "tentativas": tentativas,
+        "sandbox": mercos_ambiente_sandbox(),
     }
 
 
@@ -356,6 +441,8 @@ __all__ = [
     "listar_produtos_da_tabela_preco",
     "listar_tipos_pedido",
     "listar_tipos_pedido_descoberta",
+    "explorar_filtros_tipos_pedido",
+    "COMBINACOES_FILTROS_TIPOS_PEDIDO",
     "caminhos_candidatos_tipos_pedido",
     "listar_usuarios",
     "criar_cliente",

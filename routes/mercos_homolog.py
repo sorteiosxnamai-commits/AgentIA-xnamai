@@ -9,13 +9,28 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 
 from services import mercos_homolog_service as homolog
 from services.mercos_api_client import MercosApiError
 from services.mercos_service import mercos_ambiente_sandbox, mercos_configurado
 
 router = APIRouter(prefix="/mercos", tags=["mercos-homologacao"])
+
+_QUERY_NAO_REPASSAR_TIPOS = frozenset({"token", "max_paginas", "nocache", "pagina"})
+
+
+def _params_mercos_da_request(request: Request) -> dict[str, str]:
+    """Repassa query params à Mercos, exceto controles locais da rota."""
+    out: dict[str, str] = {}
+    for chave, valor in request.query_params.multi_items():
+        if chave.lower() in _QUERY_NAO_REPASSAR_TIPOS:
+            continue
+        texto = (valor or "").strip()
+        if not texto:
+            continue
+        out[chave] = texto
+    return out
 
 
 def _bloqueio(token: str = "") -> None:
@@ -179,22 +194,19 @@ def get_produtos_da_tabela(
 
 @router.get("/tipos-pedido")
 def get_tipos_pedido(
+    request: Request,
     token: str = "",
     pagina: int = Query(1, ge=1),
     max_paginas: int = Query(5, ge=1, le=50),
-    alterado_apos: str = Query(""),
-    excluidos: str = Query(""),
-    somente_excluidos: str = Query(""),
-    incluir_excluidos: str = Query(""),
 ):
-    """Lista tipos de pedido; repassa filtros à Mercos (query, sem filtro local)."""
+    """Lista tipos de pedido; repassa query params à Mercos (sem filtro local).
+
+    Controles locais não repassados: token, max_paginas, nocache, pagina.
+    """
     _bloqueio(token)
     try:
         return homolog.listar_tipos_pedido(
-            alterado_apos=(alterado_apos or "").strip() or None,
-            excluidos=(excluidos or "").strip() or None,
-            somente_excluidos=(somente_excluidos or "").strip() or None,
-            incluir_excluidos=(incluir_excluidos or "").strip() or None,
+            params_mercos=_params_mercos_da_request(request),
             **_params_paginacao(pagina, max_paginas),
         )
     except MercosApiError as exc:

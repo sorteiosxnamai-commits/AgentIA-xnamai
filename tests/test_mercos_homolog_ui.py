@@ -225,6 +225,8 @@ def test_homologacao_ui_tem_15_secoes_obrigatorias(client, monkeypatch):
     assert "tabela de preço cadastrada no sandbox" in body
     assert "Buscar Tipo de Pedido" in body
     assert "Buscar excluídos/alterados" in body
+    assert "Buscar excluído singular" in body
+    assert "Tentar todos os filtros" in body
     assert 'data-action="/mercos/homologacao-ui/acoes/tipos-pedido"' in body
     assert body.count("Número do documento") >= 2
 
@@ -272,22 +274,61 @@ def test_acao_tipos_pedido_sucesso_destaca_19814a3(client, monkeypatch):
         "/mercos/homologacao-ui/acoes/tipos-pedido",
         data={
             "alterado_apos": "2026-07-14 00:00:00",
-            "excluidos": "true",
-            "somente_excluidos": "true",
-            "incluir_excluidos": "true",
+            "excluido": "true",
         },
     )
     assert resp.status_code == 200
     html = resp.text
     assert "200" in html
-    assert "Filtro usado: alterado_apos =" in html
+    assert "Filtro usado:" in html
     assert "2026-07-14 00:00:00" in html
-    assert "excluídos = " in html
     assert "8df21d6cd7d44fd6" in html
     assert ">Sim<" in html
     assert html.count("destaque-homolog") >= 4
     assert "Normal" in html
     assert '"itens"' not in html
+
+
+def test_acao_tipos_pedido_combinacoes_mostra_filtro_por_registro(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.explorar_filtros_tipos_pedido",
+        lambda **_k: {
+            "ok": True,
+            "status_code": 200,
+            "total": 1,
+            "itens": [
+                {
+                    "id": 9,
+                    "nome": "8df21d6cd7d44fd6",
+                    "excluido": True,
+                    "_filtros_encontrados": [
+                        "alterado_apos=2026-07-14 00:00:00&excluido=true"
+                    ],
+                }
+            ],
+            "tentativas": [
+                {
+                    "filtro": "alterado_apos=2026-07-14 00:00:00&excluido=true",
+                    "ok": True,
+                    "total": 1,
+                }
+            ],
+        },
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido-combinacoes")
+    assert resp.status_code == 200
+    assert "Combinações testadas" in resp.text
+    assert "8df21d6cd7d44fd6" in resp.text
+    assert "Filtro que encontrou" in resp.text
+    assert "excluido=true" in resp.text
+    assert "destaque-homolog" in resp.text
 
 
 def test_acao_tipos_pedido_todos_404(client, monkeypatch):

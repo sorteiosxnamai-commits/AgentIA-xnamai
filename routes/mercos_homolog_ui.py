@@ -427,101 +427,169 @@ def acao_tabelas_preco(request: Request, token: str = Form("")):
         return _wrap_result(_erro_html(exc))
 
 
+def _destaque_nome_tipo_pedido(nome: str) -> bool:
+    nome_l = (nome or "").lower()
+    return (
+        nome_l.startswith("19814a3")
+        or nome_l.startswith("198314a3")
+        or nome_l.startswith("0832f68")
+        or nome_l.startswith("8df21d6c")
+    )
+
+
+def _params_tipos_do_form(
+    alterado_apos: str = "",
+    excluido: str = "",
+    excluidos: str = "",
+    somente_excluidos: str = "",
+    incluir_excluidos: str = "",
+) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for chave, valor in (
+        ("alterado_apos", alterado_apos),
+        ("excluido", excluido),
+        ("excluidos", excluidos),
+        ("somente_excluidos", somente_excluidos),
+        ("incluir_excluidos", incluir_excluidos),
+    ):
+        texto = (valor or "").strip()
+        if texto:
+            params[chave] = texto
+    return params
+
+
+def _html_lista_tipos_pedido(data: dict, *, titulo_filtro: str = "") -> str:
+    if not data.get("ok", True) or data.get("status_code") == 404:
+        paths = data.get("paths_testados") or []
+        msg = data.get("mensagem") or (
+            "Não foi possível localizar o endpoint oficial de Tipo de Pedido no sandbox. "
+            f"Paths testados: {', '.join(paths)}"
+        )
+        return _card(
+            "Tipo de Pedido",
+            [("Situação", msg)],
+            status_label="Pendente",
+            css="pendente",
+        )
+
+    rows = []
+    classes: list[str] = []
+    tem_filtro_coluna = any(
+        isinstance(i, dict) and i.get("_filtros_encontrados")
+        for i in (data.get("itens") or [])
+    )
+    for item in data.get("itens") or []:
+        nome = _campo(item, "nome", "name", "descricao", default="")
+        nome_str = "" if nome == "—" else str(nome)
+        row = [
+            _campo(item, "id"),
+            nome_str or "—",
+            _fmt_bool(_campo(item, "excluido", default=False)),
+            _campo(
+                item,
+                "ultima_alteracao",
+                "updated_at",
+                "alterado_em",
+                "data_alteracao",
+                "modificado_em",
+            ),
+        ]
+        if tem_filtro_coluna:
+            encontrados = item.get("_filtros_encontrados") or []
+            row.append(" | ".join(str(x) for x in encontrados) if encontrados else "—")
+        rows.append(row)
+        classes.append(
+            "destaque-homolog" if _destaque_nome_tipo_pedido(nome_str) else ""
+        )
+
+    headers = ["ID", "Nome", "Excluído", "Última alteração"]
+    if tem_filtro_coluna:
+        headers.append("Filtro que encontrou")
+
+    table = _table(
+        headers,
+        rows,
+        empty_msg="Endpoint encontrado, porém sem tipos de pedido cadastrados.",
+        row_classes=classes,
+    )
+    filtros = dict(data.get("filtros") or {})
+    head_parts = [
+        "Status: <strong>200</strong>",
+        f'Total: <strong>{_esc(data.get("total", 0))}</strong>',
+    ]
+    if titulo_filtro:
+        head_parts.append(f"Filtro usado: <strong>{_esc(titulo_filtro)}</strong>")
+    elif filtros:
+        partes = [f"{_esc(k)} = <strong>{_esc(v)}</strong>" for k, v in filtros.items()]
+        # rótulo amigável para singular/plural
+        texto = " | ".join(partes).replace("excluidos =", "excluídos =").replace(
+            "excluido =", "excluído ="
+        )
+        head_parts.append("Filtro usado: " + texto)
+    return f'<p class="meta">{" · ".join(head_parts)}</p>' + table
+
+
 @router.post("/homologacao-ui/acoes/tipos-pedido", response_class=HTMLResponse)
 def acao_tipos_pedido(
     request: Request,
     token: str = Form(""),
     alterado_apos: str = Form(""),
+    excluido: str = Form(""),
     excluidos: str = Form(""),
     somente_excluidos: str = Form(""),
     incluir_excluidos: str = Form(""),
 ):
     _auth(request, token)
-    filtro_alterado = (alterado_apos or "").strip()
-    filtro_excluidos = (excluidos or "").strip()
-    filtro_somente = (somente_excluidos or "").strip()
-    filtro_incluir = (incluir_excluidos or "").strip()
+    params = _params_tipos_do_form(
+        alterado_apos=alterado_apos,
+        excluido=excluido,
+        excluidos=excluidos,
+        somente_excluidos=somente_excluidos,
+        incluir_excluidos=incluir_excluidos,
+    )
     try:
         data = homolog.listar_tipos_pedido_descoberta(
+            params_mercos=params or None,
             pagina_inicial=1,
             max_paginas=5,
-            alterado_apos=filtro_alterado or None,
-            excluidos=filtro_excluidos or None,
-            somente_excluidos=filtro_somente or None,
-            incluir_excluidos=filtro_incluir or None,
         )
-        if not data.get("ok", True) or data.get("status_code") == 404:
-            paths = data.get("paths_testados") or []
-            msg = data.get("mensagem") or (
-                "Não foi possível localizar o endpoint oficial de Tipo de Pedido no sandbox. "
-                f"Paths testados: {', '.join(paths)}"
+        titulo = ""
+        if params.get("alterado_apos") and (
+            params.get("excluido") or params.get("excluidos")
+        ):
+            flag = params.get("excluido") or params.get("excluidos")
+            titulo = (
+                f"alterado_apos = {params['alterado_apos']} | "
+                f"excluídos = {flag}"
             )
-            return _wrap_result(
-                _card(
-                    "Tipo de Pedido",
-                    [("Situação", msg)],
-                    status_label="Pendente",
-                    css="pendente",
+            if params.get("excluido") and not params.get("excluidos"):
+                titulo = (
+                    f"alterado_apos = {params['alterado_apos']} | "
+                    f"excluído = {params['excluido']}"
                 )
-            )
+        return _wrap_result(_html_lista_tipos_pedido(data, titulo_filtro=titulo))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
 
-        rows = []
-        classes: list[str] = []
-        for item in data.get("itens") or []:
-            nome = _campo(item, "nome", "name", "descricao", default="")
-            nome_str = "" if nome == "—" else str(nome)
-            rows.append(
-                [
-                    _campo(item, "id"),
-                    nome_str or "—",
-                    _fmt_bool(_campo(item, "excluido", default=False)),
-                    _campo(
-                        item,
-                        "ultima_alteracao",
-                        "updated_at",
-                        "alterado_em",
-                        "data_alteracao",
-                        "modificado_em",
-                    ),
-                ]
-            )
-            nome_l = nome_str.lower()
-            destaque = (
-                nome_l.startswith("19814a3")
-                or nome_l.startswith("198314a3")
-                or nome_l.startswith("0832f68")
-                or nome_l.startswith("8df21d6c")
-            )
-            classes.append("destaque-homolog" if destaque else "")
 
-        table = _table(
-            ["ID", "Nome", "Excluído", "Última alteração"],
-            rows,
-            empty_msg="Endpoint encontrado, porém sem tipos de pedido cadastrados.",
-            row_classes=classes,
+@router.post("/homologacao-ui/acoes/tipos-pedido-combinacoes", response_class=HTMLResponse)
+def acao_tipos_pedido_combinacoes(request: Request, token: str = Form("")):
+    _auth(request, token)
+    try:
+        data = homolog.explorar_filtros_tipos_pedido(max_paginas=3)
+        html = _html_lista_tipos_pedido(data)
+        tentativas = data.get("tentativas") or []
+        resumo = "".join(
+            f"<li><span>{_esc(t.get('filtro'))}</span>"
+            f"<strong>{'OK · ' + str(t.get('total', 0)) if t.get('ok') else 'sem retorno'}</strong></li>"
+            for t in tentativas
         )
-        filtros = dict(data.get("filtros") or {})
-        if filtro_alterado and "alterado_apos" not in filtros:
-            filtros["alterado_apos"] = filtro_alterado
-        if filtro_excluidos and "excluidos" not in filtros:
-            filtros["excluidos"] = filtro_excluidos
-        head_parts = [
-            "Status: <strong>200</strong>",
-            f'Total: <strong>{_esc(data.get("total", 0))}</strong>',
-        ]
-        if filtros.get("alterado_apos") or filtros.get("excluidos"):
-            partes_filtro = []
-            if filtros.get("alterado_apos"):
-                partes_filtro.append(
-                    f'alterado_apos = <strong>{_esc(filtros["alterado_apos"])}</strong>'
-                )
-            if filtros.get("excluidos"):
-                partes_filtro.append(
-                    f'excluídos = <strong>{_esc(filtros["excluidos"])}</strong>'
-                )
-            head_parts.append("Filtro usado: " + " | ".join(partes_filtro))
-        head = f'<p class="meta">{" · ".join(head_parts)}</p>'
-        return _wrap_result(head + table)
+        bloco = (
+            '<div class="result-card">'
+            "<h4>Combinações testadas</h4>"
+            f"<ul>{resumo}</ul></div>"
+        )
+        return _wrap_result(bloco + html)
     except Exception as exc:
         return _wrap_result(_erro_html(exc))
 
