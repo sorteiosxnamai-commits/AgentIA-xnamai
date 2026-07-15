@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ titulo }}</title>
+  <style>
+    :root {
+      --bg: #e8edf2;
+      --surface: #ffffff;
+      --ink: #182230;
+      --muted: #5a6a7a;
+      --line: #d0d7e0;
+      --sidebar: #14324a;
+      --sidebar-text: #d7e2ec;
+      --accent: #1f6f54;
+      --accent-soft: #e7f4ef;
+      --warn: #8a6200;
+      --warn-soft: #fff7e5;
+      --err: #9d1f1f;
+      --err-soft: #fdeeee;
+      --ok: #1f6f54;
+      --ok-soft: #e7f4ef;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.45;
+    }
+    .app {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      min-height: 100vh;
+    }
+    aside.nav {
+      background: var(--sidebar);
+      color: var(--sidebar-text);
+      padding: 22px 0;
+    }
+    aside.nav .brand {
+      padding: 0 18px 18px;
+      border-bottom: 1px solid rgba(255,255,255,.12);
+      margin-bottom: 12px;
+    }
+    aside.nav .brand strong {
+      display: block;
+      color: #fff;
+      font-size: 1.05rem;
+    }
+    aside.nav .brand span {
+      font-size: 0.8rem;
+      opacity: .75;
+    }
+    aside.nav a {
+      display: block;
+      padding: 10px 18px;
+      color: var(--sidebar-text);
+      text-decoration: none;
+      font-size: 0.92rem;
+    }
+    aside.nav a:hover { background: rgba(255,255,255,.06); color: #fff; }
+    main { padding: 0; }
+    .topbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      padding: 16px 24px;
+    }
+    .topbar h1 {
+      margin: 0 0 8px;
+      font-size: 1.35rem;
+      letter-spacing: -0.02em;
+    }
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 24px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .meta-row strong { color: var(--ink); }
+    .content { padding: 20px 24px 48px; max-width: 1040px; }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      border: 1px solid transparent;
+    }
+    .badge.aprovado { background: var(--ok-soft); color: var(--ok); border-color: #b8dfcf; }
+    .badge.pendente { background: var(--warn-soft); color: var(--warn); border-color: #efd497; }
+    .badge.erro { background: var(--err-soft); color: var(--err); border-color: #efb8b8; }
+    .badge.ok { background: var(--ok-soft); color: var(--ok); border-color: #b8dfcf; }
+    section.panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px 18px 14px;
+      margin-bottom: 14px;
+    }
+    section.panel h2 {
+      margin: 0 0 4px;
+      font-size: 1.05rem;
+    }
+    section.panel .hint {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 10px;
+    }
+    label.field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+    input[type="text"], input[type="number"] {
+      min-width: 140px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 0.92rem;
+      color: var(--ink);
+      background: #fff;
+    }
+    button {
+      appearance: none;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fff;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.05); }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    button.secondary {
+      background: #fff;
+      color: var(--accent);
+    }
+    .resultado { margin-top: 6px; min-height: 8px; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+    th { background: #f3f6f9; color: var(--muted); font-weight: 600; }
+    tr:last-child td { border-bottom: none; }
+    .result-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px 16px;
+      background: #fafbfc;
+    }
+    .result-card.ok { background: var(--ok-soft); border-color: #b8dfcf; }
+    .result-card.pendente { background: var(--warn-soft); border-color: #efd497; }
+    .result-card.erro { background: var(--err-soft); border-color: #efb8b8; }
+    .result-card h4 { margin: 0 0 8px; }
+    .result-card ul { list-style: none; margin: 10px 0 0; padding: 0; }
+    .result-card li {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 6px 0;
+      border-top: 1px solid rgba(0,0,0,.06);
+      font-size: 0.9rem;
+    }
+    .result-card li span { color: var(--muted); }
+    .meta { color: var(--muted); font-size: 0.88rem; margin: 0 0 8px; }
+    .empty { color: var(--muted); font-style: italic; }
+    .loading { color: var(--muted); font-size: 0.88rem; }
+    tr.destaque-homolog {
+      background: #fff3c4;
+      outline: 2px solid #e0b100;
+    }
+    tr.destaque-homolog td:nth-child(2) {
+      font-weight: 700;
+    }
+    .module-title {
+      margin: 22px 0 10px;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .module-title:first-child { margin-top: 0; }
+    @media (max-width: 860px) {
+      .app { grid-template-columns: 1fr; }
+      aside.nav { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="nav" aria-label="Menu do ERP">
+      <div class="brand">
+        <strong>Xnamai ERP</strong>
+        <span>Módulo comercial</span>
+      </div>
+      <a href="#sec-produtos">Produto</a>
+      <a href="#sec-categorias">Categoria</a>
+      <a href="#sec-clientes-buscar">Clientes</a>
+      <a href="#sec-condicoes">Condições</a>
+      <a href="#sec-segmentos">Segmentos</a>
+      <a href="#sec-tabelas">Tabelas de preço</a>
+      <a href="#sec-tipos">Tipo de pedido</a>
+      <a href="#sec-usuarios">Usuários</a>
+      <a href="#sec-pedidos-criar">Pedidos</a>
+      <a href="#sec-titulos-criar">Títulos</a>
+    </aside>
+
+    <main>
+      <div class="topbar">
+        <h1>{{ titulo }}</h1>
+        <div class="meta-row">
+          <div>Ambiente: <strong>{{ ambiente }}</strong></div>
+          <div>Data/hora: <strong>{{ data_hora }}</strong></div>
+          <div>Status visual: <span class="badge {{ status_class }}">{{ status_label }}</span></div>
+          <div>Origem dos dados: <strong>{{ origem_dados }}</strong></div>
+        </div>
+      </div>
+
+      <div class="content">
+        <!-- 1 -->
+        <section class="panel" id="sec-produtos" data-homolog-sec="produto-buscar">
+          <h2>Produto — Buscar</h2>
+          <p class="hint">Catálogo operacional com código, preço e estoque.</p>
+          <div class="toolbar">
+            <button type="button" data-action="/mercos/homologacao-ui/acoes/produtos" data-target="res-produtos">Buscar produtos</button>
+          </div>
+          <div class="resultado" id="res-produtos"></div>
+        </section>
+
+        <!-- 2 -->
+        <section class="panel" id="sec-categorias" data-homolog-sec="categoria-buscar">
+          <h2>Categoria de produto — Buscar</h2>
+          <p class="hint">Categorias do cadastro comercial.</p>
+          <div class="toolbar">
+            <button type="button" data-action="/mercos/homologacao-ui/acoes/categorias" data-target="res-categorias">Buscar categorias</button>
+          </div>
+          <div class="resultado" id="res-categorias"></div>
+        </section>
+
+        <!-- 3 -->
+        <section class="panel" id="sec-clientes-buscar" data-homolog-sec="cliente-buscar">
+          <h2>Cliente — Buscar</h2>
+          <p class="hint">Razão social, nome fantasia e e-mail.</p>
+          <div class="toolbar">
+            <button type="button" data-action="/mercos/homologacao-ui/acoes/clientes-buscar" data-target="res-clientes-buscar">Buscar clientes</button>
+          </div>
+          <div class="resultado" id="res-clientes-buscar"></div>
+        </section>
+
+        <!-- 4 -->
+        <section class="panel" id="sec-clientes-criar" data-homolog-sec="cliente-incluir">
+          <h2>Cliente — Incluir</h2>
+          <p class="hint">Inclui cliente no cadastro comercial.</p>
+          <div class="toolbar">
+            <button type="button" data-action="/mercos/homologacao-ui/acoes/clientes-criar" data-target="res-clientes-criar" data-store="cliente">Incluir cliente</button>
+          </div>
+          <div class="resultado" id="res-clientes-criar"></div>
+        </section>
+
+        <!-- 5 -->
+        <section class="panel" id="sec-clientes-alterar" data-homolog-sec="cliente-alterar">
+          <h2>Cliente — Alterar</h2>
+          <p class="hint">Atualiza nome fantasia e observação do cliente.</p>
+          <div class="toolbar">
+            <label class="field">Código do cliente
+              <input type="text" id="input-cliente-id" placeholder="Ex.: 9289641" />
+            </label>
+            <button type="button" class="secondary" data-action="/mercos/homologacao-ui/acoes/clientes-alterar" data-target="res-clientes-alterar" data-fields="cliente_id:input-cliente-id">Alterar cliente</button>
+          </div>
+          <div class="resultado" id="res-clientes-alterar"></div>
+        </section>
+
+        <!-- 6 -->
+        <section class="panel" id="sec-condicoes" data-homolog-sec="condicoes-buscar">
+          <h2>Condições de pagamento — Buscar</h2>
+          <p class="hint">Condições usadas em pedidos e títulos.</p>
+          <div class="toolbar">
+            <button type="button" data-action="/mercos/homologacao-ui/acoes/condicoes" data-target="res-condicoes">Buscar condições</button>
+          </div>
+          <div class="resultado" id="res-condicoes"></div>
+        </section>
+
+        <!-- 7 -->
+        <section class="panel" id="sec-segmentos" data-homolog-sec="segmentos-buscar">
+          <h2>Segmentos de Clientes — Buscar</h2>
+          <p class="hint">Grupos comerciais associados aos clientes.</p>
+          <div class="toolbar">
+            <button type="button" data-action="/mercos/homologacao-ui/acoes/segmentos" data-target="res-segmentos">Buscar segmentos</button>
+          </div>
+          <div class="resultado" id="res-segmentos"></div>
+        </section>
+
+        <!-- 8 -->
+        <section class="panel" id="sec-tabelas" data-homolog-sec="tabela-preco-buscar">
+          <h2>Tabela de preço — Buscar</h2>
+          <p class="hint">Tabelas comerciais vigentes no ambiente.</p>
+          <div class="toolbar">
+            <button type="button" data-action="/mercos/homologacao-ui/acoes/tabelas-preco" data-target="res-tabelas">Buscar tabelas de preço</button>
+          </div>
+          <div class="resultado" id="res-tabelas"></div>
+        </section>
+
+        <!-- 9 -->
+        <section class="panel" id="sec-tabelas-produto" data-homolog-sec="tabela-preco-produto">
+          <h2>Tabela de preço por produto — Buscar</h2>
+          <div class="result-card pendente">
+            <h4>Pendência no sandbox</h4>
+            <p>Não há tabela de preço cadastrada no sandbox para buscar produtos por tabela.</p>
+            <span class="badge pendente">Pendente</span>
+          </div>
+        </section>
+
+        <!-- 10 -->
+        <section class="panel" id="sec-tipos" data-homolog-sec="tipo-pedido">
+          <h2>Tipo de Pedido — Buscar</h2>
+          <p class="hint">Tipos usados na emissão de pedidos.</p>
+          <div class="toolbar">
+            <button type="button" data-action="/mercos/homologacao-ui/acoes/tipos-pedido" data-target="res-tipos">Buscar Tipo de Pedido</button>
+          </div>
+          <div class="resultado" id="res-tipos"></div>
+        </section>
+        <!-- 11 -->
+        <section class="panel" id="sec-usuarios" data-homolog-sec="usuarios-buscar">
+          <h2>Usuários — Buscar</h2>
+          <p class="hint">Usuários ativos com perfil de acesso.</p>
+          <div class="toolbar">
+            <button type="button" data-action="/mercos/homologacao-ui/acoes/usuarios" data-target="res-usuarios">Buscar usuários</button>
+          </div>
+          <div class="resultado" id="res-usuarios"></div>
+        </section>
+
+        <!-- 12 -->
+        <section class="panel" id="sec-pedidos-criar" data-homolog-sec="pedido-incluir">
+          <h2>Pedido — Incluir</h2>
+          <p class="hint">Emite pedido comercial com item e quantidade.</p>
+          <div class="toolbar">
+            <label class="field">Código do cliente
+              <input type="text" id="input-pedido-cliente" placeholder="Cliente" />
+            </label>
+            <label class="field">Código do produto
+              <input type="text" id="input-pedido-produto" placeholder="Produto" />
+            </label>
+            <label class="field">Quantidade
+              <input type="text" id="input-pedido-qtd" value="1" />
+            </label>
+            <label class="field">Preço
+              <input type="text" id="input-pedido-preco" value="10.00" />
+            </label>
+            <label class="field">Condição de pagamento
+              <input type="text" id="input-pedido-condicao" placeholder="Opcional" />
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/pedidos-criar"
+              data-target="res-pedidos-criar"
+              data-store="pedido"
+              data-fields="cliente_id:input-pedido-cliente,produto_id:input-pedido-produto,quantidade:input-pedido-qtd,preco:input-pedido-preco,condicao_pagamento_id:input-pedido-condicao">
+              Incluir pedido
+            </button>
+          </div>
+          <div class="resultado" id="res-pedidos-criar"></div>
+        </section>
+
+        <!-- 13 -->
+        <section class="panel" id="sec-pedidos-alterar" data-homolog-sec="pedido-alterar">
+          <h2>Pedido — Alterar</h2>
+          <p class="hint">Atualiza a quantidade do item para 2 unidades.</p>
+          <div class="toolbar">
+            <label class="field">Código do pedido
+              <input type="text" id="input-pedido-id" placeholder="Pedido" />
+            </label>
+            <label class="field">Código do cliente
+              <input type="text" id="input-pedido-alt-cliente" placeholder="Opcional" />
+            </label>
+            <label class="field">Código do produto
+              <input type="text" id="input-pedido-alt-produto" placeholder="Produto" />
+            </label>
+            <label class="field">Preço
+              <input type="text" id="input-pedido-alt-preco" value="10.00" />
+            </label>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/pedidos-alterar"
+              data-target="res-pedidos-alterar"
+              data-fields="pedido_id:input-pedido-id,cliente_id:input-pedido-alt-cliente,produto_id:input-pedido-alt-produto,preco:input-pedido-alt-preco">
+              Alterar pedido
+            </button>
+          </div>
+          <div class="resultado" id="res-pedidos-alterar"></div>
+        </section>
+
+        <!-- 14 -->
+        <section class="panel" id="sec-titulos-criar" data-homolog-sec="titulo-incluir">
+          <h2>Títulos — Incluir</h2>
+          <p class="hint">Gera título financeiro vinculado ao cliente.</p>
+          <div class="toolbar">
+            <label class="field">Código do cliente
+              <input type="text" id="input-titulo-cliente" placeholder="Cliente" />
+            </label>
+            <label class="field">Valor
+              <input type="text" id="input-titulo-valor" value="100.00" />
+            </label>
+            <label class="field">Número do documento
+              <input type="text" id="input-titulo-documento" value="HOMOLOG-001" maxlength="18" />
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/titulos-criar"
+              data-target="res-titulos-criar"
+              data-store="titulo"
+              data-fields="cliente_id:input-titulo-cliente,valor:input-titulo-valor,numero_documento:input-titulo-documento">
+              Incluir título
+            </button>
+          </div>
+          <div class="resultado" id="res-titulos-criar"></div>
+        </section>
+
+        <!-- 15 -->
+        <section class="panel" id="sec-titulos-alterar" data-homolog-sec="titulo-alterar">
+          <h2>Títulos — Alterar</h2>
+          <p class="hint">Atualiza valor, vencimento e número do documento.</p>
+          <div class="toolbar">
+            <label class="field">Código do título
+              <input type="text" id="input-titulo-id" placeholder="Título" />
+            </label>
+            <label class="field">Novo valor
+              <input type="text" id="input-titulo-alt-valor" value="150.00" />
+            </label>
+            <label class="field">Número do documento
+              <input type="text" id="input-titulo-alt-documento" value="HOMOLOG-001" maxlength="18" />
+            </label>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/titulos-alterar"
+              data-target="res-titulos-alterar"
+              data-fields="titulo_id:input-titulo-id,valor:input-titulo-alt-valor,numero_documento:input-titulo-alt-documento">
+              Alterar título
+            </button>
+          </div>
+          <div class="resultado" id="res-titulos-alterar"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      var store = {
+        cliente: localStorage.getItem("homolog_cliente_id") || "",
+        pedido: localStorage.getItem("homolog_pedido_id") || "",
+        titulo: localStorage.getItem("homolog_titulo_id") || ""
+      };
+
+      function syncInputs() {
+        var c = document.getElementById("input-cliente-id");
+        var p = document.getElementById("input-pedido-id");
+        var t = document.getElementById("input-titulo-id");
+        var pc = document.getElementById("input-pedido-cliente");
+        var tc = document.getElementById("input-titulo-cliente");
+        var pac = document.getElementById("input-pedido-alt-cliente");
+        if (c && store.cliente && !c.value) c.value = store.cliente;
+        if (p && store.pedido && !p.value) p.value = store.pedido;
+        if (t && store.titulo && !t.value) t.value = store.titulo;
+        if (pc && store.cliente && !pc.value) pc.value = store.cliente;
+        if (tc && store.cliente && !tc.value) tc.value = store.cliente;
+        if (pac && store.cliente && !pac.value) pac.value = store.cliente;
+      }
+      syncInputs();
+
+      function remember(entity, id) {
+        if (!entity || !id) return;
+        store[entity] = id;
+        localStorage.setItem("homolog_" + entity + "_id", id);
+        syncInputs();
+      }
+
+      document.querySelectorAll("button[data-action]").forEach(function (btn) {
+        btn.addEventListener("click", async function () {
+          var url = btn.getAttribute("data-action");
+          var targetId = btn.getAttribute("data-target");
+          var target = document.getElementById(targetId);
+          var fields = btn.getAttribute("data-fields") || "";
+          var storeKey = btn.getAttribute("data-store") || "";
+          if (!target) return;
+
+          var fd = new FormData();
+          fields.split(",").forEach(function (pair) {
+            pair = pair.trim();
+            if (!pair) return;
+            var parts = pair.split(":");
+            var name = parts[0];
+            var inputId = parts[1];
+            var el = document.getElementById(inputId);
+            fd.append(name, el ? el.value : "");
+          });
+
+          btn.disabled = true;
+          target.innerHTML = '<p class="loading">Carregando registros…</p>';
+          try {
+            var resp = await fetch(url, {
+              method: "POST",
+              body: fd,
+              credentials: "same-origin"
+            });
+            var text = await resp.text();
+            if (resp.status === 403) {
+              target.innerHTML = '<div class="result-card erro"><h4>Acesso negado</h4><p>Não foi possível carregar os dados nesta sessão.</p></div>';
+              return;
+            }
+            target.innerHTML = text;
+            var node = target.querySelector("[data-entity][data-id]");
+            if (node) {
+              remember(node.getAttribute("data-entity"), node.getAttribute("data-id"));
+            } else if (storeKey) {
+              var wrap = target.querySelector(".acao-resultado");
+              if (wrap && wrap.getAttribute("data-id")) {
+                remember(storeKey, wrap.getAttribute("data-id"));
+              }
+            }
+          } catch (err) {
+            target.innerHTML = '<div class="result-card erro"><h4>Falha ao carregar</h4><p>Não foi possível concluir a operação.</p></div>';
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

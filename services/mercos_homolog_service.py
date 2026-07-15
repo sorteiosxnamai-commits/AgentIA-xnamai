@@ -123,8 +123,104 @@ def listar_produtos_da_tabela_preco(tabela_id: int | str, **kw) -> dict:
     return listar_paginado(path, **kw)
 
 
+# Candidatos sandbox — ordem da ata de homologação (além do env)
+# Doc Mercos: GET /api/v1/pedidos/tipo (listagem); GET /api/v1/pedidos/tipo/{id} (item)
+CANDIDATOS_TIPOS_PEDIDO = (
+    "/v1/pedidos/tipo",
+    "/v1/tipos_pedido",
+    "/v1/tipos_pedidos",
+    "/v1/tipo_pedido",
+    "/v1/tipos-de-pedido",
+    "/v1/tipos_de_pedido",
+    "/v2/tipos_pedido",
+    "/v2/tipos_pedidos",
+    "/v2/tipo_pedido",
+)
+
+_CACHE_PATH_TIPOS_PEDIDO: str | None = None
+
+
+def caminhos_candidatos_tipos_pedido() -> list[str]:
+    """Ordem: MERCOS_PATH_TIPOS_PEDIDO (se setado) + candidatos fixos, sem duplicar."""
+    import os
+
+    paths: list[str] = []
+    override = os.getenv("MERCOS_PATH_TIPOS_PEDIDO", "").strip()
+    if override:
+        p = override if override.startswith("/") else f"/{override}"
+        paths.append(p)
+    for p in CANDIDATOS_TIPOS_PEDIDO:
+        if p not in paths:
+            paths.append(p)
+    return paths
+
+
+def _probe_status(path: str) -> int | None:
+    """GET página 1; retorna status HTTP ou None se falha sem status."""
+    from services.mercos_api_client import request_mercos
+
+    try:
+        resp = request_mercos("GET", path, params={"pagina": 1})
+        return int(resp.status_code)
+    except MercosApiError as exc:
+        return int(exc.status_code) if exc.status_code else None
+
+
 def listar_tipos_pedido(**kw) -> dict:
+    """Compatível com GET /mercos/tipos-pedido (path único via env/default)."""
     return listar_paginado(_path("tipos_pedido"), **kw)
+
+
+def listar_tipos_pedido_descoberta(**kw) -> dict:
+    """Lista Tipo de Pedido tentando paths alternativos até achar HTTP 200.
+
+    Não altera o comportamento de listar_tipos_pedido (rota JSON antiga).
+    """
+    global _CACHE_PATH_TIPOS_PEDIDO
+
+    candidatos = caminhos_candidatos_tipos_pedido()
+    testados: list[str] = []
+    path_ok: str | None = _CACHE_PATH_TIPOS_PEDIDO
+
+    if path_ok and path_ok in candidatos:
+        try:
+            data = listar_paginado(path_ok, **kw)
+            data["path_resolvido"] = path_ok
+            data["paths_testados"] = [path_ok]
+            data["descoberta"] = True
+            return data
+        except MercosApiError:
+            _CACHE_PATH_TIPOS_PEDIDO = None
+            path_ok = None
+
+    for path in candidatos:
+        testados.append(path)
+        status = _probe_status(path)
+        if status == 200:
+            _CACHE_PATH_TIPOS_PEDIDO = path
+            data = listar_paginado(path, **kw)
+            data["path_resolvido"] = path
+            data["paths_testados"] = list(testados)
+            data["descoberta"] = True
+            data["status_code"] = 200
+            return data
+
+    return {
+        "ok": False,
+        "path": None,
+        "path_resolvido": None,
+        "paths_testados": testados,
+        "total": 0,
+        "itens": [],
+        "paginas_lidas": 0,
+        "sandbox": mercos_ambiente_sandbox(),
+        "descoberta": True,
+        "status_code": 404,
+        "mensagem": (
+            "Não foi possível localizar o endpoint oficial de Tipo de Pedido no sandbox. "
+            f"Paths testados: {', '.join(testados)}"
+        ),
+    }
 
 
 def listar_usuarios(**kw) -> dict:
@@ -181,6 +277,8 @@ __all__ = [
     "listar_tabelas_preco_produto",
     "listar_produtos_da_tabela_preco",
     "listar_tipos_pedido",
+    "listar_tipos_pedido_descoberta",
+    "caminhos_candidatos_tipos_pedido",
     "listar_usuarios",
     "criar_cliente",
     "alterar_cliente",
