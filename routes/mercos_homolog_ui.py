@@ -206,37 +206,76 @@ def _auth(request: Request, token: str = "") -> None:
 # ---------------------------------------------------------------------------
 
 
+_NOMES_PRODUTO_DESTAQUE = frozenset(
+    {
+        "4c2e97e74c634ea4",
+        "87109c4efa4b4f3f",
+        "5db65d7102b54a98",
+    }
+)
+
+
 @router.post("/homologacao-ui/acoes/produtos", response_class=HTMLResponse)
-def acao_produtos(request: Request, token: str = Form("")):
+def acao_produtos(
+    request: Request,
+    token: str = Form(""),
+    alterado_apos: str = Form(""),
+):
     _auth(request, token)
+    filtro = (alterado_apos or "").strip()
     try:
-        data = homolog.listar_produtos(pagina_inicial=1, max_paginas=3)
+        data = homolog.listar_produtos(
+            pagina_inicial=1,
+            max_paginas=5,
+            alterado_apos=filtro or None,
+        )
         rows = []
+        classes: list[str] = []
         for item in data.get("itens") or []:
+            nome = _campo(item, "nome", "nome_produto")
+            nome_str = "" if nome == "—" else str(nome)
+            ativo = _fmt_bool(_campo(item, "ativo", default=None))
+            if "excluido" in item and "ativo" not in item:
+                ativo = "Não" if item.get("excluido") else "Sim"
             rows.append(
                 [
                     _campo(item, "id"),
-                    _campo(item, "nome", "nome_produto"),
+                    nome_str or "—",
                     _campo(item, "codigo", "codigo_sku", "sku"),
                     _campo(item, "preco", "preco_tabela", "preco_bruto"),
                     _campo(item, "estoque", "saldo_estoque", "quantidade_estoque"),
-                    _fmt_bool(_campo(item, "ativo", "excluido", default=None)),
+                    ativo,
+                    _campo(
+                        item,
+                        "ultima_alteracao",
+                        "updated_at",
+                        "alterado_em",
+                        "data_alteracao",
+                        "modificado_em",
+                    ),
                 ]
             )
-        # ativo: se veio excluido=True, inverter rótulo na coluna Ativo
-        fixed = []
-        for item, row in zip(data.get("itens") or [], rows):
-            if "excluido" in item and "ativo" not in item:
-                row[5] = "Não" if item.get("excluido") else "Sim"
-            fixed.append(row)
+            classes.append(
+                "destaque-homolog"
+                if nome_str.lower() in _NOMES_PRODUTO_DESTAQUE
+                or any(nome_str.lower().startswith(n) for n in _NOMES_PRODUTO_DESTAQUE)
+                else ""
+            )
         table = _table(
-            ["ID", "Nome", "Código", "Preço", "Estoque", "Ativo"],
-            fixed or rows,
+            ["ID", "Nome", "Código", "Preço", "Estoque", "Ativo", "Última alteração"],
+            rows,
+            row_classes=classes,
         )
-        head = (
-            f'<p class="meta">Total: <strong>{_esc(data.get("total", 0))}</strong> · '
-            f'Status: <strong>200</strong></p>'
-        )
+        head_parts = [
+            "Status: <strong>200</strong>",
+            f'Total: <strong>{_esc(data.get("total", 0))}</strong>',
+        ]
+        filtro_txt = filtro or ((data.get("filtros") or {}).get("alterado_apos") or "")
+        if filtro_txt:
+            head_parts.append(
+                f'Filtro usado: alterado_apos = <strong>{_esc(filtro_txt)}</strong>'
+            )
+        head = f'<p class="meta">{" · ".join(head_parts)}</p>'
         return _wrap_result(head + table)
     except Exception as exc:
         return _wrap_result(_erro_html(exc))

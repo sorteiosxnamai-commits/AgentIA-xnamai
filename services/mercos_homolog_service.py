@@ -100,8 +100,17 @@ def listar_condicoes_pagamento(**kw) -> dict:
     return listar_paginado(_path("condicoes_pagamento"), **kw)
 
 
-def listar_produtos(**kw) -> dict:
-    return listar_paginado(_path("produtos"), **kw)
+def listar_produtos(alterado_apos: str | None = None, **kw) -> dict:
+    """GET /v1/produtos — repassa alterado_apos à Mercos (sem filtro local)."""
+    params_extra = dict(kw.pop("params_extra", None) or {})
+    if alterado_apos is not None and str(alterado_apos).strip():
+        params_extra["alterado_apos"] = str(alterado_apos).strip()
+    if params_extra:
+        kw["params_extra"] = params_extra
+    data = listar_paginado(_path("produtos"), **kw)
+    if "alterado_apos" in params_extra:
+        data["filtros"] = {"alterado_apos": params_extra["alterado_apos"]}
+    return data
 
 
 def listar_segmentos(**kw) -> dict:

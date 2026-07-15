@@ -52,6 +52,37 @@ def test_get_produtos_lista(client, monkeypatch):
     assert resp.json()["total"] == 2
 
 
+def test_produtos_repassa_alterado_apos_para_mercos(client, monkeypatch):
+    capturado: dict = {}
+
+    def fake_get_json(path, *, params=None):
+        capturado["path"] = path
+        capturado["params"] = dict(params or {})
+        return [
+            {
+                "id": 10,
+                "nome": "4c2e97e74c634ea4",
+                "preco_tabela": 12.5,
+                "ultima_alteracao": "2026-07-15 09:00:00",
+            }
+        ]
+
+    monkeypatch.setattr("services.mercos_api_client.get_json", fake_get_json)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/produtos" if chave == "produtos" else f"/v1/{chave}",
+    )
+    resp = client.get(
+        "/mercos/produtos",
+        params={"alterado_apos": "2026-07-15 00:00:00", "max_paginas": 1},
+    )
+    assert resp.status_code == 200
+    assert capturado["path"] == "/v1/produtos"
+    assert capturado["params"]["alterado_apos"] == "2026-07-15 00:00:00"
+    assert "pagina" in capturado["params"]
+    assert resp.json()["itens"][0]["nome"] == "4c2e97e74c634ea4"
+
+
 def test_get_clientes_categorias_etc(client, monkeypatch):
     fake = lambda **_k: {"ok": True, "total": 1, "itens": [{"id": 1}], "paginas_lidas": 1, "sandbox": True, "path": "/x"}
     for nome in (

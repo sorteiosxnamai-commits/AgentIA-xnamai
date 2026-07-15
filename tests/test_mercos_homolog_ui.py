@@ -229,6 +229,72 @@ def test_homologacao_ui_tem_15_secoes_obrigatorias(client, monkeypatch):
     assert "Tentar todos os filtros" in body
     assert 'data-action="/mercos/homologacao-ui/acoes/tipos-pedido"' in body
     assert body.count("Número do documento") >= 2
+    assert "input-produtos-alterado-apos" in body
+    assert "Buscar alterações" in body
+
+
+def test_acao_produtos_repassa_alterado_apos_e_destaca(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    capturado: dict = {}
+
+    def fake_listar(**kwargs):
+        capturado["kwargs"] = dict(kwargs)
+        return {
+            "ok": True,
+            "total": 3,
+            "itens": [
+                {
+                    "id": 1,
+                    "nome": "4c2e97e74c634ea4",
+                    "codigo": "A",
+                    "preco_tabela": 10,
+                    "estoque": 1,
+                    "excluido": False,
+                    "ultima_alteracao": "2026-07-15 10:00:00",
+                },
+                {
+                    "id": 2,
+                    "nome": "87109c4efa4b4f3f",
+                    "codigo": "B",
+                    "preco": 20,
+                    "saldo_estoque": 2,
+                    "ativo": True,
+                },
+                {
+                    "id": 3,
+                    "nome": "Produto Normal",
+                    "codigo": "C",
+                    "preco": 5,
+                    "estoque": 0,
+                    "ativo": True,
+                },
+            ],
+            "filtros": {"alterado_apos": "2026-07-15 00:00:00"},
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produtos",
+        data={"alterado_apos": "2026-07-15 00:00:00"},
+    )
+    assert resp.status_code == 200
+    assert capturado["kwargs"].get("alterado_apos") == "2026-07-15 00:00:00"
+    html = resp.text
+    assert "Filtro usado: alterado_apos =" in html
+    assert "2026-07-15 00:00:00" in html
+    assert "Última alteração" in html
+    assert "4c2e97e74c634ea4" in html
+    assert "87109c4efa4b4f3f" in html
+    assert html.count("destaque-homolog") >= 2
+    assert '"itens"' not in html
 
 
 def test_acao_tipos_pedido_exige_token(client):
