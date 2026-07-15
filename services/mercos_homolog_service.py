@@ -5,6 +5,7 @@ Não altera o agente IA nem CHECKOUT_CREATE_ORDER.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from services.mercos_api_client import (
@@ -111,6 +112,71 @@ def listar_produtos(alterado_apos: str | None = None, **kw) -> dict:
     if "alterado_apos" in params_extra:
         data["filtros"] = {"alterado_apos": params_extra["alterado_apos"]}
     return data
+
+
+def maior_ultima_alteracao(itens: list | None) -> str | None:
+    """Maior ultima_alteracao exatamente como veio da Mercos (sem reformatar)."""
+    maior: str | None = None
+    for item in itens or []:
+        if not isinstance(item, dict):
+            continue
+        bruto = item.get("ultima_alteracao")
+        if bruto is None or bruto == "":
+            continue
+        texto = str(bruto)
+        if maior is None or texto > maior:
+            maior = texto
+    return maior
+
+
+_SYNC_PRODUTOS_LOCK = threading.Lock()
+
+
+def sincronizar_produtos(
+    cursor: str | None = None,
+    *,
+    max_paginas: int = 50,
+) -> dict[str, Any]:
+    """Uma sincronização Produto GET: completa (sem cursor) ou incremental.
+
+    Não altera o formato de ultima_alteracao. Sem filtro local de datas.
+    Impede cliques/chamadas duplicadas enquanto uma sync estiver em andamento.
+    """
+    if not _SYNC_PRODUTOS_LOCK.acquire(blocking=False):
+        raise MercosApiError(
+            "Sincronização de produtos já em andamento. Aguarde a conclusão.",
+            status_code=409,
+        )
+    try:
+        cursor_envio = (cursor or "").strip() or None
+        tipo = "incremental" if cursor_envio else "completa"
+        data = listar_produtos(
+            alterado_apos=cursor_envio,
+            pagina_inicial=1,
+            max_paginas=max_paginas,
+        )
+        itens = data.get("itens") or []
+        total = int(data.get("total") or len(itens) or 0)
+        maior = maior_ultima_alteracao(itens)
+        if maior:
+            novo_cursor = maior
+        else:
+            novo_cursor = cursor_envio  # preserva cursor anterior se sem registros
+        return {
+            "ok": True,
+            "tipo": tipo,
+            "alterado_apos_enviado": cursor_envio,
+            "cursor_anterior": cursor_envio,
+            "novo_cursor": novo_cursor,
+            "total": total,
+            "itens": itens,
+            "path": data.get("path"),
+            "paginas_lidas": data.get("paginas_lidas"),
+            "filtros": data.get("filtros") or {},
+            "status": "concluida",
+        }
+    finally:
+        _SYNC_PRODUTOS_LOCK.release()
 
 
 def listar_segmentos(**kw) -> dict:
@@ -444,6 +510,8 @@ __all__ = [
     "listar_clientes",
     "listar_condicoes_pagamento",
     "listar_produtos",
+    "maior_ultima_alteracao",
+    "sincronizar_produtos",
     "listar_segmentos",
     "listar_tabelas_preco",
     "listar_tabelas_preco_produto",

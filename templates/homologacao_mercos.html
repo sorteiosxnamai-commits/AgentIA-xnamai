@@ -235,21 +235,26 @@
         <!-- 1 -->
         <section class="panel" id="sec-produtos" data-homolog-sec="produto-buscar">
           <h2>Produto — Buscar</h2>
-          <p class="hint">Catálogo operacional com código, preço e estoque. Use Alterado após para sincronizar mudanças recentes.</p>
+          <p class="hint">Sincronização automática do catálogo. A primeira etapa é completa; as seguintes usam o cursor salvo (alterado_apos).</p>
           <div class="toolbar">
-            <label class="field">Alterado após
-              <input type="text" id="input-produtos-alterado-apos" value="2026-07-15 00:00:00" />
-            </label>
+            <button type="button" id="btn-produtos-reiniciar" class="secondary">
+              Reiniciar ciclo de sincronização
+            </button>
+            <button type="button" id="btn-produtos-sincronizar">
+              Sincronizar próxima etapa
+            </button>
             <button type="button"
               data-action="/mercos/homologacao-ui/acoes/produtos"
               data-target="res-produtos">
               Buscar produtos
             </button>
-            <button type="button" class="secondary"
-              data-action="/mercos/homologacao-ui/acoes/produtos"
-              data-target="res-produtos"
-              data-fields="alterado_apos:input-produtos-alterado-apos">
-              Buscar alterações
+          </div>
+          <div class="toolbar">
+            <label class="field">Localizar produto pelo nome
+              <input type="text" id="input-produtos-nome" placeholder="Nome exato do produto" />
+            </label>
+            <button type="button" id="btn-produtos-localizar" class="secondary">
+              Localizar produto
             </button>
           </div>
           <div class="resultado" id="res-produtos"></div>
@@ -505,6 +510,8 @@
 
   <script>
     (function () {
+      var CURSOR_KEY = "mercos_produtos_cursor";
+      var produtosSyncBusy = false;
       var store = {
         cliente: localStorage.getItem("homolog_cliente_id") || "",
         pedido: localStorage.getItem("homolog_pedido_id") || "",
@@ -534,6 +541,140 @@
         syncInputs();
       }
 
+      function getProdutosCursor() {
+        return localStorage.getItem(CURSOR_KEY) || "";
+      }
+
+      function setProdutosCursor(valor) {
+        if (valor) {
+          localStorage.setItem(CURSOR_KEY, valor);
+        } else {
+          localStorage.removeItem(CURSOR_KEY);
+        }
+      }
+
+      function sleep(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+      }
+
+      function applyCursorFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-cursor-limpo") === "1") {
+          setProdutosCursor("");
+          return;
+        }
+        if (wrap.hasAttribute("data-novo-cursor")) {
+          setProdutosCursor(wrap.getAttribute("data-novo-cursor") || "");
+        }
+      }
+
+      async function postAcao(url, fields, target, btn) {
+        var fd = new FormData();
+        Object.keys(fields || {}).forEach(function (k) {
+          fd.append(k, fields[k] == null ? "" : String(fields[k]));
+        });
+        if (btn) btn.disabled = true;
+        target.innerHTML = '<p class="loading">Carregando registros…</p>';
+        try {
+          var resp = await fetch(url, {
+            method: "POST",
+            body: fd,
+            credentials: "same-origin"
+          });
+          if (resp.status === 429) {
+            var ra = parseFloat(resp.headers.get("Retry-After") || "10");
+            if (!isFinite(ra) || ra < 0) ra = 10;
+            target.innerHTML = '<p class="loading">Limite da Mercos atingido. Aguardando ' + ra + 's…</p>';
+            await sleep(ra * 1000);
+            resp = await fetch(url, {
+              method: "POST",
+              body: fd,
+              credentials: "same-origin"
+            });
+          }
+          var text = await resp.text();
+          if (resp.status === 403) {
+            target.innerHTML = '<div class="result-card erro"><h4>Acesso negado</h4><p>Não foi possível carregar os dados nesta sessão.</p></div>';
+            return null;
+          }
+          target.innerHTML = text;
+          applyCursorFromResult(target);
+          var node = target.querySelector("[data-entity][data-id]");
+          if (node) {
+            remember(node.getAttribute("data-entity"), node.getAttribute("data-id"));
+          }
+          return resp;
+        } catch (err) {
+          target.innerHTML = '<div class="result-card erro"><h4>Falha ao carregar</h4><p>Não foi possível concluir a operação.</p></div>';
+          return null;
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      }
+
+      var btnReiniciar = document.getElementById("btn-produtos-reiniciar");
+      var btnSincronizar = document.getElementById("btn-produtos-sincronizar");
+      var btnLocalizar = document.getElementById("btn-produtos-localizar");
+      var resProdutos = document.getElementById("res-produtos");
+
+      if (btnReiniciar && resProdutos) {
+        btnReiniciar.addEventListener("click", async function () {
+          if (produtosSyncBusy) return;
+          produtosSyncBusy = true;
+          setProdutosCursor("");
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/produtos-reiniciar",
+              {},
+              resProdutos,
+              btnReiniciar
+            );
+          } finally {
+            produtosSyncBusy = false;
+            btnReiniciar.disabled = false;
+            if (btnSincronizar) btnSincronizar.disabled = false;
+          }
+        });
+      }
+
+      if (btnSincronizar && resProdutos) {
+        btnSincronizar.addEventListener("click", async function () {
+          if (produtosSyncBusy) return;
+          produtosSyncBusy = true;
+          btnSincronizar.disabled = true;
+          if (btnReiniciar) btnReiniciar.disabled = true;
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/produtos-sincronizar",
+              { cursor: getProdutosCursor() },
+              resProdutos,
+              btnSincronizar
+            );
+          } finally {
+            produtosSyncBusy = false;
+            btnSincronizar.disabled = false;
+            if (btnReiniciar) btnReiniciar.disabled = false;
+          }
+        });
+      }
+
+      if (btnLocalizar && resProdutos) {
+        btnLocalizar.addEventListener("click", async function () {
+          if (produtosSyncBusy) return;
+          var nomeEl = document.getElementById("input-produtos-nome");
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/produtos-localizar",
+            {
+              nome: nomeEl ? nomeEl.value : "",
+              cursor: getProdutosCursor()
+            },
+            resProdutos,
+            btnLocalizar
+          );
+        });
+      }
+
       document.querySelectorAll("button[data-action]").forEach(function (btn) {
         btn.addEventListener("click", async function () {
           var url = btn.getAttribute("data-action");
@@ -543,7 +684,7 @@
           var storeKey = btn.getAttribute("data-store") || "";
           if (!target) return;
 
-          var fd = new FormData();
+          var fieldMap = {};
           fields.split(",").forEach(function (pair) {
             pair = pair.trim();
             if (!pair) return;
@@ -551,34 +692,18 @@
             var name = parts[0];
             var inputId = parts[1];
             var el = document.getElementById(inputId);
-            fd.append(name, el ? el.value : "");
+            fieldMap[name] = el ? el.value : "";
           });
 
           btn.disabled = true;
-          target.innerHTML = '<p class="loading">Carregando registros…</p>';
           try {
-            var resp = await fetch(url, {
-              method: "POST",
-              body: fd,
-              credentials: "same-origin"
-            });
-            var text = await resp.text();
-            if (resp.status === 403) {
-              target.innerHTML = '<div class="result-card erro"><h4>Acesso negado</h4><p>Não foi possível carregar os dados nesta sessão.</p></div>';
-              return;
-            }
-            target.innerHTML = text;
-            var node = target.querySelector("[data-entity][data-id]");
-            if (node) {
-              remember(node.getAttribute("data-entity"), node.getAttribute("data-id"));
-            } else if (storeKey) {
+            var resp = await postAcao(url, fieldMap, target, btn);
+            if (resp && storeKey) {
               var wrap = target.querySelector(".acao-resultado");
               if (wrap && wrap.getAttribute("data-id")) {
                 remember(storeKey, wrap.getAttribute("data-id"));
               }
             }
-          } catch (err) {
-            target.innerHTML = '<div class="result-card erro"><h4>Falha ao carregar</h4><p>Não foi possível concluir a operação.</p></div>';
           } finally {
             btn.disabled = false;
           }

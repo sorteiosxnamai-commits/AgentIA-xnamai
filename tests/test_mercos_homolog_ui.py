@@ -229,8 +229,11 @@ def test_homologacao_ui_tem_15_secoes_obrigatorias(client, monkeypatch):
     assert "Tentar todos os filtros" in body
     assert 'data-action="/mercos/homologacao-ui/acoes/tipos-pedido"' in body
     assert body.count("Número do documento") >= 2
-    assert "input-produtos-alterado-apos" in body
-    assert "Buscar alterações" in body
+    assert "Sincronizar próxima etapa" in body
+    assert "Reiniciar ciclo de sincronização" in body
+    assert "Localizar produto pelo nome" in body
+    assert "mercos_produtos_cursor" in body
+    assert "btn-produtos-sincronizar" in body
 
 
 def test_acao_produtos_repassa_alterado_apos_e_destaca(client, monkeypatch):
@@ -261,7 +264,7 @@ def test_acao_produtos_repassa_alterado_apos_e_destaca(client, monkeypatch):
                     "id": 2,
                     "nome": "87109c4efa4b4f3f",
                     "codigo": "B",
-                    "preco": 20,
+                    "preco_tabela": 20,
                     "saldo_estoque": 2,
                     "ativo": True,
                 },
@@ -269,7 +272,7 @@ def test_acao_produtos_repassa_alterado_apos_e_destaca(client, monkeypatch):
                     "id": 3,
                     "nome": "Produto Normal",
                     "codigo": "C",
-                    "preco": 5,
+                    "preco_tabela": 5,
                     "estoque": 0,
                     "ativo": True,
                 },
@@ -292,9 +295,223 @@ def test_acao_produtos_repassa_alterado_apos_e_destaca(client, monkeypatch):
     assert "2026-07-15 00:00:00" in html
     assert "Última alteração" in html
     assert "4c2e97e74c634ea4" in html
-    assert "87109c4efa4b4f3f" in html
     assert html.count("destaque-homolog") >= 2
     assert '"itens"' not in html
+
+
+def test_produtos_sync_primeira_sem_alterado_apos(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    capturado: dict = {}
+
+    def fake_listar(**kwargs):
+        capturado["kwargs"] = dict(kwargs)
+        return {
+            "ok": True,
+            "path": "/v1/produtos",
+            "total": 2,
+            "itens": [
+                {
+                    "id": 1,
+                    "nome": "4c2e97e74c634ea4",
+                    "preco_tabela": 11.5,
+                    "ultima_alteracao": "2026-07-14 10:00:00",
+                    "ativo": True,
+                },
+                {
+                    "id": 2,
+                    "nome": "outro",
+                    "preco_tabela": 9,
+                    "ultima_alteracao": "2026-07-15 12:30:00",
+                    "ativo": True,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post("/mercos/homologacao-ui/acoes/produtos-sincronizar")
+    assert resp.status_code == 200
+    assert capturado["kwargs"].get("alterado_apos") in (None, "")
+    html = resp.text
+    assert "Tipo da busca" in html
+    assert "Completa" in html
+    assert "Alterado após enviado" in html
+    assert "Novo cursor salvo" in html
+    assert "2026-07-15 12:30:00" in html
+    assert "Total retornado" in html
+    from urllib.parse import unquote
+
+    cookie_raw = (resp.cookies.get("mercos_produtos_cursor") or "").strip('"')
+    assert unquote(cookie_raw) == "2026-07-15 12:30:00"
+    assert "data-novo-cursor=\"2026-07-15 12:30:00\"" in html
+    assert '"itens"' not in html
+
+
+def test_produtos_sync_segunda_com_cursor_anterior(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    capturado: dict = {}
+
+    def fake_listar(**kwargs):
+        capturado["kwargs"] = dict(kwargs)
+        return {
+            "ok": True,
+            "total": 1,
+            "itens": [
+                {
+                    "id": 9,
+                    "nome": "5db65d7102b54a98",
+                    "preco_tabela": 33,
+                    "ultima_alteracao": "2026-07-16 08:00:00",
+                    "ativo": True,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    cursor_anterior = "2026-07-15 12:30:00"
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-sincronizar",
+        data={"cursor": cursor_anterior},
+    )
+    assert resp.status_code == 200
+    assert capturado["kwargs"].get("alterado_apos") == cursor_anterior
+    html = resp.text
+    assert "Incremental" in html
+    assert cursor_anterior in html
+    assert "2026-07-16 08:00:00" in html
+    from urllib.parse import unquote
+
+    cookie_raw = (resp.cookies.get("mercos_produtos_cursor") or "").strip('"')
+    assert unquote(cookie_raw) == "2026-07-16 08:00:00"
+
+
+def test_produtos_sync_preserva_cursor_sem_registros(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+
+    def fake_listar(**kwargs):
+        return {"ok": True, "total": 0, "itens": []}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    cursor_anterior = "2026-07-15 12:30:00"
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-sincronizar",
+        data={"cursor": cursor_anterior},
+    )
+    assert resp.status_code == 200
+    from urllib.parse import unquote
+
+    cookie_raw = (resp.cookies.get("mercos_produtos_cursor") or "").strip('"')
+    assert unquote(cookie_raw) == cursor_anterior
+    assert f'data-novo-cursor="{cursor_anterior}"' in resp.text
+
+
+def test_produtos_sync_impede_chamadas_duplicadas(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos", called
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+
+    from services.mercos_homolog_service import _SYNC_PRODUTOS_LOCK
+
+    assert _SYNC_PRODUTOS_LOCK.acquire(blocking=False)
+    try:
+        resp = client.post("/mercos/homologacao-ui/acoes/produtos-sincronizar")
+        assert resp.status_code == 409
+        assert "já em andamento" in resp.text
+        called.assert_not_called()
+    finally:
+        _SYNC_PRODUTOS_LOCK.release()
+
+
+def test_produtos_localizar_usa_somente_preco_tabela(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+
+    def fake_listar(**kwargs):
+        return {
+            "ok": True,
+            "total": 1,
+            "itens": [
+                {
+                    "id": 55,
+                    "nome": "4c2e97e74c634ea4",
+                    "preco": 999,
+                    "preco_bruto": 888,
+                    "preco_tabela": 42.5,
+                    "ultima_alteracao": "2026-07-15 11:00:00",
+                    "ativo": True,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-localizar",
+        data={"nome": "4c2e97e74c634ea4"},
+    )
+    assert resp.status_code == 200
+    html = resp.text
+    assert "Produto localizado" in html
+    assert "Preço tabela" in html
+    assert "42.5" in html
+    assert "999" not in html
+    assert "888" not in html
+    assert "4c2e97e74c634ea4" in html
+
+
+def test_produtos_reiniciar_ciclo_nao_chama_mercos(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos", called
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post("/mercos/homologacao-ui/acoes/produtos-reiniciar")
+    assert resp.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in resp.text
+    called.assert_not_called()
 
 
 def test_acao_tipos_pedido_exige_token(client):

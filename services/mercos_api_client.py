@@ -88,7 +88,12 @@ def request_mercos(
                 return resp
             if resp.status_code == 429:
                 if tentativa < MAX_RETRIES_429 - 1:
-                    time.sleep(10 * (tentativa + 1))
+                    retry_after = (resp.headers.get("Retry-After") or "").strip()
+                    try:
+                        espera = float(retry_after)
+                    except (TypeError, ValueError):
+                        espera = 10.0 * (tentativa + 1)
+                    time.sleep(max(0.0, espera))
                     continue
                 raise MercosApiError(
                     "Mercos retornou 429 (throttling). Aguarde e tente novamente.",

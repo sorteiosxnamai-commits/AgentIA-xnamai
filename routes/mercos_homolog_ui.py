@@ -11,6 +11,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -27,6 +28,8 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 _COOKIE = "mercos_homolog_ui"
 _COOKIE_MAX_AGE = 60 * 60 * 8
+_COOKIE_PRODUTOS_CURSOR = "mercos_produtos_cursor"
+_CURSOR_MAX_AGE = 60 * 60 * 24 * 30
 
 
 def _bloqueio(token: str = "") -> None:
@@ -147,12 +150,22 @@ def _erro_html(exc: Exception) -> str:
     )
 
 
-def _wrap_result(inner: str, *, entity: str = "", entity_id: str = "") -> HTMLResponse:
+def _wrap_result(
+    inner: str,
+    *,
+    entity: str = "",
+    entity_id: str = "",
+    extra_attrs: dict[str, str] | None = None,
+) -> HTMLResponse:
     attrs = []
     if entity:
         attrs.append(f'data-entity="{html.escape(entity)}"')
     if entity_id:
         attrs.append(f'data-id="{html.escape(str(entity_id))}"')
+    for chave, valor in (extra_attrs or {}).items():
+        if valor is None:
+            continue
+        attrs.append(f'data-{html.escape(chave)}="{html.escape(str(valor))}"')
     attr = (" " + " ".join(attrs)) if attrs else ""
     return HTMLResponse(f'<div class="acao-resultado"{attr}>{inner}</div>')
 
@@ -215,12 +228,89 @@ _NOMES_PRODUTO_DESTAQUE = frozenset(
 )
 
 
+def _cursor_produtos(request: Request, cursor_form: str = "") -> str:
+    """Cursor: form (localStorage) tem prioridade; depois cookie do servidor."""
+    form = (cursor_form or "").strip()
+    if form:
+        return form
+    raw = (request.cookies.get(_COOKIE_PRODUTOS_CURSOR) or "").strip().strip('"')
+    if not raw:
+        return ""
+    try:
+        return unquote(raw)
+    except Exception:
+        return raw
+
+
+def _set_cursor_cookie(resp: HTMLResponse, cursor: str | None) -> HTMLResponse:
+    valor = (cursor or "").strip()
+    if valor:
+        resp.set_cookie(
+            key=_COOKIE_PRODUTOS_CURSOR,
+            value=quote(valor, safe=""),
+            httponly=False,
+            max_age=_CURSOR_MAX_AGE,
+            samesite="lax",
+        )
+    else:
+        resp.delete_cookie(_COOKIE_PRODUTOS_CURSOR)
+    return resp
+
+
+def _html_tabela_produtos(itens: list) -> str:
+    rows = []
+    classes: list[str] = []
+    for item in itens or []:
+        nome = _campo(item, "nome", "nome_produto")
+        nome_str = "" if nome == "—" else str(nome)
+        ativo = _fmt_bool(_campo(item, "ativo", default=None))
+        if "excluido" in item and "ativo" not in item:
+            ativo = "Não" if item.get("excluido") else "Sim"
+        preco = item.get("preco_tabela")
+        if preco is None or preco == "":
+            preco = "—"
+        rows.append(
+            [
+                _campo(item, "id"),
+                nome_str or "—",
+                _campo(item, "codigo", "codigo_sku", "sku"),
+                preco,
+                _campo(item, "estoque", "saldo_estoque", "quantidade_estoque"),
+                ativo,
+                item.get("ultima_alteracao")
+                if item.get("ultima_alteracao") not in (None, "")
+                else "—",
+            ]
+        )
+        nome_l = nome_str.lower()
+        classes.append(
+            "destaque-homolog"
+            if nome_l in _NOMES_PRODUTO_DESTAQUE
+            or any(nome_l.startswith(n) for n in _NOMES_PRODUTO_DESTAQUE)
+            else ""
+        )
+    return _table(
+        ["ID", "Nome", "Código", "Preço", "Estoque", "Ativo", "Última alteração"],
+        rows,
+        row_classes=classes,
+    )
+
+
+def _ativo_produto(item: dict) -> str:
+    if "ativo" in item:
+        return _fmt_bool(item.get("ativo"))
+    if "excluido" in item:
+        return "Não" if item.get("excluido") else "Sim"
+    return "—"
+
+
 @router.post("/homologacao-ui/acoes/produtos", response_class=HTMLResponse)
 def acao_produtos(
     request: Request,
     token: str = Form(""),
     alterado_apos: str = Form(""),
 ):
+    """Busca simples (compatível). Preferir sincronizar-produtos para o ciclo incremental."""
     _auth(request, token)
     filtro = (alterado_apos or "").strip()
     try:
@@ -229,54 +319,160 @@ def acao_produtos(
             max_paginas=5,
             alterado_apos=filtro or None,
         )
-        rows = []
-        classes: list[str] = []
-        for item in data.get("itens") or []:
-            nome = _campo(item, "nome", "nome_produto")
-            nome_str = "" if nome == "—" else str(nome)
-            ativo = _fmt_bool(_campo(item, "ativo", default=None))
-            if "excluido" in item and "ativo" not in item:
-                ativo = "Não" if item.get("excluido") else "Sim"
-            rows.append(
-                [
-                    _campo(item, "id"),
-                    nome_str or "—",
-                    _campo(item, "codigo", "codigo_sku", "sku"),
-                    _campo(item, "preco", "preco_tabela", "preco_bruto"),
-                    _campo(item, "estoque", "saldo_estoque", "quantidade_estoque"),
-                    ativo,
-                    _campo(
-                        item,
-                        "ultima_alteracao",
-                        "updated_at",
-                        "alterado_em",
-                        "data_alteracao",
-                        "modificado_em",
-                    ),
-                ]
-            )
-            classes.append(
-                "destaque-homolog"
-                if nome_str.lower() in _NOMES_PRODUTO_DESTAQUE
-                or any(nome_str.lower().startswith(n) for n in _NOMES_PRODUTO_DESTAQUE)
-                else ""
-            )
-        table = _table(
-            ["ID", "Nome", "Código", "Preço", "Estoque", "Ativo", "Última alteração"],
-            rows,
-            row_classes=classes,
-        )
+        table = _html_tabela_produtos(data.get("itens") or [])
         head_parts = [
             "Status: <strong>200</strong>",
             f'Total: <strong>{_esc(data.get("total", 0))}</strong>',
         ]
-        filtro_txt = filtro or ((data.get("filtros") or {}).get("alterado_apos") or "")
-        if filtro_txt:
+        if filtro:
             head_parts.append(
-                f'Filtro usado: alterado_apos = <strong>{_esc(filtro_txt)}</strong>'
+                f'Filtro usado: alterado_apos = <strong>{_esc(filtro)}</strong>'
             )
         head = f'<p class="meta">{" · ".join(head_parts)}</p>'
         return _wrap_result(head + table)
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
+@router.post("/homologacao-ui/acoes/produtos-reiniciar", response_class=HTMLResponse)
+def acao_produtos_reiniciar(request: Request, token: str = Form("")):
+    """Apaga o cursor de produtos sem chamar a API Mercos."""
+    _auth(request, token)
+    mensagem = (
+        '<div class="result-card ok">'
+        "<h4>Ciclo de sincronização reiniciado</h4>"
+        "<p>Cursor de produtos apagado. A próxima sincronização será completa.</p>"
+        "</div>"
+    )
+    resp = _wrap_result(
+        mensagem,
+        extra_attrs={
+            "novo-cursor": "",
+            "cursor-limpo": "1",
+            "status-sync": "reiniciado",
+        },
+    )
+    return _set_cursor_cookie(resp, None)
+
+
+@router.post("/homologacao-ui/acoes/produtos-sincronizar", response_class=HTMLResponse)
+def acao_produtos_sincronizar(
+    request: Request,
+    token: str = Form(""),
+    cursor: str = Form(""),
+):
+    """Uma sincronização por clique: completa (sem cursor) ou incremental."""
+    _auth(request, token)
+    cursor_usado = _cursor_produtos(request, cursor)
+    try:
+        data = homolog.sincronizar_produtos(cursor_usado or None, max_paginas=50)
+        tipo_label = "Completa" if data["tipo"] == "completa" else "Incremental"
+        enviado = data.get("alterado_apos_enviado") or "—"
+        novo = data.get("novo_cursor") or "—"
+        total = data.get("total", 0)
+        resumo = _card(
+            "Sincronização de produtos",
+            [
+                ("Status da sincronização", "Concluída"),
+                ("Tipo da busca", tipo_label),
+                ("Alterado após enviado", enviado),
+                ("Novo cursor salvo", novo),
+                ("Total retornado", total),
+            ],
+            status_label="Status 200",
+            css="ok",
+        )
+        table = _html_tabela_produtos(data.get("itens") or [])
+        resp = _wrap_result(
+            resumo + table,
+            extra_attrs={
+                "novo-cursor": data.get("novo_cursor") or "",
+                "cursor-anterior": data.get("cursor_anterior") or "",
+                "tipo-busca": data.get("tipo") or "",
+                "total": str(total),
+                "status-sync": "concluida",
+            },
+        )
+        return _set_cursor_cookie(resp, data.get("novo_cursor"))
+    except MercosApiError as exc:
+        html_erro = _erro_html(exc)
+        resp = _wrap_result(
+            html_erro,
+            extra_attrs={"status-sync": "erro", "http-status": str(exc.status_code or "")},
+        )
+        if exc.status_code == 429:
+            resp.status_code = 429
+            # propaga Retry-After se o client anexou; padrão 10s
+            resp.headers["Retry-After"] = "10"
+        elif exc.status_code == 409:
+            resp.status_code = 409
+        return resp
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc), extra_attrs={"status-sync": "erro"})
+
+
+@router.post("/homologacao-ui/acoes/produtos-localizar", response_class=HTMLResponse)
+def acao_produtos_localizar(
+    request: Request,
+    token: str = Form(""),
+    nome: str = Form(""),
+    cursor: str = Form(""),
+):
+    """Localiza produto pelo nome exato; usa somente preco_tabela no cartão."""
+    _auth(request, token)
+    nome_busca = (nome or "").strip()
+    if not nome_busca:
+        return _wrap_result(
+            _card(
+                "Localizar produto",
+                [("Mensagem", "Informe o nome exato do produto.")],
+                status_label="Atenção",
+                css="erro",
+            )
+        )
+    cursor_usado = _cursor_produtos(request, cursor)
+    try:
+        data = homolog.listar_produtos(
+            alterado_apos=cursor_usado or None,
+            pagina_inicial=1,
+            max_paginas=50,
+        )
+        encontrado = None
+        for item in data.get("itens") or []:
+            if not isinstance(item, dict):
+                continue
+            nome_item = item.get("nome")
+            if nome_item is not None and str(nome_item) == nome_busca:
+                encontrado = item
+                break
+        if not encontrado:
+            return _wrap_result(
+                _card(
+                    "Produto não encontrado",
+                    [("Nome buscado", nome_busca), ("Total na busca", data.get("total", 0))],
+                    status_label="Não encontrado",
+                    css="erro",
+                )
+            )
+        preco = encontrado.get("preco_tabela")
+        if preco is None or preco == "":
+            preco = "—"
+        ultima = encontrado.get("ultima_alteracao")
+        if ultima is None or ultima == "":
+            ultima = "—"
+        card = _card(
+            "Produto localizado",
+            [
+                ("ID", encontrado.get("id")),
+                ("Nome", encontrado.get("nome")),
+                ("Preço tabela", preco),
+                ("Última alteração", ultima),
+                ("Ativo", _ativo_produto(encontrado)),
+            ],
+            status_label="Encontrado",
+            css="ok",
+        )
+        return _wrap_result(card)
     except Exception as exc:
         return _wrap_result(_erro_html(exc))
 
