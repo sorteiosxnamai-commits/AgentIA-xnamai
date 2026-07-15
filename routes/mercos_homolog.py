@@ -183,12 +183,18 @@ def get_tipos_pedido(
     pagina: int = Query(1, ge=1),
     max_paginas: int = Query(5, ge=1, le=50),
     alterado_apos: str = Query(""),
+    excluidos: str = Query(""),
+    somente_excluidos: str = Query(""),
+    incluir_excluidos: str = Query(""),
 ):
-    """Lista tipos de pedido; repassa alterado_apos à Mercos (query)."""
+    """Lista tipos de pedido; repassa filtros à Mercos (query, sem filtro local)."""
     _bloqueio(token)
     try:
         return homolog.listar_tipos_pedido(
             alterado_apos=(alterado_apos or "").strip() or None,
+            excluidos=(excluidos or "").strip() or None,
+            somente_excluidos=(somente_excluidos or "").strip() or None,
+            incluir_excluidos=(incluir_excluidos or "").strip() or None,
             **_params_paginacao(pagina, max_paginas),
         )
     except MercosApiError as exc:

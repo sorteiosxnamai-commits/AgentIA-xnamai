@@ -166,35 +166,86 @@ def _probe_status(path: str) -> int | None:
         return int(exc.status_code) if exc.status_code else None
 
 
-def _kw_com_alterado_apos(alterado_apos: str | None = None, **kw) -> dict:
-    """Monta kwargs de listar_paginado incluindo alterado_apos em params_extra."""
+def _valor_query_opcional(valor: Any) -> str | None:
+    if valor is None:
+        return None
+    if isinstance(valor, bool):
+        return "true" if valor else "false"
+    texto = str(valor).strip()
+    return texto or None
+
+
+def _kw_filtros_tipos_pedido(
+    *,
+    alterado_apos: str | None = None,
+    excluidos: str | bool | None = None,
+    somente_excluidos: str | bool | None = None,
+    incluir_excluidos: str | bool | None = None,
+    **kw,
+) -> tuple[dict, dict]:
+    """Monta kwargs de listar_paginado + mapa dos filtros enviados à Mercos."""
     params_extra = dict(kw.pop("params_extra", None) or {})
-    if alterado_apos is not None and str(alterado_apos).strip():
-        params_extra["alterado_apos"] = str(alterado_apos).strip()
+    filtros: dict[str, str] = {}
+    for chave, valor in (
+        ("alterado_apos", alterado_apos),
+        ("excluidos", excluidos),
+        ("somente_excluidos", somente_excluidos),
+        ("incluir_excluidos", incluir_excluidos),
+    ):
+        normalizado = _valor_query_opcional(valor)
+        if normalizado is not None:
+            params_extra[chave] = normalizado
+            filtros[chave] = normalizado
     if params_extra:
         kw["params_extra"] = params_extra
-    return kw
+    return kw, filtros
 
 
-def listar_tipos_pedido(alterado_apos: str | None = None, **kw) -> dict:
+def listar_tipos_pedido(
+    alterado_apos: str | None = None,
+    excluidos: str | bool | None = None,
+    somente_excluidos: str | bool | None = None,
+    incluir_excluidos: str | bool | None = None,
+    **kw,
+) -> dict:
     """GET tipos de pedido — path /v1/pedidos/tipo (ou MERCOS_PATH_TIPOS_PEDIDO).
 
-    Repassa alterado_apos como query param da Mercos (sem filtro local).
+    Repassa filtros de alteração/excluídos como query params da Mercos
+    (sem filtro local no Python).
     """
-    return listar_paginado(
-        _path("tipos_pedido"),
-        **_kw_com_alterado_apos(alterado_apos, **kw),
+    kw, filtros = _kw_filtros_tipos_pedido(
+        alterado_apos=alterado_apos,
+        excluidos=excluidos,
+        somente_excluidos=somente_excluidos,
+        incluir_excluidos=incluir_excluidos,
+        **kw,
     )
+    data = listar_paginado(_path("tipos_pedido"), **kw)
+    if filtros:
+        data["filtros"] = filtros
+    return data
 
 
-def listar_tipos_pedido_descoberta(alterado_apos: str | None = None, **kw) -> dict:
+def listar_tipos_pedido_descoberta(
+    alterado_apos: str | None = None,
+    excluidos: str | bool | None = None,
+    somente_excluidos: str | bool | None = None,
+    incluir_excluidos: str | bool | None = None,
+    **kw,
+) -> dict:
     """Lista Tipo de Pedido tentando paths alternativos até achar HTTP 200.
 
-    Repassa alterado_apos à Mercos via query (não filtra no Python).
+    Repassa filtros à Mercos via query (não filtra no Python).
     """
     global _CACHE_PATH_TIPOS_PEDIDO
 
-    kw = _kw_com_alterado_apos(alterado_apos, **kw)
+    kw, filtros = _kw_filtros_tipos_pedido(
+        alterado_apos=alterado_apos,
+        excluidos=excluidos,
+        somente_excluidos=somente_excluidos,
+        incluir_excluidos=incluir_excluidos,
+        **kw,
+    )
     candidatos = caminhos_candidatos_tipos_pedido()
     testados: list[str] = []
     path_ok: str | None = _CACHE_PATH_TIPOS_PEDIDO
@@ -205,8 +256,10 @@ def listar_tipos_pedido_descoberta(alterado_apos: str | None = None, **kw) -> di
             data["path_resolvido"] = path_ok
             data["paths_testados"] = [path_ok]
             data["descoberta"] = True
-            if alterado_apos and str(alterado_apos).strip():
-                data["alterado_apos"] = str(alterado_apos).strip()
+            if filtros:
+                data["filtros"] = filtros
+                if "alterado_apos" in filtros:
+                    data["alterado_apos"] = filtros["alterado_apos"]
             return data
         except MercosApiError:
             _CACHE_PATH_TIPOS_PEDIDO = None
@@ -222,8 +275,10 @@ def listar_tipos_pedido_descoberta(alterado_apos: str | None = None, **kw) -> di
             data["paths_testados"] = list(testados)
             data["descoberta"] = True
             data["status_code"] = 200
-            if alterado_apos and str(alterado_apos).strip():
-                data["alterado_apos"] = str(alterado_apos).strip()
+            if filtros:
+                data["filtros"] = filtros
+                if "alterado_apos" in filtros:
+                    data["alterado_apos"] = filtros["alterado_apos"]
             return data
 
     return {
@@ -237,11 +292,8 @@ def listar_tipos_pedido_descoberta(alterado_apos: str | None = None, **kw) -> di
         "sandbox": mercos_ambiente_sandbox(),
         "descoberta": True,
         "status_code": 404,
-        "alterado_apos": (
-            str(alterado_apos).strip()
-            if alterado_apos and str(alterado_apos).strip()
-            else None
-        ),
+        "filtros": filtros or None,
+        "alterado_apos": filtros.get("alterado_apos"),
         "mensagem": (
             "Não foi possível localizar o endpoint oficial de Tipo de Pedido no sandbox. "
             f"Paths testados: {', '.join(testados)}"

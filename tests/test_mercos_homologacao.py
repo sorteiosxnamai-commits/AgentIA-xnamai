@@ -186,6 +186,48 @@ def test_tipos_pedido_repassa_alterado_apos_para_mercos(client, monkeypatch):
     assert resp.json()["itens"][0]["nome"] == "0832f68abc"
 
 
+def test_tipos_pedido_repassa_filtros_excluidos_para_mercos(client, monkeypatch):
+    capturado: dict = {}
+
+    def fake_get_json(path, *, params=None):
+        capturado["path"] = path
+        capturado["params"] = dict(params or {})
+        return [
+            {
+                "id": 9,
+                "nome": "8df21d6cd7d44fd6",
+                "excluido": True,
+                "ultima_alteracao": "2026-07-14 14:37:38",
+            }
+        ]
+
+    monkeypatch.setattr("services.mercos_api_client.get_json", fake_get_json)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/pedidos/tipo",
+    )
+    resp = client.get(
+        "/mercos/tipos-pedido",
+        params={
+            "alterado_apos": "2026-07-14 00:00:00",
+            "excluidos": "true",
+            "somente_excluidos": "true",
+            "incluir_excluidos": "true",
+            "max_paginas": 1,
+        },
+    )
+    assert resp.status_code == 200
+    assert capturado["path"] == "/v1/pedidos/tipo"
+    assert capturado["params"]["alterado_apos"] == "2026-07-14 00:00:00"
+    assert capturado["params"]["excluidos"] == "true"
+    assert capturado["params"]["somente_excluidos"] == "true"
+    assert capturado["params"]["incluir_excluidos"] == "true"
+    assert "pagina" in capturado["params"]
+    item = resp.json()["itens"][0]
+    assert item["nome"] == "8df21d6cd7d44fd6"
+    assert item["excluido"] is True
+
+
 def test_bloqueio_sem_token(monkeypatch):
     monkeypatch.setenv("DIAGNOSTICOS_ABERTOS", "false")
     monkeypatch.setenv("SYNC_TOKEN", "segredo-teste")

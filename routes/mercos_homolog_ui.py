@@ -432,14 +432,23 @@ def acao_tipos_pedido(
     request: Request,
     token: str = Form(""),
     alterado_apos: str = Form(""),
+    excluidos: str = Form(""),
+    somente_excluidos: str = Form(""),
+    incluir_excluidos: str = Form(""),
 ):
     _auth(request, token)
-    filtro = (alterado_apos or "").strip()
+    filtro_alterado = (alterado_apos or "").strip()
+    filtro_excluidos = (excluidos or "").strip()
+    filtro_somente = (somente_excluidos or "").strip()
+    filtro_incluir = (incluir_excluidos or "").strip()
     try:
         data = homolog.listar_tipos_pedido_descoberta(
             pagina_inicial=1,
             max_paginas=5,
-            alterado_apos=filtro or None,
+            alterado_apos=filtro_alterado or None,
+            excluidos=filtro_excluidos or None,
+            somente_excluidos=filtro_somente or None,
+            incluir_excluidos=filtro_incluir or None,
         )
         if not data.get("ok", True) or data.get("status_code") == 404:
             paths = data.get("paths_testados") or []
@@ -481,6 +490,7 @@ def acao_tipos_pedido(
                 nome_l.startswith("19814a3")
                 or nome_l.startswith("198314a3")
                 or nome_l.startswith("0832f68")
+                or nome_l.startswith("8df21d6c")
             )
             classes.append("destaque-homolog" if destaque else "")
 
@@ -490,15 +500,26 @@ def acao_tipos_pedido(
             empty_msg="Endpoint encontrado, porém sem tipos de pedido cadastrados.",
             row_classes=classes,
         )
-        filtro_txt = filtro or (data.get("alterado_apos") or "")
+        filtros = dict(data.get("filtros") or {})
+        if filtro_alterado and "alterado_apos" not in filtros:
+            filtros["alterado_apos"] = filtro_alterado
+        if filtro_excluidos and "excluidos" not in filtros:
+            filtros["excluidos"] = filtro_excluidos
         head_parts = [
-            f'Status: <strong>200</strong>',
+            "Status: <strong>200</strong>",
             f'Total: <strong>{_esc(data.get("total", 0))}</strong>',
         ]
-        if filtro_txt:
-            head_parts.append(
-                f'Filtro usado: alterado_apos = <strong>{_esc(filtro_txt)}</strong>'
-            )
+        if filtros.get("alterado_apos") or filtros.get("excluidos"):
+            partes_filtro = []
+            if filtros.get("alterado_apos"):
+                partes_filtro.append(
+                    f'alterado_apos = <strong>{_esc(filtros["alterado_apos"])}</strong>'
+                )
+            if filtros.get("excluidos"):
+                partes_filtro.append(
+                    f'excluídos = <strong>{_esc(filtros["excluidos"])}</strong>'
+                )
+            head_parts.append("Filtro usado: " + " | ".join(partes_filtro))
         head = f'<p class="meta">{" · ".join(head_parts)}</p>'
         return _wrap_result(head + table)
     except Exception as exc:
