@@ -251,18 +251,24 @@ def test_acao_tipos_pedido_sucesso_destaca_19814a3(client, monkeypatch):
             "itens": [
                 {"id": 1, "nome": "19814a3-pedido-especial", "excluido": False},
                 {"id": 2, "nome": "198314a3385b4af2", "excluido": False},
-                {"id": 3, "nome": "Normal", "excluido": False, "updated_at": "2026-07-01"},
+                {"id": 3, "nome": "0832f68deadbeef", "excluido": False},
+                {"id": 4, "nome": "Normal", "excluido": False, "updated_at": "2026-07-01"},
             ],
         },
     )
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
-    resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/tipos-pedido",
+        data={"alterado_apos": "2026-07-15 00:00:00"},
+    )
     assert resp.status_code == 200
     html = resp.text
     assert "200" in html
+    assert "Filtro usado: alterado_apos =" in html
+    assert "2026-07-15 00:00:00" in html
     assert "19814a3-pedido-especial" in html
-    assert "198314a3385b4af2" in html
-    assert html.count("destaque-homolog") >= 2
+    assert "0832f68deadbeef" in html
+    assert html.count("destaque-homolog") >= 3
     assert "Normal" in html
     assert '"itens"' not in html
 

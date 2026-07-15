@@ -153,6 +153,39 @@ def test_erro_mercos_vira_http_exception(client, monkeypatch):
     assert "token" not in resp.json()["detail"].lower() or "CompanyToken" not in resp.json()["detail"]
 
 
+def test_tipos_pedido_repassa_alterado_apos_para_mercos(client, monkeypatch):
+    """alterado_apos deve ir na query da Mercos, sem filtro local no Python."""
+    capturado: dict = {}
+
+    def fake_get_json(path, *, params=None):
+        capturado["path"] = path
+        capturado["params"] = dict(params or {})
+        return [
+            {
+                "id": 1,
+                "nome": "0832f68abc",
+                "ultima_alteracao": "2026-07-15 10:00:00",
+            }
+        ]
+
+    monkeypatch.setattr("services.mercos_api_client.get_json", fake_get_json)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/pedidos/tipo",
+    )
+    resp = client.get(
+        "/mercos/tipos-pedido",
+        params={"alterado_apos": "2026-07-15 00:00:00", "max_paginas": 1},
+    )
+    assert resp.status_code == 200
+    assert capturado["path"] == "/v1/pedidos/tipo"
+    assert capturado["params"]["alterado_apos"] == "2026-07-15 00:00:00"
+    assert "pagina" in capturado["params"]
+    # resposta inclui o item (filtro é da API, não local)
+    assert resp.json()["total"] == 1
+    assert resp.json()["itens"][0]["nome"] == "0832f68abc"
+
+
 def test_bloqueio_sem_token(monkeypatch):
     monkeypatch.setenv("DIAGNOSTICOS_ABERTOS", "false")
     monkeypatch.setenv("SYNC_TOKEN", "segredo-teste")

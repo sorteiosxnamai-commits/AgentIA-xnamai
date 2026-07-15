@@ -26,8 +26,8 @@ PATHS = {
     "tabelas_preco": "/v1/tabelas_preco",
     # Não encontrado path listagem global no sandbox; use nested ou MERCOS_PATH_TABELAS_PRECO_PRODUTO
     "tabelas_preco_produto": "/v1/tabelas_preco",
-    # Não encontrado no sandbox (404); configure MERCOS_PATH_TIPOS_PEDIDO se a Mercos informar o path
-    "tipos_pedido": "/v1/tipos_pedido",
+    # Doc Mercos: listagem GET /v1/pedidos/tipo
+    "tipos_pedido": "/v1/pedidos/tipo",
     "usuarios": "/v1/usuarios",
     "titulos": "/v1/titulos",
     "pedidos": "/v1/pedidos",
@@ -166,18 +166,35 @@ def _probe_status(path: str) -> int | None:
         return int(exc.status_code) if exc.status_code else None
 
 
-def listar_tipos_pedido(**kw) -> dict:
-    """Compatível com GET /mercos/tipos-pedido (path único via env/default)."""
-    return listar_paginado(_path("tipos_pedido"), **kw)
+def _kw_com_alterado_apos(alterado_apos: str | None = None, **kw) -> dict:
+    """Monta kwargs de listar_paginado incluindo alterado_apos em params_extra."""
+    params_extra = dict(kw.pop("params_extra", None) or {})
+    if alterado_apos is not None and str(alterado_apos).strip():
+        params_extra["alterado_apos"] = str(alterado_apos).strip()
+    if params_extra:
+        kw["params_extra"] = params_extra
+    return kw
 
 
-def listar_tipos_pedido_descoberta(**kw) -> dict:
+def listar_tipos_pedido(alterado_apos: str | None = None, **kw) -> dict:
+    """GET tipos de pedido — path /v1/pedidos/tipo (ou MERCOS_PATH_TIPOS_PEDIDO).
+
+    Repassa alterado_apos como query param da Mercos (sem filtro local).
+    """
+    return listar_paginado(
+        _path("tipos_pedido"),
+        **_kw_com_alterado_apos(alterado_apos, **kw),
+    )
+
+
+def listar_tipos_pedido_descoberta(alterado_apos: str | None = None, **kw) -> dict:
     """Lista Tipo de Pedido tentando paths alternativos até achar HTTP 200.
 
-    Não altera o comportamento de listar_tipos_pedido (rota JSON antiga).
+    Repassa alterado_apos à Mercos via query (não filtra no Python).
     """
     global _CACHE_PATH_TIPOS_PEDIDO
 
+    kw = _kw_com_alterado_apos(alterado_apos, **kw)
     candidatos = caminhos_candidatos_tipos_pedido()
     testados: list[str] = []
     path_ok: str | None = _CACHE_PATH_TIPOS_PEDIDO
@@ -188,6 +205,8 @@ def listar_tipos_pedido_descoberta(**kw) -> dict:
             data["path_resolvido"] = path_ok
             data["paths_testados"] = [path_ok]
             data["descoberta"] = True
+            if alterado_apos and str(alterado_apos).strip():
+                data["alterado_apos"] = str(alterado_apos).strip()
             return data
         except MercosApiError:
             _CACHE_PATH_TIPOS_PEDIDO = None
@@ -203,6 +222,8 @@ def listar_tipos_pedido_descoberta(**kw) -> dict:
             data["paths_testados"] = list(testados)
             data["descoberta"] = True
             data["status_code"] = 200
+            if alterado_apos and str(alterado_apos).strip():
+                data["alterado_apos"] = str(alterado_apos).strip()
             return data
 
     return {
@@ -216,6 +237,11 @@ def listar_tipos_pedido_descoberta(**kw) -> dict:
         "sandbox": mercos_ambiente_sandbox(),
         "descoberta": True,
         "status_code": 404,
+        "alterado_apos": (
+            str(alterado_apos).strip()
+            if alterado_apos and str(alterado_apos).strip()
+            else None
+        ),
         "mensagem": (
             "Não foi possível localizar o endpoint oficial de Tipo de Pedido no sandbox. "
             f"Paths testados: {', '.join(testados)}"

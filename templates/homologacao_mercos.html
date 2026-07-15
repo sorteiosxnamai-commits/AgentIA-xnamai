@@ -328,9 +328,23 @@
         <!-- 10 -->
         <section class="panel" id="sec-tipos" data-homolog-sec="tipo-pedido">
           <h2>Tipo de Pedido — Buscar</h2>
-          <p class="hint">Tipos usados na emissão de pedidos.</p>
+          <p class="hint">Tipos usados na emissão de pedidos. Informe Alterado após para ver só mudanças recentes.</p>
           <div class="toolbar">
-            <button type="button" data-action="/mercos/homologacao-ui/acoes/tipos-pedido" data-target="res-tipos">Buscar Tipo de Pedido</button>
+            <label class="field">Alterado após
+              <input type="text" id="input-tipos-alterado-apos" value="2026-07-15 00:00:00" />
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/tipos-pedido"
+              data-target="res-tipos"
+              data-fields="alterado_apos:input-tipos-alterado-apos">
+              Buscar Tipo de Pedido
+            </button>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/tipos-pedido"
+              data-target="res-tipos"
+              data-fields="alterado_apos:input-tipos-alterado-apos">
+              Buscar alterações
+            </button>
           </div>
           <div class="resultado" id="res-tipos"></div>
         </section>

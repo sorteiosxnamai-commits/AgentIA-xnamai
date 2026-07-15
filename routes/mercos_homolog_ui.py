@@ -428,10 +428,19 @@ def acao_tabelas_preco(request: Request, token: str = Form("")):
 
 
 @router.post("/homologacao-ui/acoes/tipos-pedido", response_class=HTMLResponse)
-def acao_tipos_pedido(request: Request, token: str = Form("")):
+def acao_tipos_pedido(
+    request: Request,
+    token: str = Form(""),
+    alterado_apos: str = Form(""),
+):
     _auth(request, token)
+    filtro = (alterado_apos or "").strip()
     try:
-        data = homolog.listar_tipos_pedido_descoberta(pagina_inicial=1, max_paginas=5)
+        data = homolog.listar_tipos_pedido_descoberta(
+            pagina_inicial=1,
+            max_paginas=5,
+            alterado_apos=filtro or None,
+        )
         if not data.get("ok", True) or data.get("status_code") == 404:
             paths = data.get("paths_testados") or []
             msg = data.get("mensagem") or (
@@ -468,7 +477,11 @@ def acao_tipos_pedido(request: Request, token: str = Form("")):
                 ]
             )
             nome_l = nome_str.lower()
-            destaque = nome_l.startswith("19814a3") or nome_l.startswith("198314a3")
+            destaque = (
+                nome_l.startswith("19814a3")
+                or nome_l.startswith("198314a3")
+                or nome_l.startswith("0832f68")
+            )
             classes.append("destaque-homolog" if destaque else "")
 
         table = _table(
@@ -477,13 +490,16 @@ def acao_tipos_pedido(request: Request, token: str = Form("")):
             empty_msg="Endpoint encontrado, porém sem tipos de pedido cadastrados.",
             row_classes=classes,
         )
-        path_ok = data.get("path_resolvido") or "—"
-        head = (
-            f'<p class="meta">Status: <strong>200</strong> · '
-            f'Total: <strong>{_esc(data.get("total", 0))}</strong></p>'
-        )
-        # Não exibir path técnico como JSON; só referência operacional curta se útil
-        _ = path_ok
+        filtro_txt = filtro or (data.get("alterado_apos") or "")
+        head_parts = [
+            f'Status: <strong>200</strong>',
+            f'Total: <strong>{_esc(data.get("total", 0))}</strong>',
+        ]
+        if filtro_txt:
+            head_parts.append(
+                f'Filtro usado: alterado_apos = <strong>{_esc(filtro_txt)}</strong>'
+            )
+        head = f'<p class="meta">{" · ".join(head_parts)}</p>'
         return _wrap_result(head + table)
     except Exception as exc:
         return _wrap_result(_erro_html(exc))

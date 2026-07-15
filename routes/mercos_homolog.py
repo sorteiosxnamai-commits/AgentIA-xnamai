@@ -182,8 +182,17 @@ def get_tipos_pedido(
     token: str = "",
     pagina: int = Query(1, ge=1),
     max_paginas: int = Query(5, ge=1, le=50),
+    alterado_apos: str = Query(""),
 ):
-    return _get_lista(homolog.listar_tipos_pedido, token, pagina, max_paginas)
+    """Lista tipos de pedido; repassa alterado_apos à Mercos (query)."""
+    _bloqueio(token)
+    try:
+        return homolog.listar_tipos_pedido(
+            alterado_apos=(alterado_apos or "").strip() or None,
+            **_params_paginacao(pagina, max_paginas),
+        )
+    except MercosApiError as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/usuarios")
