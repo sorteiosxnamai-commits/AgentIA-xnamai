@@ -1180,7 +1180,7 @@ def test_clientes_catalogo_completa_salva_e_incremental_preserva(client, monkeyp
     assert r1.status_code == 200
     sessao = client.cookies.get("mercos_clientes_sessao")
     assert cat.total(sessao) == 2
-    assert "Clientes no catálogo acumulado" in r1.text
+    assert "Clientes únicos no catálogo" in r1.text
 
     r2 = client.post(
         "/mercos/homologacao-ui/acoes/clientes-sincronizar",
@@ -1365,12 +1365,15 @@ def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
         "services.mercos_api_client.PAGE_SLEEP_SEGUNDOS", 0
     )
     monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
         "services.mercos_homolog_service._path",
         lambda chave: "/v1/clientes" if chave == "clientes" else f"/v1/{chave}",
     )
     paginas_vistas: list[int] = []
 
-    def fake_get(path, *, params=None):
+    def fake_get(path, *, params=None, **_kw):
         pagina = int((params or {}).get("pagina") or 1)
         paginas_vistas.append(pagina)
         if pagina == 1:
@@ -1417,7 +1420,7 @@ def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
             ]
         return []
 
-    monkeypatch.setattr("services.mercos_api_client.get_json", fake_get)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
     resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
@@ -1431,7 +1434,9 @@ def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
     assert "Total retornado em todas as páginas" in html
     assert 'data-catalogo-total="4"' in html
     assert "77eb21774dd340ff" in html
-    assert "Clientes no catálogo acumulado" in html
+    assert "Clientes únicos no catálogo" in html
+    assert "Motivo da parada" in html
+    assert "Lote vazio" in html or "Todas as páginas" in html or "Limite de páginas" in html
     assert "Novo cursor" in html
     cookie_raw = (resp.cookies.get("mercos_clientes_cursor") or "").strip('"')
     assert unquote(cookie_raw) == "2026-07-16 09:00:00"
@@ -1459,13 +1464,16 @@ def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
         "services.mercos_api_client.PAGE_SLEEP_SEGUNDOS", 0
     )
     monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
         "services.mercos_homolog_service._path",
         lambda chave: "/v1/clientes" if chave == "clientes" else f"/v1/{chave}",
     )
     fase = {"n": 0}
     paginas_inc: list[int] = []
 
-    def fake_get(path, *, params=None):
+    def fake_get(path, *, params=None, **_kw):
         params = params or {}
         pagina = int(params.get("pagina") or 1)
         if "alterado_apos" not in params:
@@ -1506,7 +1514,7 @@ def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
             ]
         return []
 
-    monkeypatch.setattr("services.mercos_api_client.get_json", fake_get)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
     r1 = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
@@ -1526,6 +1534,199 @@ def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
     sessao = client.cookies.get("mercos_clientes_sessao")
     assert cat.total(sessao) == 3
     assert html.split("mercos-clientes-catalogo-blob")[0].count("77eb21774dd340ff") == 1
+
+
+def test_clientes_sync_para_em_pagina_repetida(client, monkeypatch):
+    from services import mercos_clientes_catalogo as cat
+    from services.mercos_homolog_service import MOTIVO_PARADA_REPETIDA
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr("services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/clientes" if chave == "clientes" else f"/v1/{chave}",
+    )
+    chamadas = []
+
+    def fake_get(path, *, params=None, **_kw):
+        pagina = int((params or {}).get("pagina") or 1)
+        chamadas.append(pagina)
+        lote = [
+            {
+                "id": 1,
+                "razao_social": "Mesmo",
+                "ultima_alteracao": "2026-07-15 10:00:00",
+                "ativo": True,
+            }
+        ]
+        return lote  # página 1 e 2 iguais → para
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert resp.status_code == 200
+    assert MOTIVO_PARADA_REPETIDA in resp.text
+    assert "Concluída" in resp.text or "concluida" in resp.text.lower()
+    assert "500" not in resp.text
+    assert chamadas == [1, 2]
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    assert cat.total(sessao) == 1
+
+
+def test_clientes_sync_para_sem_ids_novos(client, monkeypatch):
+    from services import mercos_clientes_catalogo as cat
+    from services.mercos_homolog_service import MOTIVO_PARADA_REPETIDA
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr("services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/clientes",
+    )
+
+    def fake_get(path, *, params=None, **_kw):
+        pagina = int((params or {}).get("pagina") or 1)
+        if pagina == 1:
+            return [
+                {"id": 1, "razao_social": "A", "ultima_alteracao": "2026-07-15 10:00:00"},
+                {"id": 2, "razao_social": "B", "ultima_alteracao": "2026-07-15 11:00:00"},
+            ]
+        # Mesmos IDs, assinatura diferente (outra ordem / alteração) → nenhum ID novo
+        return [
+            {"id": 2, "razao_social": "B2", "ultima_alteracao": "2026-07-15 12:00:00"},
+            {"id": 1, "razao_social": "A2", "ultima_alteracao": "2026-07-15 12:01:00"},
+        ]
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert resp.status_code == 200
+    assert MOTIVO_PARADA_REPETIDA in resp.text
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    assert cat.total(sessao) == 2
+
+
+def test_clientes_sync_timeout_retorna_parciais(client, monkeypatch):
+    from services import mercos_clientes_catalogo as cat
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import MOTIVO_PARADA_TIMEOUT
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr("services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/clientes",
+    )
+    n = {"c": 0}
+
+    def fake_get(path, *, params=None, **_kw):
+        n["c"] += 1
+        if n["c"] == 1:
+            return [
+                {
+                    "id": 1,
+                    "razao_social": "Parcial",
+                    "ultima_alteracao": "2026-07-15 10:00:00",
+                }
+            ]
+        raise MercosApiError("Timeout na chamada à Mercos.", status_code=504)
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert resp.status_code == 200
+    assert MOTIVO_PARADA_TIMEOUT in resp.text
+    assert "Timeout" in resp.text
+    assert "Parcial" in resp.text
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    assert cat.total(sessao) == 1
+
+
+def test_clientes_sync_limite_20_paginas(monkeypatch):
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_LIMITE,
+        listar_clientes_paginado_seguro,
+    )
+
+    monkeypatch.setattr("services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/clientes",
+    )
+
+    def fake_get(path, *, params=None, **_kw):
+        pagina = int((params or {}).get("pagina") or 1)
+        return [
+            {
+                "id": pagina,
+                "razao_social": f"C{pagina}",
+                "ultima_alteracao": f"2026-07-15 10:{pagina:02d}:00",
+            }
+        ]
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    out = listar_clientes_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert out["paginas_lidas"] == 20
+    assert out["total"] == 20
+    assert out["motivo_parada"] == MOTIVO_PARADA_LIMITE
+    assert out["status"] == "concluida"
+
+
+def test_clientes_lock_libera_em_erro_e_expira(monkeypatch):
+    from services.mercos_homolog_service import (
+        _SYNC_CLIENTES_LOCK,
+        sincronizar_clientes,
+    )
+    from services.mercos_api_client import MercosApiError
+
+    # Garante limpo
+    _SYNC_CLIENTES_LOCK.release()
+    assert _SYNC_CLIENTES_LOCK.acquire(blocking=False)
+    try:
+        with pytest.raises(MercosApiError) as exc:
+            sincronizar_clientes()
+        assert exc.value.status_code == 409
+    finally:
+        _SYNC_CLIENTES_LOCK.release()
+
+    # Expira após TTL
+    assert _SYNC_CLIENTES_LOCK.acquire(blocking=False)
+    _SYNC_CLIENTES_LOCK._since = __import__("time").monotonic() - 121
+    assert _SYNC_CLIENTES_LOCK.acquire(blocking=False) is True
+    _SYNC_CLIENTES_LOCK.release()
+
+    # Libera no finally mesmo com erro
+    def boom(**_k):
+        raise MercosApiError("falha", status_code=502)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_clientes", boom
+    )
+    with pytest.raises(MercosApiError):
+        sincronizar_clientes()
+    assert _SYNC_CLIENTES_LOCK.acquire(blocking=False) is True
+    _SYNC_CLIENTES_LOCK.release()
 
 
 def test_acao_tipos_pedido_exige_token(client):

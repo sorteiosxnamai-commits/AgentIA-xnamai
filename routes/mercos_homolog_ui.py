@@ -482,7 +482,9 @@ def _linhas_ciclo_clientes(
         ("Novo cursor", sync.get("novo_cursor") or "—"),
         ("Total de páginas consultadas", sync.get("paginas_lidas") or "—"),
         ("Total retornado em todas as páginas", sync.get("total_lote") or 0),
-        ("Clientes no catálogo acumulado", len((estado or {}).get("clientes") or {})),
+        ("Clientes únicos no catálogo", len((estado or {}).get("clientes") or {})),
+        ("Motivo da parada", sync.get("motivo_parada") or "—"),
+        ("Status da sincronização", sync.get("status_sync") or "—"),
         ("Chamadas completas no ciclo", ciclo.get("chamadas_completas") or 0),
         ("Chamadas incrementais no ciclo", ciclo.get("chamadas_incrementais") or 0),
     ]
@@ -1132,7 +1134,7 @@ def acao_clientes_sincronizar(
         tipo_esperado = "incremental"
 
     try:
-        data = homolog.sincronizar_clientes(cursor_para_sync, max_paginas=100)
+        data = homolog.sincronizar_clientes(cursor_para_sync, max_paginas=20)
         tipo_real = data.get("tipo") or tipo_esperado
         if etapa >= 1 and tipo_real == "completa":
             resp = _wrap_result(
@@ -1169,6 +1171,13 @@ def acao_clientes_sincronizar(
             )
             return _garantir_sessao_clientes_cookie(resp, sessao)
 
+        status_sync = data.get("status") or "concluida"
+        motivo = data.get("motivo_parada") or ""
+        status_label = (
+            "Timeout"
+            if status_sync == "timeout"
+            else "Concluída"
+        )
         meta = {
             "tipo": tipo_real,
             "cursor_base": data.get("cursor_base"),
@@ -1176,6 +1185,8 @@ def acao_clientes_sincronizar(
             "novo_cursor": data.get("novo_cursor"),
             "total_lote": data.get("total", 0),
             "paginas_lidas": data.get("paginas_lidas") or 0,
+            "motivo_parada": motivo,
+            "status_sync": status_label,
         }
         if tipo_real == "completa":
             catalogo_clientes.substituir_completo(
@@ -1202,14 +1213,16 @@ def acao_clientes_sincronizar(
         estado = catalogo_clientes.obter(sessao)
         total = data.get("total", 0)
         paginas = data.get("paginas_lidas") or 0
+        css = "pendente" if status_sync == "timeout" else "ok"
         resumo = _card(
             "Sincronização de clientes",
             [
-                ("Status da sincronização", "Concluída"),
+                ("Status da sincronização", status_label),
+                ("Motivo da parada", motivo or "—"),
             ]
             + _linhas_ciclo_clientes(sessao, estado),
-            status_label="Status 200",
-            css="ok",
+            status_label=status_label,
+            css=css,
         )
         table = _html_tabela_clientes(data.get("itens") or [])
         resp = _wrap_result(
@@ -1222,9 +1235,10 @@ def acao_clientes_sincronizar(
                 "tipo-busca": tipo_real,
                 "total": str(total),
                 "paginas-lidas": str(paginas),
+                "motivo-parada": motivo,
                 "catalogo-total": str(len(estado.get("clientes") or {})),
                 "catalogo-modo": "replace" if tipo_real == "completa" else "upsert",
-                "status-sync": "concluida",
+                "status-sync": status_sync,
                 **_attrs_ciclo_clientes(sessao),
             },
         )
@@ -1245,6 +1259,8 @@ def acao_clientes_sincronizar(
             resp.headers["Retry-After"] = "10"
         elif exc.status_code == 409:
             resp.status_code = 409
+        elif exc.status_code == 504:
+            resp.status_code = 504
         return _garantir_sessao_clientes_cookie(resp, sessao)
     except Exception as exc:
         resp = _wrap_result(

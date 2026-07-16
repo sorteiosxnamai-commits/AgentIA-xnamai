@@ -59,9 +59,10 @@ def request_mercos(
     *,
     params: dict | None = None,
     json_body: dict | None = None,
-    timeout: int = 30,
+    timeout: int | float = 30,
+    max_retries_429: int = MAX_RETRIES_429,
 ) -> requests.Response:
-    """GET/POST/PUT na Mercos com retry de 429 (máx 3)."""
+    """GET/POST/PUT na Mercos com retry de 429 (configurável)."""
     if not mercos_configurado():
         raise MercosApiError(
             "Mercos não configurada. Defina MERCOS_APPLICATION_TOKEN e MERCOS_COMPANY_TOKEN.",
@@ -73,21 +74,35 @@ def request_mercos(
 
     url = f"{BASE_URL.rstrip('/')}{path}"
     ultimo_401 = ""
+    retries_cfg = int(max_retries_429)
+    # max_retries_429<=0 → 1 tentativa (sem retry). Default 3 = comportamento histórico.
+    max_attempts = 1 if retries_cfg <= 0 else retries_cfg
 
     for application_token in _application_tokens():
-        for tentativa in range(MAX_RETRIES_429):
-            resp = requests.request(
-                method.upper(),
-                url,
-                headers=_headers(application_token),
-                params=params,
-                json=json_body,
-                timeout=timeout,
-            )
+        for tentativa in range(max_attempts):
+            try:
+                resp = requests.request(
+                    method.upper(),
+                    url,
+                    headers=_headers(application_token),
+                    params=params,
+                    json=json_body,
+                    timeout=timeout,
+                )
+            except requests.Timeout as exc:
+                raise MercosApiError(
+                    "Timeout na chamada à Mercos.",
+                    status_code=504,
+                ) from exc
+            except requests.RequestException as exc:
+                raise MercosApiError(
+                    "Falha de rede ao chamar a Mercos.",
+                    status_code=502,
+                ) from exc
             if resp.status_code in (200, 201, 204):
                 return resp
             if resp.status_code == 429:
-                if tentativa < MAX_RETRIES_429 - 1:
+                if tentativa < max_attempts - 1:
                     retry_after = (resp.headers.get("Retry-After") or "").strip()
                     try:
                         espera = float(retry_after)
@@ -126,8 +141,20 @@ def _extrair_lista(payload: Any) -> list:
     return []
 
 
-def get_json(path: str, *, params: dict | None = None) -> Any:
-    resp = request_mercos("GET", path, params=params)
+def get_json(
+    path: str,
+    *,
+    params: dict | None = None,
+    timeout: int | float = 30,
+    max_retries_429: int = MAX_RETRIES_429,
+) -> Any:
+    resp = request_mercos(
+        "GET",
+        path,
+        params=params,
+        timeout=timeout,
+        max_retries_429=max_retries_429,
+    )
     if resp.status_code == 204 or not (resp.text or "").strip():
         return []
     try:

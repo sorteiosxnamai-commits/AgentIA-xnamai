@@ -6,11 +6,13 @@ Não altera o agente IA nem CHECKOUT_CREATE_ORDER.
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
 from services.mercos_api_client import (
     MercosApiError,
+    _extrair_lista,
     get_json,
     listar_paginado,
     post_json,
@@ -94,8 +96,35 @@ def listar_categorias(**kw) -> dict:
     return listar_paginado(_path("categorias"), **kw)
 
 
-def listar_clientes(alterado_apos: str | None = None, **kw) -> dict:
-    """GET /v1/clientes — repassa alterado_apos à Mercos (sem filtro local)."""
+def listar_clientes(
+    alterado_apos: str | None = None,
+    *,
+    paginacao_segura: bool = False,
+    timeout_request: float | None = None,
+    timeout_total: float | None = None,
+    **kw,
+) -> dict:
+    """GET /v1/clientes — repassa alterado_apos à Mercos (sem filtro local).
+
+    Com paginacao_segura=True usa paradas anti-travamento (ciclo de homologação).
+    """
+    if paginacao_segura:
+        return listar_clientes_paginado_seguro(
+            alterado_apos=alterado_apos,
+            pagina_inicial=int(kw.get("pagina_inicial") or 1),
+            max_paginas=int(kw.get("max_paginas") or CLIENTES_MAX_PAGINAS_SYNC),
+            timeout_request=(
+                CLIENTES_TIMEOUT_REQUEST_SEGUNDOS
+                if timeout_request is None
+                else timeout_request
+            ),
+            timeout_total=(
+                CLIENTES_TIMEOUT_SYNC_SEGUNDOS
+                if timeout_total is None
+                else timeout_total
+            ),
+            params_extra=kw.get("params_extra"),
+        )
     params_extra = dict(kw.pop("params_extra", None) or {})
     if alterado_apos is not None and str(alterado_apos).strip():
         params_extra["alterado_apos"] = str(alterado_apos).strip()
@@ -225,7 +254,187 @@ deduplicar_produtos_por_id_alteracao = deduplicar_por_id_alteracao
 deduplicar_clientes_por_id_alteracao = deduplicar_por_id_alteracao
 
 _SYNC_PRODUTOS_LOCK = threading.Lock()
-_SYNC_CLIENTES_LOCK = threading.Lock()
+
+# Lock de clientes com expiração (evita travar o Render se um worker morrer).
+CLIENTES_LOCK_TTL_SEGUNDOS = 120
+CLIENTES_MAX_PAGINAS_SYNC = 20
+CLIENTES_TIMEOUT_REQUEST_SEGUNDOS = 10
+CLIENTES_TIMEOUT_SYNC_SEGUNDOS = 60
+MOTIVO_PARADA_LOTE_VAZIO = "Lote vazio"
+MOTIVO_PARADA_REPETIDA = "Página repetida / nenhum registro novo"
+MOTIVO_PARADA_LIMITE = "Limite de páginas atingido"
+MOTIVO_PARADA_TIMEOUT = "Timeout da sincronização"
+MOTIVO_PARADA_FIM = "Todas as páginas lidas"
+
+
+class _ExpiringLock:
+    """Lock não-reentrante com TTL; dono expirado pode ser substituído."""
+
+    def __init__(self, ttl_seconds: float = CLIENTES_LOCK_TTL_SEGUNDOS):
+        self._ttl = float(ttl_seconds)
+        self._meta = threading.Lock()
+        self._owner: int | None = None
+        self._since: float | None = None
+
+    def acquire(self, blocking: bool = False) -> bool:
+        del blocking  # sempre non-blocking para sync de homologação
+        agora = time.monotonic()
+        with self._meta:
+            if self._owner is None:
+                self._owner = threading.get_ident()
+                self._since = agora
+                return True
+            if self._since is not None and (agora - self._since) >= self._ttl:
+                # Expira lock antigo e assume
+                self._owner = threading.get_ident()
+                self._since = agora
+                return True
+            return False
+
+    def release(self) -> None:
+        with self._meta:
+            me = threading.get_ident()
+            if self._owner is None:
+                return
+            if self._owner == me:
+                self._owner = None
+                self._since = None
+                return
+            # Outro thread: só limpa se já expirou
+            if self._since is not None and (time.monotonic() - self._since) >= self._ttl:
+                self._owner = None
+                self._since = None
+
+    def held_for_seconds(self) -> float | None:
+        with self._meta:
+            if self._owner is None or self._since is None:
+                return None
+            return time.monotonic() - self._since
+
+
+_SYNC_CLIENTES_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
+
+
+def _assinatura_pagina_clientes(lote: list) -> str:
+    partes: list[str] = []
+    for item in lote or []:
+        if not isinstance(item, dict):
+            continue
+        partes.append(f"{item.get('id')}|{item.get('ultima_alteracao') or ''}")
+    return "\x1f".join(partes)
+
+
+def _ids_pagina(lote: list) -> list[Any]:
+    saida: list[Any] = []
+    for item in lote or []:
+        if isinstance(item, dict) and item.get("id") not in (None, ""):
+            saida.append(item.get("id"))
+    return saida
+
+
+def listar_clientes_paginado_seguro(
+    *,
+    alterado_apos: str | None = None,
+    pagina_inicial: int = 1,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    params_extra: dict | None = None,
+) -> dict[str, Any]:
+    """Lista clientes com paradas anti-travamento (páginas repetidas / teto / timeout)."""
+    pagina = max(1, int(pagina_inicial or 1))
+    limite = max(1, min(int(max_paginas or CLIENTES_MAX_PAGINAS_SYNC), CLIENTES_MAX_PAGINAS_SYNC))
+    path = _path("clientes")
+    extras = dict(params_extra or {})
+    if alterado_apos is not None and str(alterado_apos).strip():
+        extras["alterado_apos"] = str(alterado_apos).strip()
+
+    itens_brutos: list = []
+    ids_vistos: set[str] = set()
+    assinaturas: set[str] = set()
+    ids_pagina_anterior: list[Any] | None = None
+    paginas_lidas = 0
+    motivo = MOTIVO_PARADA_FIM
+    status = "concluida"
+    inicio = time.monotonic()
+
+    for _ in range(limite):
+        decorrido = time.monotonic() - inicio
+        if decorrido >= timeout_total:
+            motivo = MOTIVO_PARADA_TIMEOUT
+            status = "timeout"
+            break
+
+        timeout_resto = max(0.5, min(timeout_request, timeout_total - decorrido))
+        params = {"pagina": pagina, **extras}
+        try:
+            payload = get_json(
+                path,
+                params=params,
+                timeout=timeout_resto,
+                max_retries_429=0,
+            )
+        except MercosApiError as exc:
+            if exc.status_code == 504:
+                motivo = MOTIVO_PARADA_TIMEOUT
+                status = "timeout"
+                break
+            raise
+
+        lote = [i for i in _extrair_lista(payload) if isinstance(i, dict)]
+        paginas_lidas += 1
+
+        if not lote:
+            motivo = MOTIVO_PARADA_LOTE_VAZIO
+            break
+
+        assinatura = _assinatura_pagina_clientes(lote)
+        ids_atual = _ids_pagina(lote)
+
+        if assinatura in assinaturas:
+            motivo = MOTIVO_PARADA_REPETIDA
+            break
+        if ids_pagina_anterior is not None and ids_atual == ids_pagina_anterior:
+            motivo = MOTIVO_PARADA_REPETIDA
+            break
+
+        novos = 0
+        for item in lote:
+            chave = str(item.get("id"))
+            if chave in ids_vistos:
+                continue
+            ids_vistos.add(chave)
+            itens_brutos.append(item)
+            novos += 1
+
+        if novos == 0:
+            motivo = MOTIVO_PARADA_REPETIDA
+            break
+
+        assinaturas.add(assinatura)
+        ids_pagina_anterior = ids_atual
+
+        if paginas_lidas >= limite:
+            motivo = MOTIVO_PARADA_LIMITE
+            break
+
+        pagina += 1
+        time.sleep(0.05)
+
+    itens = deduplicar_clientes_por_id_alteracao(itens_brutos)
+    out: dict[str, Any] = {
+        "ok": True,
+        "path": path,
+        "total": len(itens),
+        "paginas_lidas": paginas_lidas,
+        "sandbox": mercos_ambiente_sandbox(),
+        "itens": itens,
+        "motivo_parada": motivo,
+        "status": status,
+    }
+    if "alterado_apos" in extras:
+        out["filtros"] = {"alterado_apos": extras["alterado_apos"]}
+    return out
 
 
 def _sincronizar_entidade(
@@ -281,6 +490,7 @@ def _sincronizar_entidade(
             "paginas_lidas": data.get("paginas_lidas"),
             "filtros": data.get("filtros") or {},
             "status": "concluida",
+            "motivo_parada": data.get("motivo_parada") or MOTIVO_PARADA_FIM,
         }
     finally:
         lock.release()
@@ -311,24 +521,63 @@ def sincronizar_produtos(
 def sincronizar_clientes(
     cursor: str | None = None,
     *,
-    max_paginas: int = 100,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
     sobreposicao_segundos: int = 1,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
 ) -> dict[str, Any]:
-    """Uma sincronização Cliente GET: completa (sem cursor) ou incremental.
+    """Uma sincronização Cliente GET com paginação anti-travamento.
 
-    Percorre todas as páginas de /v1/clientes até lote vazio (teto 100).
-    page_size_hint=0 evita parar cedo quando a Mercos devolve páginas < 50.
-    Incremental envia alterado_apos = cursor salvo - 1s (sobreposicao).
+    Para em lote vazio, página repetida, sem IDs novos, teto de 20 páginas ou timeout.
+    Lock liberado sempre no finally; locks > 2 min expiram.
     """
-    return _sincronizar_entidade(
-        listar_fn=listar_clientes,
-        lock=_SYNC_CLIENTES_LOCK,
-        rotulo="clientes",
-        cursor=cursor,
-        max_paginas=max_paginas,
-        sobreposicao_segundos=sobreposicao_segundos,
-        page_size_hint=0,
-    )
+    if not _SYNC_CLIENTES_LOCK.acquire(blocking=False):
+        raise MercosApiError(
+            "Sincronização de clientes já em andamento. Aguarde a conclusão.",
+            status_code=409,
+        )
+    try:
+        cursor_base = (cursor or "").strip() or None
+        tipo = "incremental" if cursor_base else "completa"
+        if cursor_base:
+            alterado_apos = cursor_com_sobreposicao(
+                cursor_base, segundos=sobreposicao_segundos
+            )
+        else:
+            alterado_apos = None
+        data = listar_clientes(
+            alterado_apos=alterado_apos,
+            paginacao_segura=True,
+            pagina_inicial=1,
+            max_paginas=max_paginas,
+            timeout_request=timeout_request,
+            timeout_total=timeout_total,
+        )
+        itens = deduplicar_clientes_por_id_alteracao(data.get("itens") or [])
+        total = len(itens)
+        maior = maior_ultima_alteracao(itens)
+        if maior:
+            novo_cursor = maior
+        else:
+            novo_cursor = cursor_base
+        status = data.get("status") or "concluida"
+        return {
+            "ok": True,
+            "tipo": tipo,
+            "cursor_base": cursor_base,
+            "alterado_apos_enviado": alterado_apos,
+            "cursor_anterior": cursor_base,
+            "novo_cursor": novo_cursor,
+            "total": total,
+            "itens": itens,
+            "path": data.get("path"),
+            "paginas_lidas": data.get("paginas_lidas"),
+            "filtros": data.get("filtros") or {},
+            "status": status,
+            "motivo_parada": data.get("motivo_parada") or MOTIVO_PARADA_FIM,
+        }
+    finally:
+        _SYNC_CLIENTES_LOCK.release()
 
 
 def listar_segmentos(**kw) -> dict:
@@ -669,6 +918,7 @@ __all__ = [
     "deduplicar_clientes_por_id_alteracao",
     "sincronizar_produtos",
     "sincronizar_clientes",
+    "listar_clientes_paginado_seguro",
     "montar_payload_produto",
     "criar_produto",
     "listar_segmentos",

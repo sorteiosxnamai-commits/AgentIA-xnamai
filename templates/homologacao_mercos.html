@@ -825,13 +825,26 @@
         });
         if (btn) btn.disabled = true;
         target.innerHTML = '<p class="loading">Carregando registros…</p>';
+        var controller = null;
+        var abortTimer = null;
         try {
-          var resp = await fetch(url, {
+          var fetchOpts = {
             method: "POST",
             body: fd,
             credentials: "same-origin"
-          });
-          if (resp.status === 429) {
+          };
+          // Sync de clientes: timeout no browser + sem retry automático
+          if (opts.entidade === "clientes" && opts.timeoutMs) {
+            controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+            if (controller) {
+              fetchOpts.signal = controller.signal;
+              abortTimer = setTimeout(function () {
+                try { controller.abort(); } catch (e) {}
+              }, opts.timeoutMs);
+            }
+          }
+          var resp = await fetch(url, fetchOpts);
+          if (resp.status === 429 && !(opts.entidade === "clientes" && opts.semRetry)) {
             var ra = parseFloat(resp.headers.get("Retry-After") || "10");
             if (!isFinite(ra) || ra < 0) ra = 10;
             target.innerHTML = '<p class="loading">Limite da Mercos atingido. Aguardando ' + ra + 's…</p>';
@@ -846,6 +859,10 @@
           if (resp.status === 403) {
             target.innerHTML = '<div class="result-card erro"><h4>Acesso negado</h4><p>Não foi possível carregar os dados nesta sessão.</p></div>';
             return null;
+          }
+          if (!text || !String(text).trim()) {
+            target.innerHTML = '<div class="result-card erro"><h4>Resposta vazia</h4><p>A sincronização não retornou conteúdo. Tente novamente.</p></div>';
+            return resp;
           }
           target.innerHTML = text;
           if (opts.entidade === "clientes") {
@@ -863,9 +880,14 @@
           }
           return resp;
         } catch (err) {
-          target.innerHTML = '<div class="result-card erro"><h4>Falha ao carregar</h4><p>Não foi possível concluir a operação.</p></div>';
+          var msg = "Não foi possível concluir a operação.";
+          if (err && (err.name === "AbortError" || (err.message || "").indexOf("abort") >= 0)) {
+            msg = "Tempo esgotado na sincronização. Os dados parciais podem não ter sido salvos — tente novamente.";
+          }
+          target.innerHTML = '<div class="result-card erro"><h4>Falha ao carregar</h4><p>' + msg + '</p></div>';
           return null;
         } finally {
+          if (abortTimer) clearTimeout(abortTimer);
           if (btn) btn.disabled = false;
           atualizarBuscaBloqueada();
           atualizarBuscaClientesBloqueada();
@@ -967,7 +989,7 @@
               {},
               resClientes,
               btnCliReiniciar,
-              { entidade: "clientes" }
+              { entidade: "clientes", semRetry: true, timeoutMs: 65000 }
             );
           } finally {
             clientesSyncBusy = false;
@@ -993,7 +1015,7 @@
               },
               resClientes,
               btnCliSincronizar,
-              { entidade: "clientes" }
+              { entidade: "clientes", semRetry: true, timeoutMs: 65000 }
             );
           } finally {
             clientesSyncBusy = false;
@@ -1017,7 +1039,7 @@
             },
             resClientes,
             btnCliLocalizar,
-            { entidade: "clientes" }
+            { entidade: "clientes", semRetry: true, timeoutMs: 30000 }
           );
           if (getClientesCursor() !== cursorAntes) {
             setClientesCursor(cursorAntes);

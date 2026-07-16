@@ -34,6 +34,8 @@ def _estado_vazio() -> dict[str, Any]:
             "novo_cursor": None,
             "total_lote": 0,
             "paginas_lidas": 0,
+            "motivo_parada": None,
+            "status_sync": None,
         },
         "ciclo": _ciclo_vazio(),
     }
@@ -191,6 +193,8 @@ def _aplicar_meta(estado: dict[str, Any], meta: dict[str, Any] | None) -> None:
         "novo_cursor",
         "total_lote",
         "paginas_lidas",
+        "motivo_parada",
+        "status_sync",
     ):
         if chave in meta:
             sync[chave] = meta[chave]
