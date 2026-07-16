@@ -367,6 +367,7 @@ def acao_produtos_sincronizar(
     try:
         data = homolog.sincronizar_produtos(cursor_usado or None, max_paginas=50)
         tipo_label = "Completa" if data["tipo"] == "completa" else "Incremental"
+        cursor_base = data.get("cursor_base") or "—"
         enviado = data.get("alterado_apos_enviado") or "—"
         novo = data.get("novo_cursor") or "—"
         total = data.get("total", 0)
@@ -375,6 +376,7 @@ def acao_produtos_sincronizar(
             [
                 ("Status da sincronização", "Concluída"),
                 ("Tipo da busca", tipo_label),
+                ("Cursor base salvo", cursor_base),
                 ("Alterado após enviado", enviado),
                 ("Novo cursor salvo", novo),
                 ("Total retornado", total),
@@ -388,6 +390,8 @@ def acao_produtos_sincronizar(
             extra_attrs={
                 "novo-cursor": data.get("novo_cursor") or "",
                 "cursor-anterior": data.get("cursor_anterior") or "",
+                "cursor-base": data.get("cursor_base") or "",
+                "alterado-apos-enviado": data.get("alterado_apos_enviado") or "",
                 "tipo-busca": data.get("tipo") or "",
                 "total": str(total),
                 "status-sync": "concluida",

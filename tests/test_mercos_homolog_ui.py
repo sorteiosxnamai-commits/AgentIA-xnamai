@@ -342,6 +342,7 @@ def test_produtos_sync_primeira_sem_alterado_apos(client, monkeypatch):
     html = resp.text
     assert "Tipo da busca" in html
     assert "Completa" in html
+    assert "Cursor base salvo" in html
     assert "Alterado após enviado" in html
     assert "Novo cursor salvo" in html
     assert "2026-07-15 12:30:00" in html
@@ -384,20 +385,85 @@ def test_produtos_sync_segunda_com_cursor_anterior(client, monkeypatch):
     )
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     cursor_anterior = "2026-07-15 12:30:00"
+    esperado_enviado = "2026-07-15 12:29:59"
     resp = client.post(
         "/mercos/homologacao-ui/acoes/produtos-sincronizar",
         data={"cursor": cursor_anterior},
     )
     assert resp.status_code == 200
-    assert capturado["kwargs"].get("alterado_apos") == cursor_anterior
+    assert capturado["kwargs"].get("alterado_apos") == esperado_enviado
     html = resp.text
     assert "Incremental" in html
+    assert "Cursor base salvo" in html
     assert cursor_anterior in html
+    assert esperado_enviado in html
     assert "2026-07-16 08:00:00" in html
     from urllib.parse import unquote
 
     cookie_raw = (resp.cookies.get("mercos_produtos_cursor") or "").strip('"')
     assert unquote(cookie_raw) == "2026-07-16 08:00:00"
+
+
+def test_produtos_sync_sobreposicao_um_segundo_e_dedup(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    capturado: dict = {}
+
+    def fake_listar(**kwargs):
+        capturado["kwargs"] = dict(kwargs)
+        return {
+            "ok": True,
+            "total": 3,
+            "itens": [
+                {
+                    "id": 10,
+                    "nome": "4ac7237b574b4166",
+                    "preco_tabela": 1,
+                    "ultima_alteracao": "2026-07-15 20:53:55",
+                    "ativo": True,
+                },
+                {
+                    "id": 10,
+                    "nome": "4ac7237b574b4166",
+                    "preco_tabela": 1,
+                    "ultima_alteracao": "2026-07-15 20:53:55",
+                    "ativo": True,
+                },
+                {
+                    "id": 11,
+                    "nome": "outro",
+                    "preco_tabela": 2,
+                    "ultima_alteracao": "2026-07-15 20:54:01",
+                    "ativo": True,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-sincronizar",
+        data={"cursor": "2026-07-15 20:53:55"},
+    )
+    assert resp.status_code == 200
+    assert capturado["kwargs"].get("alterado_apos") == "2026-07-15 20:53:54"
+    html = resp.text
+    assert "Cursor base salvo" in html
+    assert "2026-07-15 20:53:55" in html
+    assert "2026-07-15 20:53:54" in html
+    assert "Total retornado" in html
+    assert ">2<" in html or "2</strong>" in html
+    assert html.count("4ac7237b574b4166") == 1
+    from urllib.parse import unquote
+
+    cookie_raw = (resp.cookies.get("mercos_produtos_cursor") or "").strip('"')
+    assert unquote(cookie_raw) == "2026-07-15 20:54:01"
 
 
 def test_produtos_sync_preserva_cursor_sem_registros(client, monkeypatch):

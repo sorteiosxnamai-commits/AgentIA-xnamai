@@ -6,6 +6,7 @@ Não altera o agente IA nem CHECKOUT_CREATE_ORDER.
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timedelta
 from typing import Any
 
 from services.mercos_api_client import (
@@ -129,6 +130,44 @@ def maior_ultima_alteracao(itens: list | None) -> str | None:
     return maior
 
 
+_FMT_ULTIMA_ALTERACAO = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S.%f",
+)
+
+
+def cursor_com_sobreposicao(cursor: str, segundos: int = 1) -> str:
+    """Cursor salvo menos N segundos (mesmo formato), para colisão no mesmo segundo."""
+    texto = (cursor or "").strip()
+    if not texto:
+        return texto
+    for fmt in _FMT_ULTIMA_ALTERACAO:
+        try:
+            dt = datetime.strptime(texto, fmt)
+            return (dt - timedelta(seconds=segundos)).strftime(fmt)
+        except ValueError:
+            continue
+    # Fallback seguro: se não parsear, envia o cursor original
+    return texto
+
+
+def deduplicar_produtos_por_id_alteracao(itens: list | None) -> list[dict]:
+    """Remove duplicados por (id, ultima_alteracao), preservando a ordem."""
+    vistos: set[tuple[Any, str]] = set()
+    saida: list[dict] = []
+    for item in itens or []:
+        if not isinstance(item, dict):
+            continue
+        chave = (item.get("id"), str(item.get("ultima_alteracao") or ""))
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        saida.append(item)
+    return saida
+
+
 _SYNC_PRODUTOS_LOCK = threading.Lock()
 
 
@@ -136,10 +175,12 @@ def sincronizar_produtos(
     cursor: str | None = None,
     *,
     max_paginas: int = 50,
+    sobreposicao_segundos: int = 1,
 ) -> dict[str, Any]:
     """Uma sincronização Produto GET: completa (sem cursor) ou incremental.
 
-    Não altera o formato de ultima_alteracao. Sem filtro local de datas.
+    Incremental envia alterado_apos = cursor salvo - 1s (sobreposicao).
+    O cursor real salvo continua sendo a maior ultima_alteracao recebida.
     Impede cliques/chamadas duplicadas enquanto uma sync estiver em andamento.
     """
     if not _SYNC_PRODUTOS_LOCK.acquire(blocking=False):
@@ -148,25 +189,32 @@ def sincronizar_produtos(
             status_code=409,
         )
     try:
-        cursor_envio = (cursor or "").strip() or None
-        tipo = "incremental" if cursor_envio else "completa"
+        cursor_base = (cursor or "").strip() or None
+        tipo = "incremental" if cursor_base else "completa"
+        if cursor_base:
+            alterado_apos = cursor_com_sobreposicao(
+                cursor_base, segundos=sobreposicao_segundos
+            )
+        else:
+            alterado_apos = None
         data = listar_produtos(
-            alterado_apos=cursor_envio,
+            alterado_apos=alterado_apos,
             pagina_inicial=1,
             max_paginas=max_paginas,
         )
-        itens = data.get("itens") or []
-        total = int(data.get("total") or len(itens) or 0)
+        itens = deduplicar_produtos_por_id_alteracao(data.get("itens") or [])
+        total = len(itens)
         maior = maior_ultima_alteracao(itens)
         if maior:
             novo_cursor = maior
         else:
-            novo_cursor = cursor_envio  # preserva cursor anterior se sem registros
+            novo_cursor = cursor_base  # preserva cursor real se sem registros
         return {
             "ok": True,
             "tipo": tipo,
-            "alterado_apos_enviado": cursor_envio,
-            "cursor_anterior": cursor_envio,
+            "cursor_base": cursor_base,
+            "alterado_apos_enviado": alterado_apos,
+            "cursor_anterior": cursor_base,
             "novo_cursor": novo_cursor,
             "total": total,
             "itens": itens,
@@ -511,6 +559,8 @@ __all__ = [
     "listar_condicoes_pagamento",
     "listar_produtos",
     "maior_ultima_alteracao",
+    "cursor_com_sobreposicao",
+    "deduplicar_produtos_por_id_alteracao",
     "sincronizar_produtos",
     "listar_segmentos",
     "listar_tabelas_preco",
