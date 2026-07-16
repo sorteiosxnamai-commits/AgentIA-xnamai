@@ -209,6 +209,7 @@
         <span>Módulo comercial</span>
       </div>
       <a href="#sec-produtos">Produto</a>
+      <a href="#sec-produtos-criar">Cadastrar produto</a>
       <a href="#sec-categorias">Categoria</a>
       <a href="#sec-clientes-buscar">Clientes</a>
       <a href="#sec-condicoes">Condições</a>
@@ -259,6 +260,43 @@
             </button>
           </div>
           <div class="resultado" id="res-produtos"></div>
+        </section>
+
+        <!-- 1b -->
+        <section class="panel" id="sec-produtos-criar" data-homolog-sec="produto-cadastrar">
+          <h2>Produto — Cadastrar</h2>
+          <p class="hint">Cadastro operacional no sandbox. Independente do ciclo de sincronização GET.</p>
+          <div class="toolbar">
+            <label class="field">Nome
+              <input type="text" id="input-produto-nome" maxlength="300" placeholder="Nome do produto" />
+            </label>
+            <label class="field">Código
+              <input type="text" id="input-produto-codigo" maxlength="30" value="HOM-PROD-001" />
+            </label>
+            <label class="field">Preço tabela
+              <input type="text" id="input-produto-preco" value="10.00" />
+            </label>
+            <label class="field">Estoque
+              <input type="text" id="input-produto-estoque" value="1" />
+            </label>
+            <label class="field">Ativo
+              <select id="input-produto-ativo">
+                <option value="true" selected>Sim</option>
+                <option value="false">Não</option>
+              </select>
+            </label>
+            <label class="field">Unidade
+              <input type="text" id="input-produto-unidade" maxlength="5" placeholder="UN" value="UN" />
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/produtos-criar"
+              data-target="res-produtos-criar"
+              data-store="produto"
+              data-fields="nome:input-produto-nome,codigo:input-produto-codigo,preco_tabela:input-produto-preco,saldo_estoque:input-produto-estoque,ativo:input-produto-ativo,unidade:input-produto-unidade">
+              Cadastrar produto
+            </button>
+          </div>
+          <div class="resultado" id="res-produtos-criar"></div>
         </section>
 
         <!-- 2 -->

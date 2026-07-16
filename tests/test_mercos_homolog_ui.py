@@ -205,6 +205,7 @@ def test_homologacao_ui_tem_15_secoes_obrigatorias(client, monkeypatch):
     body = resp.text
     obrigatorias = [
         "Produto — Buscar",
+        "Produto — Cadastrar",
         "Categoria de produto — Buscar",
         "Cliente — Buscar",
         "Cliente — Incluir",
@@ -237,6 +238,71 @@ def test_homologacao_ui_tem_15_secoes_obrigatorias(client, monkeypatch):
     assert "btn-produtos-sincronizar" in body
     assert "btn-produtos-buscar" in body
     assert "Busca completa bloqueada durante a homologação" in body
+    assert "Produto — Cadastrar" in body
+    assert 'data-action="/mercos/homologacao-ui/acoes/produtos-criar"' in body
+
+
+def test_acao_produtos_criar_sucesso_sem_interferir_ciclo(client, monkeypatch):
+    from services import mercos_produtos_catalogo as cat
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    capturado: dict = {}
+
+    def fake_criar(body):
+        capturado["body"] = dict(body)
+        return {
+            "ok": True,
+            "status_code": 201,
+            "id": 555,
+            "dados": {
+                "id": 555,
+                "nome": body["nome"],
+                "codigo": body["codigo"],
+                "preco_tabela": body.get("preco_tabela"),
+                "saldo_estoque": body.get("saldo_estoque"),
+                "ativo": body.get("ativo"),
+                "ultima_alteracao": "2026-07-16 12:00:00",
+            },
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_produto", fake_criar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/produtos-reiniciar")
+    sessao = client.cookies.get("mercos_produtos_sessao")
+    etapa_antes = cat.obter_ciclo(sessao)["etapa_interna"]
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-criar",
+        data={
+            "nome": "Produto Homolog",
+            "codigo": "HOM-P-01",
+            "preco_tabela": "19.90",
+            "saldo_estoque": "5",
+            "ativo": "true",
+            "unidade": "UN",
+        },
+    )
+    assert resp.status_code == 200
+    html = resp.text
+    assert "Produto cadastrado" in html
+    assert "Status HTTP" in html
+    assert "555" in html
+    assert "19.9" in html
+    assert "Preço tabela" in html
+    assert '"dados"' not in html
+    assert capturado["body"]["nome"] == "Produto Homolog"
+    assert capturado["body"]["codigo"] == "HOM-P-01"
+    assert capturado["body"]["ativo"] is True
+    assert capturado["body"]["preco_tabela"] == 19.9
+    assert cat.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+    assert cat.obter_ciclo(sessao)["ativo"] is True
 
 
 def test_acao_produtos_repassa_alterado_apos_e_destaca(client, monkeypatch):

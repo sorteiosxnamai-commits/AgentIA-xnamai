@@ -115,6 +115,50 @@ def listar_produtos(alterado_apos: str | None = None, **kw) -> dict:
     return data
 
 
+# Campos de envio alinhados à entidade Produto (GET sandbox + ApiMp/Mercos):
+# obrigatórios: codigo, nome, ativo; preço base no produto: preco_tabela.
+CAMPOS_PRODUTO_ENVIO = (
+    "codigo",
+    "nome",
+    "ativo",
+    "preco_tabela",
+    "saldo_estoque",
+    "unidade",
+    "observacoes",
+    "categoria_id",
+    "codigo_ncm",
+    "excluido",
+)
+
+
+def montar_payload_produto(dados: dict | None) -> dict:
+    """Monta payload de POST produto só com campos conhecidos da API."""
+    bruto = dict(dados or {})
+    out: dict[str, Any] = {}
+    for chave in CAMPOS_PRODUTO_ENVIO:
+        if chave not in bruto:
+            continue
+        valor = bruto[chave]
+        if valor is None or valor == "":
+            continue
+        out[chave] = valor
+    return out
+
+
+def criar_produto(body: dict) -> dict:
+    """POST /v1/produtos — cadastro de produto na Mercos."""
+    payload = montar_payload_produto(body)
+    faltando = [c for c in ("nome", "codigo", "ativo") if c not in payload]
+    if faltando:
+        raise MercosApiError(
+            "Campos obrigatórios ausentes para produto: "
+            + ", ".join(faltando)
+            + ".",
+            status_code=422,
+        )
+    return post_json(_path("produtos"), payload)
+
+
 def maior_ultima_alteracao(itens: list | None) -> str | None:
     """Maior ultima_alteracao exatamente como veio da Mercos (sem reformatar)."""
     maior: str | None = None
@@ -562,6 +606,8 @@ __all__ = [
     "cursor_com_sobreposicao",
     "deduplicar_produtos_por_id_alteracao",
     "sincronizar_produtos",
+    "montar_payload_produto",
+    "criar_produto",
     "listar_segmentos",
     "listar_tabelas_preco",
     "listar_tabelas_preco_produto",

@@ -736,6 +736,120 @@ def acao_produtos_localizar(
     return _garantir_sessao_cookie(resp, sessao)
 
 
+def _bool_form(valor: str, default: bool = True) -> bool:
+    texto = (valor or "").strip().lower()
+    if not texto:
+        return default
+    if texto in ("1", "true", "sim", "s", "yes", "ativo"):
+        return True
+    if texto in ("0", "false", "nao", "não", "n", "no", "inativo"):
+        return False
+    return default
+
+
+def _float_form(valor: str) -> float | None:
+    texto = (valor or "").strip().replace(",", ".")
+    if not texto:
+        return None
+    try:
+        return float(texto)
+    except ValueError:
+        return None
+
+
+@router.post("/homologacao-ui/acoes/produtos-criar", response_class=HTMLResponse)
+def acao_produtos_criar(
+    request: Request,
+    token: str = Form(""),
+    nome: str = Form(""),
+    codigo: str = Form(""),
+    preco_tabela: str = Form(""),
+    saldo_estoque: str = Form(""),
+    ativo: str = Form("true"),
+    unidade: str = Form(""),
+    observacoes: str = Form(""),
+):
+    """Cadastro operacional de produto — independente do ciclo GET incremental."""
+    _auth(request, token)
+    nome_txt = (nome or "").strip()
+    codigo_txt = (codigo or "").strip()
+    if not nome_txt or not codigo_txt:
+        return _wrap_result(
+            _card(
+                "Dados incompletos",
+                [
+                    ("Mensagem", "Informe nome e código do produto (obrigatórios)."),
+                ],
+                status_label="Validação",
+                css="erro",
+            )
+        )
+    body: dict[str, Any] = {
+        "nome": nome_txt[:300],
+        "codigo": codigo_txt[:30],
+        "ativo": _bool_form(ativo, True),
+    }
+    preco = _float_form(preco_tabela)
+    if preco is not None:
+        body["preco_tabela"] = preco
+    estoque = _float_form(saldo_estoque)
+    if estoque is not None:
+        body["saldo_estoque"] = estoque
+    if (unidade or "").strip():
+        body["unidade"] = (unidade or "").strip()[:5]
+    if (observacoes or "").strip():
+        body["observacoes"] = (observacoes or "").strip()[:5000]
+    try:
+        out = homolog.criar_produto(body)
+        dados = out.get("dados") if isinstance(out.get("dados"), dict) else {}
+        pid = out.get("id") or dados.get("id")
+        card = _card(
+            "Produto cadastrado",
+            [
+                ("Status HTTP", out.get("status_code") or 201),
+                ("ID", pid),
+                ("Nome", dados.get("nome") if dados.get("nome") not in (None, "") else body["nome"]),
+                (
+                    "Código",
+                    dados.get("codigo")
+                    if dados.get("codigo") not in (None, "")
+                    else body["codigo"],
+                ),
+                (
+                    "Preço tabela",
+                    dados.get("preco_tabela")
+                    if dados.get("preco_tabela") not in (None, "")
+                    else body.get("preco_tabela", "—"),
+                ),
+                (
+                    "Estoque",
+                    dados.get("saldo_estoque")
+                    if dados.get("saldo_estoque") not in (None, "")
+                    else body.get("saldo_estoque", "—"),
+                ),
+                (
+                    "Ativo",
+                    _fmt_bool(
+                        dados.get("ativo")
+                        if "ativo" in dados
+                        else body.get("ativo")
+                    ),
+                ),
+                (
+                    "Última alteração",
+                    dados.get("ultima_alteracao")
+                    or dados.get("data_criacao")
+                    or "—",
+                ),
+            ],
+            status_label=f"Status {out.get('status_code') or 201}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="produto", entity_id=str(pid or ""))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/categorias", response_class=HTMLResponse)
 def acao_categorias(request: Request, token: str = Form("")):
     _auth(request, token)

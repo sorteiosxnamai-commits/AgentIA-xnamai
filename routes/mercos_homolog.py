@@ -156,6 +156,16 @@ def get_produtos(
         raise _http(exc) from exc
 
 
+@router.post("/produtos")
+def post_produtos(token: str = "", body: dict = Body(...)):
+    """Cadastra produto na Mercos (POST /v1/produtos). Não altera o GET."""
+    _bloqueio(token)
+    try:
+        return homolog.criar_produto(body)
+    except MercosApiError as exc:
+        raise _http(exc) from exc
+
+
 @router.get("/segmentos")
 def get_segmentos(
     token: str = "",

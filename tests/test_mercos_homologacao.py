@@ -83,6 +83,109 @@ def test_produtos_repassa_alterado_apos_para_mercos(client, monkeypatch):
     assert resp.json()["itens"][0]["nome"] == "4c2e97e74c634ea4"
 
 
+def test_post_produtos_exige_token(client, monkeypatch):
+    monkeypatch.setenv("DIAGNOSTICOS_ABERTOS", "false")
+    monkeypatch.setenv("SYNC_TOKEN", "segredo-produtos")
+    # recria client com env fechado
+    from main import app
+    from fastapi.testclient import TestClient
+
+    c = TestClient(app)
+    resp = c.post("/mercos/produtos", json={"nome": "X", "codigo": "Y", "ativo": True})
+    assert resp.status_code == 403
+
+
+def test_post_produtos_payload_e_sucesso(client, monkeypatch):
+    capturado: dict = {}
+
+    def fake_post(path, body):
+        capturado["path"] = path
+        capturado["body"] = dict(body)
+        return {
+            "ok": True,
+            "status_code": 201,
+            "id": 998877,
+            "sandbox": True,
+            "dados": {
+                "id": 998877,
+                "nome": body["nome"],
+                "codigo": body["codigo"],
+                "preco_tabela": body.get("preco_tabela"),
+                "saldo_estoque": body.get("saldo_estoque"),
+                "ativo": body.get("ativo"),
+                "ultima_alteracao": "2026-07-16 10:00:00",
+            },
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/produtos" if chave == "produtos" else f"/v1/{chave}",
+    )
+    resp = client.post(
+        "/mercos/produtos",
+        json={
+            "nome": "Homolog Produto",
+            "codigo": "HOM-001",
+            "ativo": True,
+            "preco_tabela": 15.5,
+            "saldo_estoque": 3,
+            "campo_inventado": "nao-enviar",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status_code"] == 201
+    assert data["id"] == 998877
+    assert capturado["path"] == "/v1/produtos"
+    assert capturado["body"]["nome"] == "Homolog Produto"
+    assert capturado["body"]["codigo"] == "HOM-001"
+    assert capturado["body"]["ativo"] is True
+    assert capturado["body"]["preco_tabela"] == 15.5
+    assert "campo_inventado" not in capturado["body"]
+
+
+def test_post_produtos_validacao_campos_obrigatorios(client, monkeypatch):
+    called = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", called)
+    resp = client.post("/mercos/produtos", json={"nome": "Só nome"})
+    assert resp.status_code == 422
+    assert "obrigatórios" in resp.json()["detail"].lower() or "obrigatorios" in resp.json()["detail"].lower() or "codigo" in resp.json()["detail"].lower()
+    called.assert_not_called()
+
+
+def test_post_produtos_erro_mercos(client, monkeypatch):
+    def boom(_path, _body):
+        raise MercosApiError("nome: Este campo é obrigatório.", status_code=412)
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", boom)
+    resp = client.post(
+        "/mercos/produtos",
+        json={"nome": "X", "codigo": "Y", "ativo": True},
+    )
+    assert resp.status_code == 412
+    assert "obrigatório" in resp.json()["detail"].lower() or "obrigatorio" in resp.json()["detail"].lower() or "nome" in resp.json()["detail"].lower()
+
+
+def test_get_produtos_continua_apos_post(client, monkeypatch):
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos",
+        lambda **_k: {
+            "ok": True,
+            "path": "/v1/produtos",
+            "total": 1,
+            "paginas_lidas": 1,
+            "sandbox": True,
+            "itens": [{"id": 1, "nome": "A"}],
+        },
+    )
+    resp = client.get("/mercos/produtos")
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 1
+
+
 def test_get_clientes_categorias_etc(client, monkeypatch):
     fake = lambda **_k: {"ok": True, "total": 1, "itens": [{"id": 1}], "paginas_lidas": 1, "sandbox": True, "path": "/x"}
     for nome in (
