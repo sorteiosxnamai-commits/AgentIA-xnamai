@@ -2411,6 +2411,87 @@ def test_ui_produtos_alterar_valida_id_e_campos(client, monkeypatch):
     api.assert_not_called()
 
 
+def test_ui_form_produto_excluir_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    assert 'id="input-produto-alt-excluido"' in html
+    assert "Excluir logicamente" in html
+    assert "Não alterar" in html
+
+
+def test_ui_produtos_excluir_logicamente_envia_apenas_excluido(client, monkeypatch):
+    """Botão Excluir logicamente: só excluido=true no corpo, ID só na URL."""
+    capturado: dict = {}
+
+    def fake_put(path, body):
+        capturado["path"] = path
+        capturado["body"] = dict(body)
+        return {
+            "ok": True,
+            "status_code": 200,
+            "sandbox": True,
+            "dados": {
+                "id": 20400678,
+                "nome": "d9b02dfac23a4192",
+                "preco_tabela": 6.13,
+                "excluido": True,
+                "ativo": True,
+                "ultima_alteracao": "2026-07-16 17:00:00",
+            },
+        }
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/produtos" if chave == "produtos" else f"/v1/{chave}",
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-alterar",
+        data={"produto_id": "20400678", "excluido": "true"},
+    )
+    assert resp.status_code == 200
+    assert capturado["path"] == "/v1/produtos/20400678"
+    assert capturado["body"] == {"excluido": True}  # nada além da exclusão lógica
+    assert "id" not in capturado["body"]
+    html = resp.text
+    assert "Produto excluído logicamente" in html
+    assert "Status HTTP" in html
+    assert "20400678" in html
+    assert "d9b02dfac23a4192" in html
+    assert "6.13" in html
+    assert "Excluído" in html and "Sim" in html
+    assert "Última alteração" in html
+    assert "2026-07-16 17:00:00" in html
+    assert "CompanyToken" not in html
+    assert '"excluido"' not in html  # sem JSON cru
+
+
+def test_ui_produtos_alterar_excluido_nao_alterar_nao_envia(client, monkeypatch):
+    """Excluído em 'Não alterar' (vazio) fica fora do corpo; demais vazios também."""
+    capturado: dict = {}
+
+    def fake_put(path, body):
+        capturado["body"] = dict(body)
+        return {"ok": True, "status_code": 200, "sandbox": True, "dados": {}}
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-alterar",
+        data={
+            "produto_id": "10",
+            "nome": "Só Nome",
+            "excluido": "",
+            "ativo": "",
+            "codigo": "",
+        },
+    )
+    assert resp.status_code == 200
+    assert capturado["body"] == {"nome": "Só Nome"}
+    assert "excluido" not in capturado["body"]
+
+
 def test_ui_produtos_alterar_erro_mercos(client, monkeypatch):
     from services.mercos_api_client import MercosApiError
 

@@ -1007,8 +1007,9 @@ def acao_produtos_alterar(
     saldo_estoque: str = Form(""),
     ativo: str = Form(""),
     unidade: str = Form(""),
+    excluido: str = Form(""),
 ):
-    """Alteração operacional de produto — independente do ciclo GET incremental."""
+    """Alteração operacional de produto (inclui exclusão lógica via excluido=true)."""
     _auth(request, token)
     pid_txt = (produto_id or "").strip()
     if not pid_txt:
@@ -1038,6 +1039,9 @@ def acao_produtos_alterar(
         body["ativo"] = ativo_txt == "true"
     if (unidade or "").strip():
         body["unidade"] = (unidade or "").strip()[:5]
+    excluido_txt = (excluido or "").strip().lower()
+    if excluido_txt in ("true", "false"):
+        body["excluido"] = excluido_txt == "true"  # exclusão lógica, nunca DELETE
 
     if not body:
         return _wrap_result(
@@ -1060,8 +1064,16 @@ def acao_produtos_alterar(
             return body.get(chave, "—")
 
         ativo_final = dados.get("ativo") if "ativo" in dados else body.get("ativo")
+        excluido_final = (
+            dados.get("excluido") if "excluido" in dados else body.get("excluido")
+        )
+        titulo_card = (
+            "Produto excluído logicamente"
+            if body.get("excluido") is True
+            else "Produto alterado"
+        )
         card = _card(
-            "Produto alterado",
+            titulo_card,
             [
                 ("Status HTTP", out.get("status_code") or 200),
                 ("ID", pid_txt),
@@ -1069,6 +1081,10 @@ def acao_produtos_alterar(
                 ("Código", _mostra("codigo")),
                 ("Preço tabela", _mostra("preco_tabela")),
                 ("Estoque", _mostra("saldo_estoque")),
+                (
+                    "Excluído",
+                    _fmt_bool(excluido_final) if excluido_final is not None else "—",
+                ),
                 ("Ativo", _fmt_bool(ativo_final) if ativo_final is not None else "—"),
                 ("Última alteração", dados.get("ultima_alteracao") or "—"),
             ],

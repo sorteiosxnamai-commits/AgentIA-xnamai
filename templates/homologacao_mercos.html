@@ -329,11 +329,25 @@
             <label class="field">Unidade
               <input type="text" id="input-produto-alt-unidade" maxlength="5" placeholder="Opcional" />
             </label>
+            <label class="field">Excluído
+              <select id="input-produto-alt-excluido">
+                <option value="" selected>Não alterar</option>
+                <option value="true">Sim</option>
+                <option value="false">Não</option>
+              </select>
+            </label>
+            <input type="hidden" id="input-produto-excluir-flag" value="true" />
             <button type="button" class="secondary"
               data-action="/mercos/homologacao-ui/acoes/produtos-alterar"
               data-target="res-produtos-alterar"
-              data-fields="produto_id:input-produto-alt-id,nome:input-produto-alt-nome,codigo:input-produto-alt-codigo,preco_tabela:input-produto-alt-preco,saldo_estoque:input-produto-alt-estoque,ativo:input-produto-alt-ativo,unidade:input-produto-alt-unidade">
+              data-fields="produto_id:input-produto-alt-id,nome:input-produto-alt-nome,codigo:input-produto-alt-codigo,preco_tabela:input-produto-alt-preco,saldo_estoque:input-produto-alt-estoque,ativo:input-produto-alt-ativo,unidade:input-produto-alt-unidade,excluido:input-produto-alt-excluido">
               Alterar produto
+            </button>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/produtos-alterar"
+              data-target="res-produtos-alterar"
+              data-fields="produto_id:input-produto-alt-id,excluido:input-produto-excluir-flag">
+              Excluir logicamente
             </button>
           </div>
           <div class="resultado" id="res-produtos-alterar"></div>

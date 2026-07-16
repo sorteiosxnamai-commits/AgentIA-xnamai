@@ -243,6 +243,27 @@ def test_put_produtos_id_so_na_url_e_payload_correto(client, monkeypatch):
     assert "campo_inventado" not in capturado["body"]
 
 
+def test_put_produtos_exclusao_logica(client, monkeypatch):
+    """excluido=true vai no corpo; id só na URL (nunca DELETE físico)."""
+    capturado: dict = {}
+
+    def fake_put(path, body):
+        capturado["path"] = path
+        capturado["body"] = dict(body)
+        return {"ok": True, "status_code": 200, "sandbox": True, "dados": {"excluido": True}}
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/produtos" if chave == "produtos" else f"/v1/{chave}",
+    )
+    resp = client.put("/mercos/produtos/20400678", json={"excluido": True, "id": 999})
+    assert resp.status_code == 200
+    assert capturado["path"] == "/v1/produtos/20400678"
+    assert capturado["body"] == {"excluido": True}
+    assert "id" not in capturado["body"]
+
+
 def test_put_produtos_validacao_sem_campos(client, monkeypatch):
     called = MagicMock()
     monkeypatch.setattr("services.mercos_homolog_service.put_json", called)
