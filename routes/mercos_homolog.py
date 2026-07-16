@@ -175,6 +175,16 @@ def post_produtos(token: str = "", body: dict = Body(...)):
         raise _http(exc) from exc
 
 
+@router.put("/produtos/{produto_id}")
+def put_produtos(produto_id: str, token: str = "", body: dict = Body(...)):
+    """Atualiza produto na Mercos (PUT /v1/produtos/{id}). Id só na URL; não altera o GET."""
+    _bloqueio(token)
+    try:
+        return homolog.alterar_produto(produto_id, body)
+    except MercosApiError as exc:
+        raise _http(exc) from exc
+
+
 @router.get("/segmentos")
 def get_segmentos(
     token: str = "",

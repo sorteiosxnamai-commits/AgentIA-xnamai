@@ -996,6 +996,90 @@ def acao_produtos_criar(
         return _wrap_result(_erro_html(exc))
 
 
+@router.post("/homologacao-ui/acoes/produtos-alterar", response_class=HTMLResponse)
+def acao_produtos_alterar(
+    request: Request,
+    token: str = Form(""),
+    produto_id: str = Form(""),
+    nome: str = Form(""),
+    codigo: str = Form(""),
+    preco_tabela: str = Form(""),
+    saldo_estoque: str = Form(""),
+    ativo: str = Form(""),
+    unidade: str = Form(""),
+):
+    """Alteração operacional de produto — independente do ciclo GET incremental."""
+    _auth(request, token)
+    pid_txt = (produto_id or "").strip()
+    if not pid_txt:
+        return _wrap_result(
+            _card(
+                "Produto não informado",
+                [("Mensagem", "Informe o ID do produto que será alterado.")],
+                status_label="Validação",
+                css="erro",
+            )
+        )
+
+    # Só entram no corpo os campos preenchidos (Mercos aceita atualização parcial)
+    body: dict[str, Any] = {}
+    if (nome or "").strip():
+        body["nome"] = (nome or "").strip()[:300]
+    if (codigo or "").strip():
+        body["codigo"] = (codigo or "").strip()[:30]
+    preco = _float_form(preco_tabela)
+    if preco is not None:
+        body["preco_tabela"] = preco
+    estoque = _float_form(saldo_estoque)
+    if estoque is not None:
+        body["saldo_estoque"] = estoque
+    ativo_txt = (ativo or "").strip().lower()
+    if ativo_txt in ("true", "false"):
+        body["ativo"] = ativo_txt == "true"
+    if (unidade or "").strip():
+        body["unidade"] = (unidade or "").strip()[:5]
+
+    if not body:
+        return _wrap_result(
+            _card(
+                "Nada para alterar",
+                [("Mensagem", "Preencha ao menos um campo para atualizar o produto.")],
+                status_label="Validação",
+                css="erro",
+            )
+        )
+
+    try:
+        out = homolog.alterar_produto(pid_txt, body)
+        dados = out.get("dados") if isinstance(out.get("dados"), dict) else {}
+
+        def _mostra(chave: str) -> Any:
+            valor = dados.get(chave)
+            if valor not in (None, ""):
+                return valor
+            return body.get(chave, "—")
+
+        ativo_final = dados.get("ativo") if "ativo" in dados else body.get("ativo")
+        card = _card(
+            "Produto alterado",
+            [
+                ("Status HTTP", out.get("status_code") or 200),
+                ("ID", pid_txt),
+                ("Nome", _mostra("nome")),
+                ("Código", _mostra("codigo")),
+                ("Preço tabela", _mostra("preco_tabela")),
+                ("Estoque", _mostra("saldo_estoque")),
+                ("Ativo", _fmt_bool(ativo_final) if ativo_final is not None else "—"),
+                ("Última alteração", dados.get("ultima_alteracao") or "—"),
+            ],
+            status_label=f"Status {out.get('status_code') or 200}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="produto", entity_id=pid_txt)
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/categorias", response_class=HTMLResponse)
 def acao_categorias(request: Request, token: str = Form("")):
     _auth(request, token)

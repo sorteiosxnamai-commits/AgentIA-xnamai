@@ -2323,6 +2323,111 @@ def test_candidatos_tipos_pedido_prioriza_pedidos_tipo(monkeypatch):
     assert "/v1/tipos_pedido" in paths
 
 
+def test_ui_form_produto_alterar_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    assert "Produto — Alterar" in html
+    assert 'id="input-produto-alt-id"' in html
+    assert 'id="input-produto-alt-nome"' in html
+    assert 'id="input-produto-alt-codigo"' in html
+    assert 'id="input-produto-alt-preco"' in html
+    assert 'id="input-produto-alt-estoque"' in html
+    assert 'id="input-produto-alt-ativo"' in html
+    assert 'id="input-produto-alt-unidade"' in html
+    assert "/mercos/homologacao-ui/acoes/produtos-alterar" in html
+
+
+def test_ui_produtos_alterar_envia_payload_e_cartao(client, monkeypatch):
+    capturado: dict = {}
+
+    def fake_put(path, body):
+        capturado["path"] = path
+        capturado["body"] = dict(body)
+        return {
+            "ok": True,
+            "status_code": 200,
+            "sandbox": True,
+            "dados": {
+                "id": 4321,
+                "nome": "Nome Retornado",
+                "ultima_alteracao": "2026-07-16 16:30:00",
+            },
+        }
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/produtos" if chave == "produtos" else f"/v1/{chave}",
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-alterar",
+        data={
+            "produto_id": "4321",
+            "nome": "Produto Novo Nome",
+            "codigo": "",
+            "preco_tabela": "33.90",
+            "saldo_estoque": "",
+            "ativo": "true",
+            "unidade": "",
+        },
+    )
+    assert resp.status_code == 200
+    # ID só na URL; campos vazios não vão no corpo
+    assert capturado["path"] == "/v1/produtos/4321"
+    assert "id" not in capturado["body"]
+    assert capturado["body"]["nome"] == "Produto Novo Nome"
+    assert capturado["body"]["preco_tabela"] == 33.9
+    assert capturado["body"]["ativo"] is True
+    assert "codigo" not in capturado["body"]
+    assert "saldo_estoque" not in capturado["body"]
+    assert "unidade" not in capturado["body"]
+    html = resp.text
+    assert "Produto alterado" in html
+    assert "Status HTTP" in html
+    assert "4321" in html
+    assert "Nome Retornado" in html  # valor retornado pela Mercos prevalece
+    assert "33.9" in html
+    assert "Última alteração" in html
+    assert "2026-07-16 16:30:00" in html
+    assert "CompanyToken" not in html
+    assert '"nome"' not in html  # sem JSON cru
+
+
+def test_ui_produtos_alterar_valida_id_e_campos(client, monkeypatch):
+    api = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", api)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    sem_id = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-alterar",
+        data={"produto_id": "", "nome": "X"},
+    )
+    assert "Produto não informado" in sem_id.text
+    sem_campos = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-alterar",
+        data={"produto_id": "10", "nome": "", "ativo": ""},
+    )
+    assert "Nada para alterar" in sem_campos.text
+    api.assert_not_called()
+
+
+def test_ui_produtos_alterar_erro_mercos(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+
+    def boom(path, body):
+        raise MercosApiError("Mercos HTTP 400: dados inválidos", status_code=400)
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", boom)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-alterar",
+        data={"produto_id": "10", "nome": "X"},
+    )
+    assert resp.status_code == 200
+    assert "dados inválidos" in resp.text
+    assert "CompanyToken" not in resp.text
+
+
 def test_ui_form_cliente_incluir_presente(client):
     resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     html = resp.text

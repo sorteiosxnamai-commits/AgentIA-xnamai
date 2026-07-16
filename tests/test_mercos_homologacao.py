@@ -186,6 +186,106 @@ def test_post_produtos_validacao_campos_obrigatorios(client, monkeypatch):
     called.assert_not_called()
 
 
+def test_put_produtos_exige_token(monkeypatch):
+    monkeypatch.setenv("DIAGNOSTICOS_ABERTOS", "false")
+    monkeypatch.setenv("SYNC_TOKEN", "segredo-produtos")
+    from main import app
+
+    c = TestClient(app)
+    resp = c.put("/mercos/produtos/123", json={"nome": "X"})
+    assert resp.status_code == 403
+
+
+def test_put_produtos_id_so_na_url_e_payload_correto(client, monkeypatch):
+    capturado: dict = {}
+
+    def fake_put(path, body):
+        capturado["path"] = path
+        capturado["body"] = dict(body)
+        return {
+            "ok": True,
+            "status_code": 200,
+            "sandbox": True,
+            "dados": {
+                "id": 123456,
+                "nome": body.get("nome"),
+                "ultima_alteracao": "2026-07-16 16:00:00",
+            },
+        }
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/produtos" if chave == "produtos" else f"/v1/{chave}",
+    )
+    resp = client.put(
+        "/mercos/produtos/123456",
+        json={
+            "id": 999,  # não pode ir no corpo
+            "nome": "Produto Alterado",
+            "preco_tabela": 22.5,
+            "saldo_estoque": 8,
+            "ativo": False,
+            "unidade": "CX",
+            "campo_inventado": "nao-enviar",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status_code"] == 200
+    assert capturado["path"] == "/v1/produtos/123456"
+    assert "id" not in capturado["body"]
+    assert capturado["body"]["nome"] == "Produto Alterado"
+    assert capturado["body"]["preco_tabela"] == 22.5
+    assert capturado["body"]["saldo_estoque"] == 8
+    assert capturado["body"]["ativo"] is False
+    assert capturado["body"]["unidade"] == "CX"
+    assert "campo_inventado" not in capturado["body"]
+
+
+def test_put_produtos_validacao_sem_campos(client, monkeypatch):
+    called = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", called)
+    resp = client.put("/mercos/produtos/123", json={"campo_inventado": "x"})
+    assert resp.status_code == 422
+    called.assert_not_called()
+
+
+def test_put_produtos_erro_mercos(client, monkeypatch):
+    def boom(path, body):
+        raise MercosApiError("Mercos HTTP 400: produto inválido", status_code=400)
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", boom)
+    resp = client.put("/mercos/produtos/123", json={"nome": "X"})
+    assert resp.status_code == 400
+    assert "produto inválido" in resp.json()["detail"]
+
+
+def test_put_produtos_nao_afeta_get_e_post(client, monkeypatch):
+    """GET e POST de produtos continuam funcionando após o PUT existir."""
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos",
+        lambda **_k: {
+            "ok": True,
+            "path": "/v1/produtos",
+            "total": 1,
+            "paginas_lidas": 1,
+            "sandbox": True,
+            "itens": [{"id": 1, "nome": "A"}],
+        },
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 201, "id": 7, "sandbox": True, "dados": {}},
+    )
+    assert client.get("/mercos/produtos").status_code == 200
+    resp = client.post(
+        "/mercos/produtos", json={"nome": "N", "codigo": "C", "ativo": True}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["id"] == 7
+
+
 def test_post_produtos_erro_mercos(client, monkeypatch):
     def boom(_path, _body):
         raise MercosApiError("nome: Este campo é obrigatório.", status_code=412)

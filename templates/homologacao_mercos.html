@@ -299,6 +299,46 @@
           <div class="resultado" id="res-produtos-criar"></div>
         </section>
 
+        <!-- 1c -->
+        <section class="panel" id="sec-produtos-alterar" data-homolog-sec="produto-alterar">
+          <h2>Produto — Alterar</h2>
+          <p class="hint">Atualiza produto no sandbox. Campos vazios não são enviados. Independente do ciclo de sincronização GET.</p>
+          <div class="toolbar">
+            <label class="field">ID do produto
+              <input type="text" id="input-produto-alt-id" placeholder="Ex.: 123456" />
+            </label>
+            <label class="field">Nome
+              <input type="text" id="input-produto-alt-nome" maxlength="300" placeholder="Novo nome (opcional)" />
+            </label>
+            <label class="field">Código
+              <input type="text" id="input-produto-alt-codigo" maxlength="30" placeholder="Novo código (opcional)" />
+            </label>
+            <label class="field">Preço tabela
+              <input type="text" id="input-produto-alt-preco" placeholder="Opcional" />
+            </label>
+            <label class="field">Estoque
+              <input type="text" id="input-produto-alt-estoque" placeholder="Opcional" />
+            </label>
+            <label class="field">Ativo
+              <select id="input-produto-alt-ativo">
+                <option value="" selected>Não alterar</option>
+                <option value="true">Sim</option>
+                <option value="false">Não</option>
+              </select>
+            </label>
+            <label class="field">Unidade
+              <input type="text" id="input-produto-alt-unidade" maxlength="5" placeholder="Opcional" />
+            </label>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/produtos-alterar"
+              data-target="res-produtos-alterar"
+              data-fields="produto_id:input-produto-alt-id,nome:input-produto-alt-nome,codigo:input-produto-alt-codigo,preco_tabela:input-produto-alt-preco,saldo_estoque:input-produto-alt-estoque,ativo:input-produto-alt-ativo,unidade:input-produto-alt-unidade">
+              Alterar produto
+            </button>
+          </div>
+          <div class="resultado" id="res-produtos-alterar"></div>
+        </section>
+
         <!-- 2 -->
         <section class="panel" id="sec-categorias" data-homolog-sec="categoria-buscar">
           <h2>Categoria de produto — Buscar</h2>

@@ -200,6 +200,21 @@ def criar_produto(body: dict) -> dict:
     return post_json(_path("produtos"), payload)
 
 
+def alterar_produto(produto_id: int | str, body: dict) -> dict:
+    """PUT /v1/produtos/{id} — id só na URL; envia apenas campos conhecidos preenchidos."""
+    pid = str(produto_id or "").strip()
+    if not pid:
+        raise MercosApiError("ID do produto é obrigatório para alteração.", status_code=422)
+    payload = montar_payload_produto(body)
+    payload.pop("id", None)
+    if not payload:
+        raise MercosApiError(
+            "Nenhum campo válido informado para atualizar o produto.",
+            status_code=422,
+        )
+    return put_json(f"{_path('produtos')}/{pid}", payload)
+
+
 def maior_ultima_alteracao(itens: list | None) -> str | None:
     """Maior ultima_alteracao exatamente como veio da Mercos (sem reformatar)."""
     maior: str | None = None
@@ -1158,6 +1173,7 @@ __all__ = [
     "listar_clientes_paginado_seguro",
     "montar_payload_produto",
     "criar_produto",
+    "alterar_produto",
     "listar_segmentos",
     "listar_tabelas_preco",
     "listar_tabelas_preco_produto",
