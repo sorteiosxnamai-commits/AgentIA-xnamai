@@ -1406,25 +1406,79 @@ def acao_clientes_localizar(
 
 
 @router.post("/homologacao-ui/acoes/clientes-criar", response_class=HTMLResponse)
-def acao_clientes_criar(request: Request, token: str = Form("")):
+def acao_clientes_criar(
+    request: Request,
+    token: str = Form(""),
+    tipo: str = Form("J"),
+    razao_social: str = Form(""),
+    nome_fantasia: str = Form(""),
+    cnpj: str = Form(""),
+    email: str = Form(""),
+    ativo: str = Form("true"),
+):
+    """Envia exatamente os valores do formulário — nada é gerado automaticamente."""
     _auth(request, token)
+    tipo_val = (tipo or "").strip().upper() or "J"
+    if tipo_val not in ("J", "F"):
+        tipo_val = "J"
+    razao_val = (razao_social or "").strip()
+    fantasia_val = (nome_fantasia or "").strip()
+    cnpj_val = (cnpj or "").strip()
+    email_val = (email or "").strip()
+    ativo_val = (ativo or "true").strip().lower() != "false"
+
+    faltando = [
+        rotulo
+        for rotulo, valor in (
+            ("Razão social", razao_val),
+            ("Nome fantasia", fantasia_val),
+            ("CNPJ/CPF", cnpj_val),
+        )
+        if not valor
+    ]
+    if faltando:
+        return _wrap_result(
+            _card(
+                "Campos obrigatórios ausentes",
+                [("Preencha", ", ".join(faltando))],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+
+    body = {
+        "tipo": tipo_val,
+        "razao_social": razao_val,
+        "nome_fantasia": fantasia_val,
+        "cnpj": cnpj_val,  # enviado exatamente como digitado, sem formatação
+        "ativo": ativo_val,
+    }
+    if email_val:
+        body["email"] = email_val
     try:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        body = {
-            "razao_social": f"Homolog Xnamai {stamp}",
-            "nome_fantasia": f"Homolog {stamp}",
-            "email": f"homolog.{stamp}@xnamai.test",
-            "tipo": "J",
-        }
         out = homolog.criar_cliente(body)
-        cid = out.get("id") or (out.get("dados") or {}).get("id")
+        dados = out.get("dados") or {}
+        cid = out.get("id") or dados.get("id")
+
+        def _retornado_ou_enviado(chave: str, enviado: Any) -> Any:
+            valor = dados.get(chave)
+            if valor in (None, ""):
+                return enviado
+            return valor
+
+        ativo_final = _retornado_ou_enviado("ativo", ativo_val)
         card = _card(
             "Cliente criado",
             [
-                ("Status", out.get("status_code") or 201),
-                ("ID criado", cid),
-                ("Razão social", body["razao_social"]),
-                ("Email", body["email"]),
+                ("Status HTTP", out.get("status_code") or 201),
+                ("ID criado", cid or "—"),
+                ("Tipo", _retornado_ou_enviado("tipo", tipo_val)),
+                ("Razão social", _retornado_ou_enviado("razao_social", razao_val)),
+                ("Nome fantasia", _retornado_ou_enviado("nome_fantasia", fantasia_val)),
+                ("CNPJ", _retornado_ou_enviado("cnpj", cnpj_val)),
+                ("E-mail", _retornado_ou_enviado("email", email_val or "—")),
+                ("Ativo", _fmt_bool(ativo_final)),
+                ("Última alteração", dados.get("ultima_alteracao") or "—"),
             ],
             status_label=f"Status {out.get('status_code') or 201}",
             css="ok",

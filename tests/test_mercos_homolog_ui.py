@@ -2321,3 +2321,112 @@ def test_candidatos_tipos_pedido_prioriza_pedidos_tipo(monkeypatch):
     paths = caminhos_candidatos_tipos_pedido()
     assert paths[0] == "/v1/pedidos/tipo"
     assert "/v1/tipos_pedido" in paths
+
+
+def test_ui_form_cliente_incluir_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    assert 'id="input-cliente-tipo"' in html
+    assert 'id="input-cliente-razao-social"' in html
+    assert 'id="input-cliente-fantasia"' in html
+    assert 'id="input-cliente-cnpj"' in html
+    assert 'id="input-cliente-email"' in html
+    assert 'id="input-cliente-ativo"' in html
+    assert 'value="J"' in html
+    assert 'value="F"' in html
+
+
+def test_clientes_criar_envia_campos_do_formulario(client, monkeypatch):
+    """Os 4 campos obrigatórios da homologação vão exatamente como digitados."""
+    capturado: dict = {}
+
+    def fake_criar(body):
+        capturado.update(body)
+        return {"ok": True, "status_code": 201, "id": 555, "dados": {"id": 555}}
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.homolog.criar_cliente", fake_criar)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-criar",
+        data={
+            "tipo": "J",
+            "razao_social": "682f3a75494c433c",
+            "nome_fantasia": "ef8b4befd76f481f",
+            "cnpj": "73032604000193",
+            "email": "",
+            "ativo": "true",
+        },
+    )
+    assert resp.status_code == 200
+    assert capturado["tipo"] == "J"
+    assert capturado["razao_social"] == "682f3a75494c433c"
+    assert capturado["nome_fantasia"] == "ef8b4befd76f481f"
+    assert capturado["cnpj"] == "73032604000193"  # sem formatação
+    assert capturado["ativo"] is True
+    assert "email" not in capturado  # opcional vazio não é enviado
+    # Nada gerado automaticamente
+    assert "Homolog Xnamai" not in str(capturado)
+    html = resp.text
+    assert "Status HTTP" in html
+    assert "ID criado" in html
+    assert "682f3a75494c433c" in html
+    assert "ef8b4befd76f481f" in html
+    assert "73032604000193" in html
+    assert "Última alteração" in html
+    assert "CompanyToken" not in html
+    assert '"razao_social"' not in html  # sem JSON cru no cartão
+
+
+def test_clientes_criar_cartao_usa_retorno_com_fallback(client, monkeypatch):
+    """Campos retornados pela Mercos prevalecem; ausentes caem no valor enviado."""
+
+    def fake_criar(body):
+        return {
+            "ok": True,
+            "status_code": 201,
+            "id": 777,
+            "dados": {
+                "id": 777,
+                "razao_social": "682F3A75494C433C LTDA",
+                "ultima_alteracao": "2026-07-16 15:00:00",
+            },
+        }
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.homolog.criar_cliente", fake_criar)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-criar",
+        data={
+            "tipo": "J",
+            "razao_social": "682f3a75494c433c",
+            "nome_fantasia": "ef8b4befd76f481f",
+            "cnpj": "73032604000193",
+            "email": "contato@homolog.test",
+            "ativo": "true",
+        },
+    )
+    assert resp.status_code == 200
+    html = resp.text
+    assert "777" in html
+    # Retornado pela Mercos prevalece
+    assert "682F3A75494C433C LTDA" in html
+    assert "2026-07-16 15:00:00" in html
+    # Não retornados: preserva o que foi enviado
+    assert "ef8b4befd76f481f" in html
+    assert "73032604000193" in html
+    assert "contato@homolog.test" in html
+
+
+def test_clientes_criar_valida_obrigatorios(client, monkeypatch):
+    api = MagicMock()
+    monkeypatch.setattr("routes.mercos_homolog_ui.homolog.criar_cliente", api)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-criar",
+        data={"tipo": "J", "razao_social": "", "nome_fantasia": "X", "cnpj": ""},
+    )
+    assert resp.status_code == 200
+    assert "Campos obrigatórios ausentes" in resp.text
+    assert "Razão social" in resp.text
+    assert "CNPJ/CPF" in resp.text
+    api.assert_not_called()

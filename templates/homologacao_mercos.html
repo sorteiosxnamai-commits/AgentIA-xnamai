@@ -341,9 +341,39 @@
         <!-- 4 -->
         <section class="panel" id="sec-clientes-criar" data-homolog-sec="cliente-incluir">
           <h2>Cliente — Incluir</h2>
-          <p class="hint">Inclui cliente no cadastro comercial.</p>
+          <p class="hint">Inclui cliente no cadastro comercial com os dados informados.</p>
           <div class="toolbar">
-            <button type="button" data-action="/mercos/homologacao-ui/acoes/clientes-criar" data-target="res-clientes-criar" data-store="cliente">Incluir cliente</button>
+            <label class="field">Tipo
+              <select id="input-cliente-tipo">
+                <option value="J" selected>J — Pessoa jurídica</option>
+                <option value="F">F — Pessoa física</option>
+              </select>
+            </label>
+            <label class="field">Razão social
+              <input type="text" id="input-cliente-razao-social" placeholder="Razão social" />
+            </label>
+            <label class="field">Nome fantasia
+              <input type="text" id="input-cliente-fantasia" placeholder="Nome fantasia" />
+            </label>
+            <label class="field">CNPJ/CPF
+              <input type="text" id="input-cliente-cnpj" placeholder="Somente números" />
+            </label>
+            <label class="field">E-mail (opcional)
+              <input type="text" id="input-cliente-email" placeholder="email@exemplo.com" />
+            </label>
+            <label class="field">Ativo
+              <select id="input-cliente-ativo">
+                <option value="true" selected>Sim</option>
+                <option value="false">Não</option>
+              </select>
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/clientes-criar"
+              data-target="res-clientes-criar"
+              data-store="cliente"
+              data-fields="tipo:input-cliente-tipo,razao_social:input-cliente-razao-social,nome_fantasia:input-cliente-fantasia,cnpj:input-cliente-cnpj,email:input-cliente-email,ativo:input-cliente-ativo">
+              Incluir cliente
+            </button>
           </div>
           <div class="resultado" id="res-clientes-criar"></div>
         </section>
