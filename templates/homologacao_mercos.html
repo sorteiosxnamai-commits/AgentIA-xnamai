@@ -368,6 +368,33 @@
           <div class="resultado" id="res-produto-imagens"></div>
         </section>
 
+        <!-- 1e -->
+        <section class="panel" id="sec-produto-imagem-add" data-homolog-sec="produto-imagem-adicionar">
+          <h2>Imagem do Produto — Adicionar</h2>
+          <p class="hint">Envia uma imagem (PNG/JPG) ao produto no sandbox via POST oficial da Mercos. Não altera o cursor nem o ciclo do Produto GET.</p>
+          <div class="toolbar">
+            <label class="field">ID do produto
+              <input type="text" id="input-produto-img-id" value="20400705" />
+            </label>
+            <label class="field">Nome do produto
+              <input type="text" id="input-produto-img-nome" value="c4bfc00b3d2a4ab1" />
+            </label>
+            <label class="field">Arquivo de imagem (PNG/JPG)
+              <input type="file" id="input-produto-img-arquivo" accept=".png,.jpg,.jpeg,image/png,image/jpeg" />
+            </label>
+            <label class="field">URL da imagem (opcional, se não enviar arquivo)
+              <input type="text" id="input-produto-img-url" placeholder="https://..." />
+            </label>
+            <label class="field">Ordem (opcional)
+              <input type="number" id="input-produto-img-ordem" min="1" step="1" placeholder="1" />
+            </label>
+            <button type="button" id="btn-produto-imagem-add" class="secondary">
+              Adicionar imagem
+            </button>
+          </div>
+          <div class="resultado" id="res-produto-imagem-add"></div>
+        </section>
+
         <!-- 2 -->
         <section class="panel" id="sec-categorias" data-homolog-sec="categoria-buscar">
           <h2>Categoria de produto — Buscar</h2>
@@ -1090,6 +1117,37 @@
           );
           if (getProdutosCursor() !== cursorAntes) {
             setProdutosCursor(cursorAntes);
+          }
+        });
+      }
+
+      var btnProdutoImagemAdd = document.getElementById("btn-produto-imagem-add");
+      var resProdutoImagemAdd = document.getElementById("res-produto-imagem-add");
+      if (btnProdutoImagemAdd && resProdutoImagemAdd) {
+        btnProdutoImagemAdd.addEventListener("click", async function () {
+          var fd = new FormData();
+          fd.append("produto_id", (document.getElementById("input-produto-img-id") || {}).value || "");
+          fd.append("nome", (document.getElementById("input-produto-img-nome") || {}).value || "");
+          fd.append("ordem", (document.getElementById("input-produto-img-ordem") || {}).value || "");
+          fd.append("imagem_url", (document.getElementById("input-produto-img-url") || {}).value || "");
+          var arquivoEl = document.getElementById("input-produto-img-arquivo");
+          if (arquivoEl && arquivoEl.files && arquivoEl.files.length > 0) {
+            fd.append("imagem", arquivoEl.files[0]);
+          }
+          btnProdutoImagemAdd.disabled = true;
+          resProdutoImagemAdd.innerHTML = '<p class="loading">Enviando imagem…</p>';
+          try {
+            var resp = await fetch("/mercos/homologacao-ui/acoes/produto-imagem-adicionar", {
+              method: "POST",
+              body: fd,
+              credentials: "same-origin"
+            });
+            resProdutoImagemAdd.innerHTML = await resp.text();
+          } catch (e) {
+            resProdutoImagemAdd.innerHTML =
+              '<div class="result-card erro"><h4>Falha ao enviar</h4><p>Não foi possível enviar a imagem. Tente novamente.</p></div>';
+          } finally {
+            btnProdutoImagemAdd.disabled = false;
           }
         });
       }

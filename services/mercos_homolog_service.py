@@ -250,6 +250,52 @@ def normalizar_imagens_produto(payload: Any) -> list[dict[str, Any]]:
     return registros
 
 
+# Doc oficial (Apiary Mercos): formatos aceitos .jpeg/.jpg/.png; limite local defensivo.
+FORMATOS_IMAGEM_PRODUTO = (".png", ".jpg", ".jpeg")
+IMAGEM_PRODUTO_MAX_BYTES = 5 * 1024 * 1024
+
+
+def criar_imagem_produto(
+    produto_id: int | str,
+    *,
+    imagem_url: str | None = None,
+    imagem_base64: str | None = None,
+    ordem: int | str | None = None,
+) -> dict[str, Any]:
+    """POST /v1/imagens_produto — contrato oficial Apiary Mercos.
+
+    JSON: produto_id (int, obrigatório) + imagem_url OU imagem_base64;
+    se ambos forem enviados a Mercos só considera a URL, então enviamos um só.
+    Sucesso: 201 com header MeusPedidosID (hash só é obtido via GET).
+    """
+    pid = str(produto_id or "").strip()
+    if not pid.isdigit():
+        raise MercosApiError(
+            "ID do produto (numérico) é obrigatório para adicionar imagem.",
+            status_code=422,
+        )
+    url = (imagem_url or "").strip()
+    b64 = (imagem_base64 or "").strip()
+    if not url and not b64:
+        raise MercosApiError(
+            "Informe o arquivo da imagem (PNG/JPG) ou a URL da imagem.",
+            status_code=422,
+        )
+    payload: dict[str, Any] = {"produto_id": int(pid)}
+    if url:
+        payload["imagem_url"] = url
+    else:
+        payload["imagem_base64"] = b64
+    if ordem not in (None, ""):
+        try:
+            payload["ordem"] = int(ordem)
+        except (TypeError, ValueError):
+            raise MercosApiError(
+                "O campo ordem deve ser um número inteiro.", status_code=422
+            ) from None
+    return post_json(_path("imagens_produto"), payload)
+
+
 def listar_imagens_produto(produto_id: int | str) -> dict[str, Any]:
     """GET /v1/imagens_produto?produto_id={id} — hashes das imagens do produto.
 
@@ -1252,6 +1298,7 @@ __all__ = [
     "listar_imagens_produto",
     "normalizar_imagens_produto",
     "localizar_produto_por_nome",
+    "criar_imagem_produto",
     "listar_segmentos",
     "listar_tabelas_preco",
     "listar_tabelas_preco_produto",

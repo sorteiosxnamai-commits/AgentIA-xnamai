@@ -195,6 +195,21 @@ def get_imagens_produto(produto_id: str, token: str = ""):
         raise _http(exc) from exc
 
 
+@router.post("/produtos/{produto_id}/imagens")
+def post_imagens_produto(produto_id: str, token: str = "", body: dict = Body(...)):
+    """Adiciona imagem ao produto — Mercos POST /v1/imagens_produto (URL ou Base64)."""
+    _bloqueio(token)
+    try:
+        return homolog.criar_imagem_produto(
+            produto_id,
+            imagem_url=(body or {}).get("imagem_url"),
+            imagem_base64=(body or {}).get("imagem_base64"),
+            ordem=(body or {}).get("ordem"),
+        )
+    except MercosApiError as exc:
+        raise _http(exc) from exc
+
+
 @router.get("/segmentos")
 def get_segmentos(
     token: str = "",

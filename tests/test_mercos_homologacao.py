@@ -294,6 +294,84 @@ def test_get_imagens_produto_contrato_e_hash_exato(client, monkeypatch):
     assert data["imagens"][0]["hash"] == "7a90b5ebfbf044ab"
 
 
+def test_post_imagens_produto_exige_token(monkeypatch):
+    monkeypatch.setenv("DIAGNOSTICOS_ABERTOS", "false")
+    monkeypatch.setenv("SYNC_TOKEN", "segredo-imagens")
+    from main import app
+
+    c = TestClient(app)
+    resp = c.post(
+        "/mercos/produtos/20400705/imagens",
+        json={"imagem_base64": "aGVsbG8="},
+    )
+    assert resp.status_code == 403
+
+
+def test_post_imagens_produto_payload_oficial(client, monkeypatch):
+    """POST /v1/imagens_produto com produto_id (int) + imagem_base64, sem URL junto."""
+    capturado: dict = {}
+
+    def fake_post(path, body):
+        capturado["path"] = path
+        capturado["body"] = dict(body or {})
+        return {"ok": True, "status_code": 201, "id": 555, "sandbox": True, "dados": {}}
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", fake_post)
+    resp = client.post(
+        "/mercos/produtos/20400705/imagens",
+        json={"imagem_base64": "aGVsbG8=", "ordem": 1},
+    )
+    assert resp.status_code == 200
+    assert capturado["path"] == "/v1/imagens_produto"
+    assert capturado["body"] == {
+        "produto_id": 20400705,
+        "imagem_base64": "aGVsbG8=",
+        "ordem": 1,
+    }
+    assert "imagem_url" not in capturado["body"]
+    assert resp.json()["status_code"] == 201
+
+
+def test_post_imagens_produto_url_tem_prioridade_sem_base64_junto(client, monkeypatch):
+    capturado: dict = {}
+
+    def fake_post(path, body):
+        capturado["body"] = dict(body or {})
+        return {"ok": True, "status_code": 201, "id": 556, "sandbox": True, "dados": {}}
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", fake_post)
+    resp = client.post(
+        "/mercos/produtos/20400705/imagens",
+        json={"imagem_url": "https://exemplo.com/foto.png"},
+    )
+    assert resp.status_code == 200
+    assert capturado["body"] == {
+        "produto_id": 20400705,
+        "imagem_url": "https://exemplo.com/foto.png",
+    }
+    assert "imagem_base64" not in capturado["body"]
+
+
+def test_post_imagens_produto_validacoes(client, monkeypatch):
+    called = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", called)
+    # sem imagem_url e sem imagem_base64
+    r1 = client.post("/mercos/produtos/20400705/imagens", json={})
+    assert r1.status_code == 422
+    # produto_id não numérico
+    r2 = client.post(
+        "/mercos/produtos/abc/imagens", json={"imagem_base64": "aGVsbG8="}
+    )
+    assert r2.status_code == 422
+    # ordem inválida
+    r3 = client.post(
+        "/mercos/produtos/20400705/imagens",
+        json={"imagem_base64": "aGVsbG8=", "ordem": "x"},
+    )
+    assert r3.status_code == 422
+    called.assert_not_called()
+
+
 def test_put_produtos_validacao_sem_campos(client, monkeypatch):
     called = MagicMock()
     monkeypatch.setattr("services.mercos_homolog_service.put_json", called)

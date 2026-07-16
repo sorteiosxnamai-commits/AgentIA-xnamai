@@ -6,6 +6,7 @@ Não cria recursos na abertura da página — só nos POSTs de ação.
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 import os
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
-from fastapi import APIRouter, Form, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -1259,6 +1260,182 @@ def acao_produto_imagens(
             extra_attrs={**attrs_fixos, "status-sync": "imagens"},
         ),
         sessao,
+    )
+
+
+def _card_erro_imagem(titulo: str, linhas: list[tuple[str, Any]], status: Any) -> HTMLResponse:
+    return _wrap_result(
+        _card(titulo, linhas, status_label=f"Erro {status}", css="erro"),
+        extra_attrs={"cursor-fixo": "1"},
+    )
+
+
+@router.post("/homologacao-ui/acoes/produto-imagem-adicionar", response_class=HTMLResponse)
+async def acao_produto_imagem_adicionar(
+    request: Request,
+    token: str = Form(""),
+    produto_id: str = Form(""),
+    nome: str = Form(""),
+    ordem: str = Form(""),
+    imagem_url: str = Form(""),
+    imagem: UploadFile | None = File(None),
+):
+    """Adiciona imagem ao produto via POST /v1/imagens_produto (URL ou Base64).
+
+    Não toca em catálogo, cursor nem ciclo do Produto GET; uma chamada de envio
+    por clique (+1 consulta de hash após sucesso, pois o POST não retorna hash)."""
+    _auth(request, token)
+    attrs_fixos = {"cursor-fixo": "1"}
+    pid = (produto_id or "").strip()
+    nome_produto = (nome or "").strip() or "—"
+    if not pid.isdigit():
+        return _card_erro_imagem(
+            "Imagem do produto",
+            [("Mensagem", "Informe o ID numérico do produto Mercos.")],
+            422,
+        )
+
+    url_informada = (imagem_url or "").strip()
+    b64 = ""
+    nome_arquivo = ""
+    if imagem is not None and (imagem.filename or "").strip():
+        nome_arquivo = imagem.filename.strip()
+        extensao = os.path.splitext(nome_arquivo)[1].lower()
+        if extensao not in homolog.FORMATOS_IMAGEM_PRODUTO:
+            return _card_erro_imagem(
+                "Arquivo inválido",
+                [
+                    ("Arquivo", nome_arquivo),
+                    ("Mensagem", "Formato não aceito pela Mercos. Use PNG ou JPG."),
+                ],
+                422,
+            )
+        conteudo = await imagem.read()
+        if not conteudo:
+            return _card_erro_imagem(
+                "Arquivo inválido",
+                [("Arquivo", nome_arquivo), ("Mensagem", "O arquivo está vazio.")],
+                422,
+            )
+        if len(conteudo) > homolog.IMAGEM_PRODUTO_MAX_BYTES:
+            mb = homolog.IMAGEM_PRODUTO_MAX_BYTES // (1024 * 1024)
+            return _card_erro_imagem(
+                "Imagem muito grande",
+                [
+                    ("Arquivo", nome_arquivo),
+                    ("Tamanho", f"{len(conteudo) / (1024 * 1024):.1f} MB"),
+                    ("Mensagem", f"Envie uma imagem de até {mb} MB."),
+                ],
+                413,
+            )
+        b64 = base64.b64encode(conteudo).decode("ascii")
+
+    if not b64 and not url_informada:
+        return _card_erro_imagem(
+            "Imagem do produto",
+            [("Mensagem", "Selecione um arquivo PNG/JPG ou informe a URL da imagem.")],
+            422,
+        )
+
+    try:
+        # Doc Mercos: se URL e Base64 forem enviados juntos, só a URL vale —
+        # por isso enviamos apenas um dos dois (arquivo tem prioridade aqui).
+        out = homolog.criar_imagem_produto(
+            pid,
+            imagem_url=None if b64 else url_informada,
+            imagem_base64=b64 or None,
+            ordem=ordem,
+        )
+    except MercosApiError as exc:
+        if exc.status_code == 429:
+            segundos = exc.retry_after if exc.retry_after is not None else 10
+            try:
+                segundos = max(0, int(float(segundos)))
+            except (TypeError, ValueError):
+                segundos = 10
+            resp = _wrap_result(
+                _card(
+                    "Aguardando limite da Mercos",
+                    [
+                        ("Mensagem", "Aguardando limite da Mercos"),
+                        ("Segundos restantes", segundos),
+                        ("Produto", f"{pid} — {nome_produto}"),
+                    ],
+                    status_label="Aguardando",
+                    css="pendente",
+                ),
+                extra_attrs=attrs_fixos,
+            )
+            resp.headers["Retry-After"] = str(segundos)
+            return resp
+        if exc.status_code == 404:
+            return _card_erro_imagem(
+                "Produto não encontrado",
+                [
+                    ("ID do produto", pid),
+                    ("Mensagem", "A Mercos não encontrou este produto (HTTP 404)."),
+                ],
+                404,
+            )
+        if exc.status_code in (400, 412, 422):
+            return _card_erro_imagem(
+                "Dados recusados pela Mercos",
+                [("ID do produto", pid), ("Mensagem", exc.message)],
+                exc.status_code,
+            )
+        return _wrap_result(_erro_html(exc), extra_attrs=attrs_fixos)
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc), extra_attrs=attrs_fixos)
+
+    # POST não devolve o hash: uma consulta de hashes após o sucesso.
+    hashes: list[str] = []
+    hash_novo = "—"
+    try:
+        consulta = homolog.listar_imagens_produto(pid)
+        hashes = [
+            str(img.get("hash"))
+            for img in consulta.get("imagens") or []
+            if img.get("hash") not in (None, "")
+        ]
+        if hashes:
+            hash_novo = hashes[-1]
+    except Exception:
+        pass
+
+    status_http = out.get("status_code") or 201
+    linhas: list[tuple[str, Any]] = [
+        ("Status HTTP", status_http),
+        ("ID do produto", pid),
+        ("Nome do produto", nome_produto),
+        ("Hash retornado", hash_novo),
+        ("Quantidade de imagens", len(hashes)),
+    ]
+    if nome_arquivo:
+        linhas.append(("Arquivo", nome_arquivo))
+    if out.get("id") not in (None, ""):
+        linhas.append(("ID da imagem (MeusPedidosID)", out.get("id")))
+    linhas.append(("Origem", "Mercos Sandbox" if out.get("sandbox") else "Mercos"))
+    if hash_novo == "—":
+        linhas.append(
+            ("Observação", "A Mercos ainda não retornou o hash; consulte novamente em instantes.")
+        )
+    tabela = ""
+    if len(hashes) > 1:
+        tabela = _table(
+            ["#", "Hash da imagem"],
+            [[i + 1, h] for i, h in enumerate(hashes)],
+        )
+    return _wrap_result(
+        _card(
+            "Imagem adicionada ao produto",
+            linhas,
+            status_label="Enviado",
+            css="ok",
+        )
+        + tabela,
+        entity="produto",
+        entity_id=pid,
+        extra_attrs={**attrs_fixos, "status-sync": "imagem-post"},
     )
 
 
