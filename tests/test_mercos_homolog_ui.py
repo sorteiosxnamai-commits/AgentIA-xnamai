@@ -1371,12 +1371,15 @@ def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
         "services.mercos_homolog_service._path",
         lambda chave: "/v1/clientes" if chave == "clientes" else f"/v1/{chave}",
     )
-    paginas_vistas: list[int] = []
+    # Contrato real Mercos: paginação por cursor alterado_apos (sem "pagina").
+    cursores_vistos: list[str | None] = []
 
     def fake_get(path, *, params=None, **_kw):
-        pagina = int((params or {}).get("pagina") or 1)
-        paginas_vistas.append(pagina)
-        if pagina == 1:
+        params = params or {}
+        assert "pagina" not in params  # API real ignora "pagina"; não enviar
+        cursor = params.get("alterado_apos")
+        cursores_vistos.append(cursor)
+        if cursor is None:
             return [
                 {
                     "id": 1,
@@ -1391,7 +1394,7 @@ def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
                     "ativo": True,
                 },
             ]
-        if pagina == 2:
+        if cursor == "2026-07-06 11:29:15":
             return [
                 {
                     "id": 3,
@@ -1399,22 +1402,22 @@ def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
                     "nome_fantasia": "Homolog",
                     "cnpj": "11.111.111/0001-11",
                     "email": "h@test.com",
-                    "ultima_alteracao": "2026-07-16 09:00:00",
+                    "ultima_alteracao": "2026-07-16 08:00:00",
                     "ativo": True,
                 },
                 {
                     "id": 3,
                     "razao_social": "77eb21774dd340ff",
-                    "ultima_alteracao": "2026-07-16 09:00:00",
+                    "ultima_alteracao": "2026-07-16 08:00:00",
                     "ativo": True,
                 },
             ]
-        if pagina == 3:
+        if cursor == "2026-07-16 08:00:00":
             return [
                 {
                     "id": 4,
                     "razao_social": "Ultimo",
-                    "ultima_alteracao": "2026-07-10 08:00:00",
+                    "ultima_alteracao": "2026-07-16 09:00:00",
                     "ativo": True,
                 }
             ]
@@ -1429,8 +1432,13 @@ def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
     assert "Completa" in html
     assert "Total de páginas consultadas" in html
     assert 'data-paginas-lidas="4"' in html
-    # Com page_size_hint=0: p1(2), p2(2), p3(1), p4([]) → 4 páginas
-    assert paginas_vistas == [1, 2, 3, 4]
+    # Cursor avança: sem filtro, depois maior ultima_alteracao de cada lote
+    assert cursores_vistos == [
+        None,
+        "2026-07-06 11:29:15",
+        "2026-07-16 08:00:00",
+        "2026-07-16 09:00:00",
+    ]
     assert "Total retornado em todas as páginas" in html
     assert 'data-catalogo-total="4"' in html
     assert "77eb21774dd340ff" in html
@@ -1470,14 +1478,15 @@ def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
         "services.mercos_homolog_service._path",
         lambda chave: "/v1/clientes" if chave == "clientes" else f"/v1/{chave}",
     )
-    fase = {"n": 0}
-    paginas_inc: list[int] = []
+    cursores: list[str | None] = []
 
     def fake_get(path, *, params=None, **_kw):
         params = params or {}
-        pagina = int(params.get("pagina") or 1)
-        if "alterado_apos" not in params:
-            # Completa: 1 página
+        assert "pagina" not in params
+        cursor = params.get("alterado_apos")
+        cursores.append(cursor)
+        if cursor is None:
+            # Completa: 1 lote
             return [
                 {
                     "id": 1,
@@ -1485,10 +1494,9 @@ def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
                     "ultima_alteracao": "2026-07-15 10:00:00",
                     "ativo": True,
                 }
-            ] if pagina == 1 else []
-        # Incremental multi-página
-        paginas_inc.append(pagina)
-        if pagina == 1:
+            ]
+        # Incremental: cursor salvo 10:00:00 - 1s de sobreposição
+        if cursor == "2026-07-15 09:59:59":
             return [
                 {
                     "id": 2,
@@ -1497,7 +1505,7 @@ def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
                     "ativo": True,
                 }
             ]
-        if pagina == 2:
+        if cursor == "2026-07-15 12:00:00":
             return [
                 {
                     "id": 3,
@@ -1524,7 +1532,12 @@ def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
         data={"cursor": "2026-07-15 10:00:00"},
     )
     assert r2.status_code == 200
-    assert paginas_inc == [1, 2, 3]  # p3 vazia
+    # Incremental: 3 requisições (última vazia), cursor avançando
+    assert cursores[-3:] == [
+        "2026-07-15 09:59:59",
+        "2026-07-15 12:00:00",
+        "2026-07-16 15:30:00",
+    ]
     html = r2.text
     assert "Incremental" in html
     assert "Total de páginas consultadas" in html
@@ -1670,15 +1683,11 @@ def test_clientes_intervalo_um_segundo_entre_paginas(monkeypatch):
     )
 
     def fake_get(path, *, params=None, **_kw):
-        pagina = int((params or {}).get("pagina") or 1)
-        if pagina <= 2:
-            return [
-                {
-                    "id": pagina,
-                    "razao_social": f"C{pagina}",
-                    "ultima_alteracao": f"2026-07-15 10:0{pagina}:00",
-                }
-            ]
+        cursor = (params or {}).get("alterado_apos")
+        if cursor is None:
+            return [{"id": 1, "razao_social": "C1", "ultima_alteracao": "2026-07-15 10:01:00"}]
+        if cursor == "2026-07-15 10:01:00":
+            return [{"id": 2, "razao_social": "C2", "ultima_alteracao": "2026-07-15 10:02:00"}]
         return []
 
     monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
@@ -1706,8 +1715,7 @@ def test_clientes_sync_para_em_pagina_repetida(client, monkeypatch):
     chamadas = []
 
     def fake_get(path, *, params=None, **_kw):
-        pagina = int((params or {}).get("pagina") or 1)
-        chamadas.append(pagina)
+        chamadas.append((params or {}).get("alterado_apos"))
         lote = [
             {
                 "id": 1,
@@ -1716,7 +1724,7 @@ def test_clientes_sync_para_em_pagina_repetida(client, monkeypatch):
                 "ativo": True,
             }
         ]
-        return lote  # página 1 e 2 iguais → para
+        return lote  # API repete o mesmo lote mesmo com cursor avançado → para
 
     monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
@@ -1726,7 +1734,7 @@ def test_clientes_sync_para_em_pagina_repetida(client, monkeypatch):
     assert MOTIVO_PARADA_REPETIDA in resp.text
     assert "Concluída" in resp.text or "concluida" in resp.text.lower()
     assert "500" not in resp.text
-    assert chamadas == [1, 2]
+    assert chamadas == [None, "2026-07-15 10:00:00"]
     sessao = client.cookies.get("mercos_clientes_sessao")
     assert cat.total(sessao) == 1
 
@@ -1749,8 +1757,8 @@ def test_clientes_sync_para_sem_ids_novos(client, monkeypatch):
     )
 
     def fake_get(path, *, params=None, **_kw):
-        pagina = int((params or {}).get("pagina") or 1)
-        if pagina == 1:
+        cursor = (params or {}).get("alterado_apos")
+        if cursor is None:
             return [
                 {"id": 1, "razao_social": "A", "ultima_alteracao": "2026-07-15 10:00:00"},
                 {"id": 2, "razao_social": "B", "ultima_alteracao": "2026-07-15 11:00:00"},
@@ -1826,13 +1834,16 @@ def test_clientes_sync_limite_20_paginas(monkeypatch):
         lambda chave: "/v1/clientes",
     )
 
+    n = {"c": 0}
+
     def fake_get(path, *, params=None, **_kw):
-        pagina = int((params or {}).get("pagina") or 1)
+        n["c"] += 1
+        i = n["c"]
         return [
             {
-                "id": pagina,
-                "razao_social": f"C{pagina}",
-                "ultima_alteracao": f"2026-07-15 10:{pagina:02d}:00",
+                "id": i,
+                "razao_social": f"C{i}",
+                "ultima_alteracao": f"2026-07-15 10:{i:02d}:00",
             }
         ]
 
@@ -1842,6 +1853,51 @@ def test_clientes_sync_limite_20_paginas(monkeypatch):
     assert out["total"] == 20
     assert out["motivo_parada"] == MOTIVO_PARADA_LIMITE
     assert out["status"] == "concluida"
+
+
+def test_clientes_paginacao_por_cursor_paginas_diferentes(monkeypatch):
+    """Contrato real Mercos: página 2 é obtida com alterado_apos do lote 1 e traz IDs diferentes."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_LOTE_VAZIO,
+        listar_clientes_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr("services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/clientes",
+    )
+    params_vistos: list[dict] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        params = dict(params or {})
+        params_vistos.append(params)
+        cursor = params.get("alterado_apos")
+        if cursor is None:
+            return [
+                {"id": 9282664, "razao_social": "Antigo A", "ultima_alteracao": "2026-07-06 11:27:03"},
+                {"id": 9282665, "razao_social": "Antigo B", "ultima_alteracao": "2026-07-06 11:29:15"},
+            ]
+        if cursor == "2026-07-06 11:29:15":
+            return [
+                {"id": 9282668, "razao_social": "Novo C", "ultima_alteracao": "2026-07-06 11:30:39"},
+                {"id": 9282669, "razao_social": "77eb21774dd340ff", "ultima_alteracao": "2026-07-06 11:31:57"},
+            ]
+        return []
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    out = listar_clientes_paginado_seguro(max_paginas=20, timeout_total=60)
+    # Nenhuma requisição usa "pagina"; a 2ª usa o cursor do lote 1
+    assert all("pagina" not in p for p in params_vistos)
+    assert params_vistos[0].get("alterado_apos") is None
+    assert params_vistos[1]["alterado_apos"] == "2026-07-06 11:29:15"
+    ids = [c["id"] for c in out["itens"]]
+    assert ids == [9282664, 9282665, 9282668, 9282669]
+    assert out["total"] == 4
+    assert out["paginas_lidas"] == 3
+    assert out["motivo_parada"] == MOTIVO_PARADA_LOTE_VAZIO
 
 
 def test_clientes_lock_libera_em_erro_e_expira(monkeypatch):

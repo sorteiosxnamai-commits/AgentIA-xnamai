@@ -446,15 +446,26 @@ def listar_clientes_paginado_seguro(
     params_extra: dict | None = None,
     sessao_id: str | None = None,
 ) -> dict[str, Any]:
-    """Lista clientes com paradas anti-travamento e respeito a HTTP 429."""
+    """Lista clientes com paradas anti-travamento e respeito a HTTP 429.
+
+    Contrato real da Mercos (diagnóstico 2026-07-16): o endpoint ignora o
+    parâmetro ``pagina`` e limita cada resposta (headers
+    MEUSPEDIDOS_LIMITOU_REGISTROS / MEUSPEDIDOS_QTDE_TOTAL_REGISTROS).
+    A paginação é por cursor: cada lote seguinte é obtido reenviando o GET
+    com ``alterado_apos`` igual à maior ``ultima_alteracao`` do lote anterior
+    (filtro estritamente maior), até vir lote vazio.
+    """
     pagina = max(1, int(pagina_inicial or 1))
     limite = max(1, min(int(max_paginas or CLIENTES_MAX_PAGINAS_SYNC), CLIENTES_MAX_PAGINAS_SYNC))
     path = _path("clientes")
     extras = dict(params_extra or {})
+    extras.pop("alterado_apos", None)
+    alterado_apos_inicial: str | None = None
     if alterado_apos is not None and str(alterado_apos).strip():
-        extras["alterado_apos"] = str(alterado_apos).strip()
+        alterado_apos_inicial = str(alterado_apos).strip()
+    cursor_atual = alterado_apos_inicial
 
-    chave_resume = _chave_resume_clientes(sessao_id, extras.get("alterado_apos"))
+    chave_resume = _chave_resume_clientes(sessao_id, alterado_apos_inicial)
     itens_brutos: list = []
     ids_vistos: set[str] = set()
     assinaturas: set[str] = set()
@@ -468,6 +479,7 @@ def listar_clientes_paginado_seguro(
     resume = _carregar_resume_clientes(chave_resume) if sessao_id else None
     if resume:
         pagina = max(1, int(resume.get("pagina") or pagina))
+        cursor_atual = resume.get("cursor") or cursor_atual
         itens_brutos = list(resume.get("itens") or [])
         ids_vistos = set(str(x) for x in (resume.get("ids_vistos") or []))
         assinaturas = set(resume.get("assinaturas") or [])
@@ -483,7 +495,9 @@ def listar_clientes_paginado_seguro(
             break
 
         timeout_resto = max(0.5, min(timeout_request, timeout_total - decorrido))
-        params = {"pagina": pagina, **extras}
+        params = dict(extras)
+        if cursor_atual:
+            params["alterado_apos"] = cursor_atual
         try:
             lote, espera_pag = _obter_lote_pagina_clientes(
                 path=path,
@@ -503,6 +517,7 @@ def listar_clientes_paginado_seguro(
                     chave_resume,
                     {
                         "pagina": pagina,
+                        "cursor": cursor_atual,
                         "itens": itens_brutos,
                         "ids_vistos": list(ids_vistos),
                         "assinaturas": list(assinaturas),
@@ -549,6 +564,14 @@ def listar_clientes_paginado_seguro(
             motivo = MOTIVO_PARADA_LIMITE
             break
 
+        # Avança o cursor para o próximo lote (contrato real da Mercos).
+        novo_cursor = maior_ultima_alteracao(lote)
+        if not novo_cursor or (cursor_atual and novo_cursor <= cursor_atual):
+            # Sem como avançar: evita repetir o mesmo lote para sempre.
+            motivo = MOTIVO_PARADA_FIM
+            break
+        cursor_atual = novo_cursor
+
         pagina += 1
         time.sleep(CLIENTES_INTERVALO_ENTRE_PAGINAS)
 
@@ -567,8 +590,8 @@ def listar_clientes_paginado_seguro(
         "espera_429_segundos": espera_429_total,
         "pagina_atual": pagina,
     }
-    if "alterado_apos" in extras:
-        out["filtros"] = {"alterado_apos": extras["alterado_apos"]}
+    if alterado_apos_inicial:
+        out["filtros"] = {"alterado_apos": alterado_apos_inicial}
     return out
 
 
