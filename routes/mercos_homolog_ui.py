@@ -7,7 +7,9 @@ Não cria recursos na abertura da página — só nos POSTs de ação.
 from __future__ import annotations
 
 import html
+import json
 import os
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from services import mercos_homolog_service as homolog
+from services import mercos_produtos_catalogo as catalogo_produtos
 from services.mercos_api_client import MercosApiError
 from services.mercos_service import mercos_ambiente_sandbox, mercos_configurado
 
@@ -29,7 +32,9 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 _COOKIE = "mercos_homolog_ui"
 _COOKIE_MAX_AGE = 60 * 60 * 8
 _COOKIE_PRODUTOS_CURSOR = "mercos_produtos_cursor"
+_COOKIE_PRODUTOS_SESSAO = "mercos_produtos_sessao"
 _CURSOR_MAX_AGE = 60 * 60 * 24 * 30
+_SESSAO_MAX_AGE = 60 * 60 * 24 * 30
 
 
 def _bloqueio(token: str = "") -> None:
@@ -257,6 +262,58 @@ def _set_cursor_cookie(resp: HTMLResponse, cursor: str | None) -> HTMLResponse:
     return resp
 
 
+def _sessao_produtos(request: Request) -> str:
+    return (request.cookies.get(_COOKIE_PRODUTOS_SESSAO) or "").strip()
+
+
+def _garantir_sessao_cookie(resp: HTMLResponse, sessao_id: str) -> HTMLResponse:
+    resp.set_cookie(
+        key=_COOKIE_PRODUTOS_SESSAO,
+        value=sessao_id,
+        httponly=False,
+        max_age=_SESSAO_MAX_AGE,
+        samesite="lax",
+    )
+    return resp
+
+
+def _obter_ou_criar_sessao(request: Request) -> str:
+    existente = _sessao_produtos(request)
+    if existente:
+        return existente
+    return uuid.uuid4().hex
+
+
+def _hidratar_catalogo_form(sessao_id: str, catalogo_json: str = "") -> None:
+    """Recupera catálogo do localStorage (form) se a memória do servidor estiver vazia."""
+    catalogo_produtos.hidratar_se_vazio(sessao_id, catalogo_json or "")
+
+
+def _html_patch_catalogo(sessao_id: str) -> str:
+    snap = catalogo_produtos.snapshot_cliente(sessao_id)
+    blob = html.escape(json.dumps(snap, ensure_ascii=False, separators=(",", ":")))
+    return (
+        f'<textarea class="mercos-catalogo-blob" hidden readonly '
+        f'aria-hidden="true">{blob}</textarea>'
+    )
+
+
+def _linhas_ultima_sync(estado: dict[str, Any] | None) -> list[tuple[str, Any]]:
+    sync = (estado or {}).get("ultima_sync") or {}
+    tipo = sync.get("tipo")
+    tipo_label = (
+        "Completa"
+        if tipo == "completa"
+        else ("Incremental" if tipo == "incremental" else (tipo or "—"))
+    )
+    return [
+        ("Tipo da busca", tipo_label),
+        ("Cursor base", sync.get("cursor_base") or "—"),
+        ("Alterado após enviado", sync.get("alterado_apos_enviado") or "—"),
+        ("Novo cursor salvo", sync.get("novo_cursor") or "—"),
+    ]
+
+
 def _html_tabela_produtos(itens: list) -> str:
     rows = []
     classes: list[str] = []
@@ -336,12 +393,14 @@ def acao_produtos(
 
 @router.post("/homologacao-ui/acoes/produtos-reiniciar", response_class=HTMLResponse)
 def acao_produtos_reiniciar(request: Request, token: str = Form("")):
-    """Apaga o cursor de produtos sem chamar a API Mercos."""
+    """Apaga o cursor de produtos sem chamar a API Mercos (mantém catálogo local)."""
     _auth(request, token)
+    sessao = _obter_ou_criar_sessao(request)
     mensagem = (
         '<div class="result-card ok">'
         "<h4>Ciclo de sincronização reiniciado</h4>"
-        "<p>Cursor de produtos apagado. A próxima sincronização será completa.</p>"
+        "<p>Cursor de produtos apagado. A próxima sincronização será completa. "
+        "O catálogo local acumulado foi preservado.</p>"
         "</div>"
     )
     resp = _wrap_result(
@@ -350,9 +409,11 @@ def acao_produtos_reiniciar(request: Request, token: str = Form("")):
             "novo-cursor": "",
             "cursor-limpo": "1",
             "status-sync": "reiniciado",
+            "catalogo-total": str(catalogo_produtos.total(sessao)),
         },
     )
-    return _set_cursor_cookie(resp, None)
+    resp = _set_cursor_cookie(resp, None)
+    return _garantir_sessao_cookie(resp, sessao)
 
 
 @router.post("/homologacao-ui/acoes/produtos-sincronizar", response_class=HTMLResponse)
@@ -360,17 +421,36 @@ def acao_produtos_sincronizar(
     request: Request,
     token: str = Form(""),
     cursor: str = Form(""),
+    catalogo_json: str = Form(""),
 ):
     """Uma sincronização por clique: completa (sem cursor) ou incremental."""
     _auth(request, token)
+    sessao = _obter_ou_criar_sessao(request)
+    _hidratar_catalogo_form(sessao, catalogo_json)
     cursor_usado = _cursor_produtos(request, cursor)
     try:
         data = homolog.sincronizar_produtos(cursor_usado or None, max_paginas=50)
+        meta = {
+            "tipo": data.get("tipo"),
+            "cursor_base": data.get("cursor_base"),
+            "alterado_apos_enviado": data.get("alterado_apos_enviado"),
+            "novo_cursor": data.get("novo_cursor"),
+            "total_lote": data.get("total", 0),
+        }
+        if data.get("tipo") == "completa":
+            estado = catalogo_produtos.substituir_completo(
+                sessao, data.get("itens") or [], meta=meta
+            )
+        else:
+            estado = catalogo_produtos.upsert_incremental(
+                sessao, data.get("itens") or [], meta=meta
+            )
         tipo_label = "Completa" if data["tipo"] == "completa" else "Incremental"
         cursor_base = data.get("cursor_base") or "—"
         enviado = data.get("alterado_apos_enviado") or "—"
         novo = data.get("novo_cursor") or "—"
         total = data.get("total", 0)
+        total_cat = len(estado.get("produtos") or {})
         resumo = _card(
             "Sincronização de produtos",
             [
@@ -380,13 +460,14 @@ def acao_produtos_sincronizar(
                 ("Alterado após enviado", enviado),
                 ("Novo cursor salvo", novo),
                 ("Total retornado", total),
+                ("Produtos no catálogo local", total_cat),
             ],
             status_label="Status 200",
             css="ok",
         )
         table = _html_tabela_produtos(data.get("itens") or [])
         resp = _wrap_result(
-            resumo + table,
+            resumo + table + _html_patch_catalogo(sessao),
             extra_attrs={
                 "novo-cursor": data.get("novo_cursor") or "",
                 "cursor-anterior": data.get("cursor_anterior") or "",
@@ -394,10 +475,13 @@ def acao_produtos_sincronizar(
                 "alterado-apos-enviado": data.get("alterado_apos_enviado") or "",
                 "tipo-busca": data.get("tipo") or "",
                 "total": str(total),
+                "catalogo-total": str(total_cat),
+                "catalogo-modo": "replace" if data.get("tipo") == "completa" else "upsert",
                 "status-sync": "concluida",
             },
         )
-        return _set_cursor_cookie(resp, data.get("novo_cursor"))
+        resp = _set_cursor_cookie(resp, data.get("novo_cursor"))
+        return _garantir_sessao_cookie(resp, sessao)
     except MercosApiError as exc:
         html_erro = _erro_html(exc)
         resp = _wrap_result(
@@ -406,13 +490,13 @@ def acao_produtos_sincronizar(
         )
         if exc.status_code == 429:
             resp.status_code = 429
-            # propaga Retry-After se o client anexou; padrão 10s
             resp.headers["Retry-After"] = "10"
         elif exc.status_code == 409:
             resp.status_code = 409
-        return resp
+        return _garantir_sessao_cookie(resp, sessao)
     except Exception as exc:
-        return _wrap_result(_erro_html(exc), extra_attrs={"status-sync": "erro"})
+        resp = _wrap_result(_erro_html(exc), extra_attrs={"status-sync": "erro"})
+        return _garantir_sessao_cookie(resp, sessao)
 
 
 @router.post("/homologacao-ui/acoes/produtos-localizar", response_class=HTMLResponse)
@@ -420,65 +504,84 @@ def acao_produtos_localizar(
     request: Request,
     token: str = Form(""),
     nome: str = Form(""),
-    cursor: str = Form(""),
+    catalogo_json: str = Form(""),
 ):
-    """Localiza produto pelo nome exato; usa somente preco_tabela no cartão."""
+    """Localiza pelo nome exato no catálogo local. Não chama Mercos nem altera cursor."""
     _auth(request, token)
+    sessao = _obter_ou_criar_sessao(request)
+    _hidratar_catalogo_form(sessao, catalogo_json)
     nome_busca = (nome or "").strip()
     if not nome_busca:
-        return _wrap_result(
-            _card(
-                "Localizar produto",
-                [("Mensagem", "Informe o nome exato do produto.")],
-                status_label="Atenção",
-                css="erro",
-            )
+        return _garantir_sessao_cookie(
+            _wrap_result(
+                _card(
+                    "Localizar produto",
+                    [("Mensagem", "Informe o nome exato do produto.")],
+                    status_label="Atenção",
+                    css="erro",
+                )
+            ),
+            sessao,
         )
-    cursor_usado = _cursor_produtos(request, cursor)
-    try:
-        data = homolog.listar_produtos(
-            alterado_apos=cursor_usado or None,
-            pagina_inicial=1,
-            max_paginas=50,
-        )
-        encontrado = None
-        for item in data.get("itens") or []:
-            if not isinstance(item, dict):
-                continue
-            nome_item = item.get("nome")
-            if nome_item is not None and str(nome_item) == nome_busca:
-                encontrado = item
-                break
-        if not encontrado:
-            return _wrap_result(
+
+    encontrado, no_ultimo_lote, estado = catalogo_produtos.buscar_por_nome(
+        sessao, nome_busca
+    )
+    if not encontrado:
+        return _garantir_sessao_cookie(
+            _wrap_result(
                 _card(
                     "Produto não encontrado",
-                    [("Nome buscado", nome_busca), ("Total na busca", data.get("total", 0))],
+                    [
+                        ("Nome buscado", nome_busca),
+                        ("Produtos no catálogo local", catalogo_produtos.total(sessao)),
+                    ]
+                    + _linhas_ultima_sync(estado),
                     status_label="Não encontrado",
                     css="erro",
                 )
-            )
-        preco = encontrado.get("preco_tabela")
-        if preco is None or preco == "":
-            preco = "—"
-        ultima = encontrado.get("ultima_alteracao")
-        if ultima is None or ultima == "":
-            ultima = "—"
-        card = _card(
-            "Produto localizado",
-            [
-                ("ID", encontrado.get("id")),
-                ("Nome", encontrado.get("nome")),
-                ("Preço tabela", preco),
-                ("Última alteração", ultima),
-                ("Ativo", _ativo_produto(encontrado)),
-            ],
-            status_label="Encontrado",
-            css="ok",
+            ),
+            sessao,
         )
-        return _wrap_result(card)
-    except Exception as exc:
-        return _wrap_result(_erro_html(exc))
+
+    preco = encontrado.get("preco_tabela")
+    if preco is None or preco == "":
+        preco = "—"
+    ultima = encontrado.get("ultima_alteracao")
+    if ultima is None or ultima == "":
+        ultima = "—"
+    linhas: list[tuple[str, Any]] = [
+        ("ID", encontrado.get("id")),
+        ("Nome", encontrado.get("nome")),
+        ("Preço tabela", preco),
+        ("Última alteração", ultima),
+        ("Ativo", _ativo_produto(encontrado)),
+        ("Origem", "Catálogo local sincronizado"),
+    ]
+    linhas.extend(_linhas_ultima_sync(estado))
+    nota = ""
+    if not no_ultimo_lote:
+        nota = (
+            '<p class="hint">Produto localizado no catálogo do ERP; '
+            "não veio no último lote incremental.</p>"
+        )
+    card = _card(
+        "Produto localizado",
+        linhas,
+        status_label="Encontrado",
+        css="ok",
+    )
+    resp = _wrap_result(
+        nota + card + _html_patch_catalogo(sessao),
+        extra_attrs={
+            "status-sync": "localizado",
+            "no-ultimo-lote": "1" if no_ultimo_lote else "0",
+            "cursor-fixo": "1",
+            "catalogo-total": str(catalogo_produtos.total(sessao)),
+        },
+    )
+    # Não altera cookie de cursor
+    return _garantir_sessao_cookie(resp, sessao)
 
 
 @router.post("/homologacao-ui/acoes/categorias", response_class=HTMLResponse)

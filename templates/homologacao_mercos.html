@@ -511,6 +511,7 @@
   <script>
     (function () {
       var CURSOR_KEY = "mercos_produtos_cursor";
+      var CATALOGO_KEY = "mercos_produtos_catalogo";
       var produtosSyncBusy = false;
       var store = {
         cliente: localStorage.getItem("homolog_cliente_id") || "",
@@ -553,6 +554,22 @@
         }
       }
 
+      function getCatalogoJson() {
+        return localStorage.getItem(CATALOGO_KEY) || "";
+      }
+
+      function setCatalogoFromBlob(target) {
+        var blob = target.querySelector(".mercos-catalogo-blob");
+        if (!blob) return;
+        var texto = (blob.value || blob.textContent || "").trim();
+        if (!texto) return;
+        try {
+          JSON.parse(texto);
+          localStorage.setItem(CATALOGO_KEY, texto);
+        } catch (e) { /* ignora blob inválido */ }
+        blob.parentNode && blob.parentNode.removeChild(blob);
+      }
+
       function sleep(ms) {
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
       }
@@ -560,6 +577,9 @@
       function applyCursorFromResult(target) {
         var wrap = target.querySelector(".acao-resultado");
         if (!wrap) return;
+        if (wrap.getAttribute("data-cursor-fixo") === "1") {
+          return;
+        }
         if (wrap.getAttribute("data-cursor-limpo") === "1") {
           setProdutosCursor("");
           return;
@@ -600,6 +620,7 @@
           }
           target.innerHTML = text;
           applyCursorFromResult(target);
+          setCatalogoFromBlob(target);
           var node = target.querySelector("[data-entity][data-id]");
           if (node) {
             remember(node.getAttribute("data-entity"), node.getAttribute("data-id"));
@@ -626,7 +647,7 @@
           try {
             await postAcao(
               "/mercos/homologacao-ui/acoes/produtos-reiniciar",
-              {},
+              { catalogo_json: getCatalogoJson() },
               resProdutos,
               btnReiniciar
             );
@@ -647,7 +668,10 @@
           try {
             await postAcao(
               "/mercos/homologacao-ui/acoes/produtos-sincronizar",
-              { cursor: getProdutosCursor() },
+              {
+                cursor: getProdutosCursor(),
+                catalogo_json: getCatalogoJson()
+              },
               resProdutos,
               btnSincronizar
             );
@@ -663,15 +687,19 @@
         btnLocalizar.addEventListener("click", async function () {
           if (produtosSyncBusy) return;
           var nomeEl = document.getElementById("input-produtos-nome");
+          var cursorAntes = getProdutosCursor();
           await postAcao(
             "/mercos/homologacao-ui/acoes/produtos-localizar",
             {
               nome: nomeEl ? nomeEl.value : "",
-              cursor: getProdutosCursor()
+              catalogo_json: getCatalogoJson()
             },
             resProdutos,
             btnLocalizar
           );
+          if (getProdutosCursor() !== cursorAntes) {
+            setProdutosCursor(cursorAntes);
+          }
         });
       }
 
