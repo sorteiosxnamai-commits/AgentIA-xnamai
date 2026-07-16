@@ -457,6 +457,28 @@ def test_paginacao_para_quando_lote_curto(monkeypatch):
     assert chamadas["n"] == 2
 
 
+def test_paginacao_continua_com_page_size_hint_zero(monkeypatch):
+    """Com hint 0, páginas curtas não interrompem — só lote vazio ou teto."""
+    monkeypatch.setattr("services.mercos_api_client.PAGE_SLEEP_SEGUNDOS", 0)
+    chamadas = {"n": 0}
+
+    def fake_get(path, params=None):
+        chamadas["n"] += 1
+        pagina = (params or {}).get("pagina", 1)
+        if pagina == 1:
+            return [{"id": 1}, {"id": 2}]  # < 50, mas hint=0 → continua
+        if pagina == 2:
+            return [{"id": 3}]
+        return []
+
+    monkeypatch.setattr("services.mercos_api_client.get_json", fake_get)
+    out = listar_paginado("/v1/clientes", max_paginas=10, page_size_hint=0)
+    assert out["paginas_lidas"] == 3
+    assert out["total"] == 3
+    assert chamadas["n"] == 3
+    assert [i["id"] for i in out["itens"]] == [1, 2, 3]
+
+
 def test_paginacao_respeita_max_paginas(monkeypatch):
     monkeypatch.setattr(
         "services.mercos_api_client.get_json",

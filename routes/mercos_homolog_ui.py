@@ -480,6 +480,8 @@ def _linhas_ciclo_clientes(
         ("Cursor base", sync.get("cursor_base") or "—"),
         ("alterado_apos enviado", sync.get("alterado_apos_enviado") or "—"),
         ("Novo cursor", sync.get("novo_cursor") or "—"),
+        ("Total de páginas consultadas", sync.get("paginas_lidas") or "—"),
+        ("Total retornado em todas as páginas", sync.get("total_lote") or 0),
         ("Clientes no catálogo acumulado", len((estado or {}).get("clientes") or {})),
         ("Chamadas completas no ciclo", ciclo.get("chamadas_completas") or 0),
         ("Chamadas incrementais no ciclo", ciclo.get("chamadas_incrementais") or 0),
@@ -1130,7 +1132,7 @@ def acao_clientes_sincronizar(
         tipo_esperado = "incremental"
 
     try:
-        data = homolog.sincronizar_clientes(cursor_para_sync, max_paginas=50)
+        data = homolog.sincronizar_clientes(cursor_para_sync, max_paginas=100)
         tipo_real = data.get("tipo") or tipo_esperado
         if etapa >= 1 and tipo_real == "completa":
             resp = _wrap_result(
@@ -1173,6 +1175,7 @@ def acao_clientes_sincronizar(
             "alterado_apos_enviado": data.get("alterado_apos_enviado"),
             "novo_cursor": data.get("novo_cursor"),
             "total_lote": data.get("total", 0),
+            "paginas_lidas": data.get("paginas_lidas") or 0,
         }
         if tipo_real == "completa":
             catalogo_clientes.substituir_completo(
@@ -1198,11 +1201,11 @@ def acao_clientes_sincronizar(
 
         estado = catalogo_clientes.obter(sessao)
         total = data.get("total", 0)
+        paginas = data.get("paginas_lidas") or 0
         resumo = _card(
             "Sincronização de clientes",
             [
                 ("Status da sincronização", "Concluída"),
-                ("Total retornado no lote", total),
             ]
             + _linhas_ciclo_clientes(sessao, estado),
             status_label="Status 200",
@@ -1218,6 +1221,7 @@ def acao_clientes_sincronizar(
                 "alterado-apos-enviado": data.get("alterado_apos_enviado") or "",
                 "tipo-busca": tipo_real,
                 "total": str(total),
+                "paginas-lidas": str(paginas),
                 "catalogo-total": str(len(estado.get("clientes") or {})),
                 "catalogo-modo": "replace" if tipo_real == "completa" else "upsert",
                 "status-sync": "concluida",

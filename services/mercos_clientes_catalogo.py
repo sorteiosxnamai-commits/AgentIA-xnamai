@@ -33,6 +33,7 @@ def _estado_vazio() -> dict[str, Any]:
             "alterado_apos_enviado": None,
             "novo_cursor": None,
             "total_lote": 0,
+            "paginas_lidas": 0,
         },
         "ciclo": _ciclo_vazio(),
     }
@@ -189,6 +190,7 @@ def _aplicar_meta(estado: dict[str, Any], meta: dict[str, Any] | None) -> None:
         "alterado_apos_enviado",
         "novo_cursor",
         "total_lote",
+        "paginas_lidas",
     ):
         if chave in meta:
             sync[chave] = meta[chave]

@@ -1349,6 +1349,185 @@ def test_clientes_reiniciar_ciclo_nao_chama_mercos(client, monkeypatch):
     assert cat.obter_ciclo(sessao)["etapa_interna"] == 0
 
 
+def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
+    """Busca completa agrega todas as páginas; cliente da 2ª página entra no catálogo."""
+    from services import mercos_clientes_catalogo as cat
+    from urllib.parse import unquote
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_api_client.PAGE_SLEEP_SEGUNDOS", 0
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/clientes" if chave == "clientes" else f"/v1/{chave}",
+    )
+    paginas_vistas: list[int] = []
+
+    def fake_get(path, *, params=None):
+        pagina = int((params or {}).get("pagina") or 1)
+        paginas_vistas.append(pagina)
+        if pagina == 1:
+            return [
+                {
+                    "id": 1,
+                    "razao_social": "Cliente Pagina 1A",
+                    "ultima_alteracao": "2026-07-06 11:29:15",
+                    "ativo": True,
+                },
+                {
+                    "id": 2,
+                    "razao_social": "Cliente Pagina 1B",
+                    "ultima_alteracao": "2026-07-05 10:00:00",
+                    "ativo": True,
+                },
+            ]
+        if pagina == 2:
+            return [
+                {
+                    "id": 3,
+                    "razao_social": "77eb21774dd340ff",
+                    "nome_fantasia": "Homolog",
+                    "cnpj": "11.111.111/0001-11",
+                    "email": "h@test.com",
+                    "ultima_alteracao": "2026-07-16 09:00:00",
+                    "ativo": True,
+                },
+                {
+                    "id": 3,
+                    "razao_social": "77eb21774dd340ff",
+                    "ultima_alteracao": "2026-07-16 09:00:00",
+                    "ativo": True,
+                },
+            ]
+        if pagina == 3:
+            return [
+                {
+                    "id": 4,
+                    "razao_social": "Ultimo",
+                    "ultima_alteracao": "2026-07-10 08:00:00",
+                    "ativo": True,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr("services.mercos_api_client.get_json", fake_get)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "Completa" in html
+    assert "Total de páginas consultadas" in html
+    assert 'data-paginas-lidas="4"' in html
+    # Com page_size_hint=0: p1(2), p2(2), p3(1), p4([]) → 4 páginas
+    assert paginas_vistas == [1, 2, 3, 4]
+    assert "Total retornado em todas as páginas" in html
+    assert 'data-catalogo-total="4"' in html
+    assert "77eb21774dd340ff" in html
+    assert "Clientes no catálogo acumulado" in html
+    assert "Novo cursor" in html
+    cookie_raw = (resp.cookies.get("mercos_clientes_cursor") or "").strip('"')
+    assert unquote(cookie_raw) == "2026-07-16 09:00:00"
+    assert 'data-novo-cursor="2026-07-16 09:00:00"' in html
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    assert cat.total(sessao) == 4  # ids 1,2,3,4 (dup id3 removido)
+    estado = cat.obter(sessao)
+    assert estado["clientes"]["3"]["razao_social"] == "77eb21774dd340ff"
+    # Sem duplicata visual do id+alteracao na tabela (antes do blob)
+    assert html.split("mercos-clientes-catalogo-blob")[0].count("77eb21774dd340ff") == 1
+
+
+def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
+    from services import mercos_clientes_catalogo as cat
+    from urllib.parse import unquote
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_api_client.PAGE_SLEEP_SEGUNDOS", 0
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/clientes" if chave == "clientes" else f"/v1/{chave}",
+    )
+    fase = {"n": 0}
+    paginas_inc: list[int] = []
+
+    def fake_get(path, *, params=None):
+        params = params or {}
+        pagina = int(params.get("pagina") or 1)
+        if "alterado_apos" not in params:
+            # Completa: 1 página
+            return [
+                {
+                    "id": 1,
+                    "razao_social": "Base",
+                    "ultima_alteracao": "2026-07-15 10:00:00",
+                    "ativo": True,
+                }
+            ] if pagina == 1 else []
+        # Incremental multi-página
+        paginas_inc.append(pagina)
+        if pagina == 1:
+            return [
+                {
+                    "id": 2,
+                    "razao_social": "Inc A",
+                    "ultima_alteracao": "2026-07-15 12:00:00",
+                    "ativo": True,
+                }
+            ]
+        if pagina == 2:
+            return [
+                {
+                    "id": 3,
+                    "razao_social": "77eb21774dd340ff",
+                    "ultima_alteracao": "2026-07-16 15:30:00",
+                    "ativo": True,
+                },
+                {
+                    "id": 3,
+                    "razao_social": "77eb21774dd340ff",
+                    "ultima_alteracao": "2026-07-16 15:30:00",
+                    "ativo": True,
+                },
+            ]
+        return []
+
+    monkeypatch.setattr("services.mercos_api_client.get_json", fake_get)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    r1 = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert r1.status_code == 200
+    r2 = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-sincronizar",
+        data={"cursor": "2026-07-15 10:00:00"},
+    )
+    assert r2.status_code == 200
+    assert paginas_inc == [1, 2, 3]  # p3 vazia
+    html = r2.text
+    assert "Incremental" in html
+    assert "Total de páginas consultadas" in html
+    assert "77eb21774dd340ff" in html
+    cookie_raw = (r2.cookies.get("mercos_clientes_cursor") or "").strip('"')
+    assert unquote(cookie_raw) == "2026-07-16 15:30:00"
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    assert cat.total(sessao) == 3
+    assert html.split("mercos-clientes-catalogo-blob")[0].count("77eb21774dd340ff") == 1
+
+
 def test_acao_tipos_pedido_exige_token(client):
     resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido")
     assert resp.status_code == 403

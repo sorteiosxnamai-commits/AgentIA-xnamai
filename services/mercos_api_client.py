@@ -141,14 +141,21 @@ def listar_paginado(
     *,
     pagina_inicial: int = 1,
     max_paginas: int = MAX_PAGINAS_DEFAULT,
-    page_size_hint: int = 50,
+    page_size_hint: int | None = 50,
     params_extra: dict | None = None,
 ) -> dict[str, Any]:
-    """Lista recursos com paginação segura (teto de páginas)."""
+    """Lista recursos com paginação segura (teto de páginas).
+
+    Para quando o lote vem vazio ou atinge max_paginas.
+    Se page_size_hint > 0, também para cedo quando o lote tem menos itens
+    que o hint (economiza um request vazio). Use page_size_hint=0/None para
+    percorrer até a página vazia (ex.: clientes com página menor que 50).
+    """
     pagina = max(1, int(pagina_inicial or 1))
     limite = max(1, min(int(max_paginas or MAX_PAGINAS_DEFAULT), 100))
     itens: list = []
     paginas_lidas = 0
+    hint = int(page_size_hint or 0)
 
     for _ in range(limite):
         params = {"pagina": pagina}
@@ -160,7 +167,7 @@ def listar_paginado(
         if not lote:
             break
         itens.extend(lote)
-        if len(lote) < page_size_hint:
+        if hint > 0 and len(lote) < hint:
             break
         pagina += 1
         time.sleep(PAGE_SLEEP_SEGUNDOS)

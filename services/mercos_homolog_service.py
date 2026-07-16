@@ -236,6 +236,7 @@ def _sincronizar_entidade(
     cursor: str | None = None,
     max_paginas: int = 50,
     sobreposicao_segundos: int = 1,
+    page_size_hint: int | None = 50,
 ) -> dict[str, Any]:
     """Uma sincronização GET: completa (sem cursor) ou incremental com sobreposição."""
     if not lock.acquire(blocking=False):
@@ -252,11 +253,14 @@ def _sincronizar_entidade(
             )
         else:
             alterado_apos = None
-        data = listar_fn(
-            alterado_apos=alterado_apos,
-            pagina_inicial=1,
-            max_paginas=max_paginas,
-        )
+        listar_kwargs: dict[str, Any] = {
+            "alterado_apos": alterado_apos,
+            "pagina_inicial": 1,
+            "max_paginas": max_paginas,
+        }
+        if page_size_hint is not None:
+            listar_kwargs["page_size_hint"] = page_size_hint
+        data = listar_fn(**listar_kwargs)
         itens = deduplicar_por_id_alteracao(data.get("itens") or [])
         total = len(itens)
         maior = maior_ultima_alteracao(itens)
@@ -307,14 +311,14 @@ def sincronizar_produtos(
 def sincronizar_clientes(
     cursor: str | None = None,
     *,
-    max_paginas: int = 50,
+    max_paginas: int = 100,
     sobreposicao_segundos: int = 1,
 ) -> dict[str, Any]:
     """Uma sincronização Cliente GET: completa (sem cursor) ou incremental.
 
+    Percorre todas as páginas de /v1/clientes até lote vazio (teto 100).
+    page_size_hint=0 evita parar cedo quando a Mercos devolve páginas < 50.
     Incremental envia alterado_apos = cursor salvo - 1s (sobreposicao).
-    O cursor real salvo continua sendo a maior ultima_alteracao recebida.
-    Impede cliques/chamadas duplicadas enquanto uma sync estiver em andamento.
     """
     return _sincronizar_entidade(
         listar_fn=listar_clientes,
@@ -323,6 +327,7 @@ def sincronizar_clientes(
         cursor=cursor,
         max_paginas=max_paginas,
         sobreposicao_segundos=sobreposicao_segundos,
+        page_size_hint=0,
     )
 
 
