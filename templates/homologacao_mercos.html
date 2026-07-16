@@ -353,6 +353,21 @@
           <div class="resultado" id="res-produtos-alterar"></div>
         </section>
 
+        <!-- 1d -->
+        <section class="panel" id="sec-produto-imagens" data-homolog-sec="produto-imagem-buscar">
+          <h2>Imagem do Produto — Buscar</h2>
+          <p class="hint">Localiza o produto pelo nome no catálogo acumulado e consulta as imagens (hash) na Mercos. Não altera o cursor nem o ciclo do Produto GET.</p>
+          <div class="toolbar">
+            <label class="field">Nome exato do produto
+              <input type="text" id="input-produto-imagem-nome" placeholder="Ex.: 988c59d30ae54204" />
+            </label>
+            <button type="button" id="btn-produto-imagens" class="secondary">
+              Buscar imagens
+            </button>
+          </div>
+          <div class="resultado" id="res-produto-imagens"></div>
+        </section>
+
         <!-- 2 -->
         <section class="panel" id="sec-categorias" data-homolog-sec="categoria-buscar">
           <h2>Categoria de produto — Buscar</h2>
@@ -1072,6 +1087,27 @@
             },
             resProdutos,
             btnLocalizar
+          );
+          if (getProdutosCursor() !== cursorAntes) {
+            setProdutosCursor(cursorAntes);
+          }
+        });
+      }
+
+      var btnProdutoImagens = document.getElementById("btn-produto-imagens");
+      var resProdutoImagens = document.getElementById("res-produto-imagens");
+      if (btnProdutoImagens && resProdutoImagens) {
+        btnProdutoImagens.addEventListener("click", async function () {
+          var nomeEl = document.getElementById("input-produto-imagem-nome");
+          var cursorAntes = getProdutosCursor();
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/produto-imagens",
+            {
+              nome: nomeEl ? nomeEl.value : "",
+              catalogo_json: getCatalogoJson()
+            },
+            resProdutoImagens,
+            btnProdutoImagens
           );
           if (getProdutosCursor() !== cursorAntes) {
             setProdutosCursor(cursorAntes);

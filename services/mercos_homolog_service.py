@@ -33,6 +33,9 @@ PATHS = {
     "tabelas_preco_produto": "/v1/tabelas_preco",
     # Doc Mercos: listagem GET /v1/pedidos/tipo
     "tipos_pedido": "/v1/pedidos/tipo",
+    # Probe sandbox 2026-07-16: GET /v1/imagens_produto?produto_id={id}
+    # (o path aninhado /v1/produtos/{id}/imagens retorna 404)
+    "imagens_produto": "/v1/imagens_produto",
     "usuarios": "/v1/usuarios",
     "titulos": "/v1/titulos",
     "pedidos": "/v1/pedidos",
@@ -213,6 +216,78 @@ def alterar_produto(produto_id: int | str, body: dict) -> dict:
             status_code=422,
         )
     return put_json(f"{_path('produtos')}/{pid}", payload)
+
+
+def normalizar_imagens_produto(payload: Any) -> list[dict[str, Any]]:
+    """Extrai registros de imagem preservando o hash exatamente como retornado.
+
+    Sandbox: [{"produto_id": <id>, "imagens": ["<hash>", ...]}].
+    Tolera itens dict com campos id/hash/url sem recalcular nem converter o hash.
+    """
+    registros: list[dict[str, Any]] = []
+    for item in payload if isinstance(payload, list) else []:
+        if not isinstance(item, dict):
+            continue
+        imagens = item.get("imagens")
+        if not isinstance(imagens, list):
+            continue
+        for img in imagens:
+            if isinstance(img, dict):
+                hash_bruto = img.get("hash")
+                if hash_bruto in (None, ""):
+                    hash_bruto = img.get("imagem")
+                registros.append(
+                    {
+                        "id": img.get("id"),
+                        "hash": hash_bruto,
+                        "url": img.get("url")
+                        or img.get("arquivo")
+                        or img.get("nome_arquivo"),
+                    }
+                )
+            elif img not in (None, ""):
+                registros.append({"id": None, "hash": img, "url": None})
+    return registros
+
+
+def listar_imagens_produto(produto_id: int | str) -> dict[str, Any]:
+    """GET /v1/imagens_produto?produto_id={id} — hashes das imagens do produto.
+
+    Contrato confirmado no sandbox (probe 2026-07-16); uma única requisição.
+    """
+    pid = str(produto_id or "").strip()
+    if not pid:
+        raise MercosApiError(
+            "ID do produto é obrigatório para buscar imagens.", status_code=422
+        )
+    path = _path("imagens_produto")
+    payload = get_json(path, params={"produto_id": pid})
+    imagens = normalizar_imagens_produto(payload)
+    return {
+        "ok": True,
+        "status_code": 200,
+        "path": path,
+        "produto_id": pid,
+        "imagens": imagens,
+        "total": len(imagens),
+        "sandbox": mercos_ambiente_sandbox(),
+    }
+
+
+def localizar_produto_por_nome(nome: str) -> dict | None:
+    """Consulta controlada: UMA requisição GET /v1/produtos, procura nome exato.
+
+    Não pagina, não altera catálogo, cursor nem ciclo do Produto GET.
+    """
+    alvo = (nome or "").strip()
+    if not alvo:
+        return None
+    payload = get_json(_path("produtos"))
+    itens = payload if isinstance(payload, list) else []
+    for item in itens:
+        if isinstance(item, dict) and str(item.get("nome") or "").strip() == alvo:
+            return item
+    return None
 
 
 def maior_ultima_alteracao(itens: list | None) -> str | None:
@@ -1174,6 +1249,9 @@ __all__ = [
     "montar_payload_produto",
     "criar_produto",
     "alterar_produto",
+    "listar_imagens_produto",
+    "normalizar_imagens_produto",
+    "localizar_produto_por_nome",
     "listar_segmentos",
     "listar_tabelas_preco",
     "listar_tabelas_preco_produto",

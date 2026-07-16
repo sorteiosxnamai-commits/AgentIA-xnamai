@@ -185,6 +185,16 @@ def put_produtos(produto_id: str, token: str = "", body: dict = Body(...)):
         raise _http(exc) from exc
 
 
+@router.get("/produtos/{produto_id}/imagens")
+def get_imagens_produto(produto_id: str, token: str = ""):
+    """Imagens (hashes) de um produto — Mercos GET /v1/imagens_produto?produto_id={id}."""
+    _bloqueio(token)
+    try:
+        return homolog.listar_imagens_produto(produto_id)
+    except MercosApiError as exc:
+        raise _http(exc) from exc
+
+
 @router.get("/segmentos")
 def get_segmentos(
     token: str = "",

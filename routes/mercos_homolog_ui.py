@@ -1096,6 +1096,172 @@ def acao_produtos_alterar(
         return _wrap_result(_erro_html(exc))
 
 
+_NOME_PRODUTO_IMAGEM_DESTAQUE = "988c59d30ae54204"
+
+
+@router.post("/homologacao-ui/acoes/produto-imagens", response_class=HTMLResponse)
+def acao_produto_imagens(
+    request: Request,
+    token: str = Form(""),
+    nome: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Imagens do produto pelo nome: localiza no catálogo local e faz UMA chamada
+    de imagens à Mercos. Não altera cursor nem ciclo do Produto GET."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao(request)
+    _hidratar_catalogo_form(sessao, catalogo_json)
+    ciclo_antes = catalogo_produtos.obter_ciclo(sessao)
+    nome_busca = (nome or "").strip()
+    attrs_fixos = {"cursor-fixo": "1", **_attrs_ciclo(sessao)}
+    if not nome_busca:
+        return _garantir_sessao_cookie(
+            _wrap_result(
+                _card(
+                    "Imagem do produto",
+                    [("Mensagem", "Informe o nome exato do produto.")],
+                    status_label="Atenção",
+                    css="erro",
+                ),
+                extra_attrs=attrs_fixos,
+            ),
+            sessao,
+        )
+
+    encontrado, _no_lote, _estado = catalogo_produtos.buscar_por_nome(
+        sessao, nome_busca
+    )
+    origem_produto = "Catálogo local sincronizado"
+    if not encontrado:
+        # Consulta controlada (1 requisição, sem paginação): não altera
+        # catálogo, cursor nem ciclo do Produto GET.
+        try:
+            encontrado = homolog.localizar_produto_por_nome(nome_busca)
+            origem_produto = "Consulta controlada na Mercos"
+        except MercosApiError as exc:
+            return _garantir_sessao_cookie(
+                _wrap_result(_erro_html(exc), extra_attrs=attrs_fixos), sessao
+            )
+    if not encontrado:
+        return _garantir_sessao_cookie(
+            _wrap_result(
+                _card(
+                    "Produto não encontrado",
+                    [
+                        ("Nome buscado", nome_busca),
+                        ("Produtos no catálogo local", catalogo_produtos.total(sessao)),
+                        ("Mensagem", "Sincronize o Produto GET ou confira o nome exato."),
+                    ],
+                    status_label="Não encontrado",
+                    css="erro",
+                ),
+                extra_attrs=attrs_fixos,
+            ),
+            sessao,
+        )
+
+    pid = encontrado.get("id")
+    nome_produto = str(encontrado.get("nome") or nome_busca)
+    destaque = nome_produto.strip().lower() == _NOME_PRODUTO_IMAGEM_DESTAQUE
+    try:
+        out = homolog.listar_imagens_produto(pid)
+    except MercosApiError as exc:
+        if exc.status_code == 429:
+            segundos = exc.retry_after if exc.retry_after is not None else 10
+            try:
+                segundos = max(0, int(float(segundos)))
+            except (TypeError, ValueError):
+                segundos = 10
+            resp = _wrap_result(
+                _card(
+                    "Aguardando limite da Mercos",
+                    [
+                        ("Mensagem", "Aguardando limite da Mercos"),
+                        ("Segundos restantes", segundos),
+                        ("Produto", nome_produto),
+                    ],
+                    status_label="Aguardando",
+                    css="pendente",
+                ),
+                extra_attrs=attrs_fixos,
+            )
+            resp.headers["Retry-After"] = str(segundos)
+            return _garantir_sessao_cookie(resp, sessao)
+        if exc.status_code == 404:
+            return _garantir_sessao_cookie(
+                _wrap_result(
+                    _card(
+                        "Imagens não encontradas",
+                        [
+                            ("ID do produto", pid),
+                            ("Nome do produto", nome_produto),
+                            ("Status HTTP", 404),
+                            ("Mensagem", "A Mercos não encontrou imagens para este produto."),
+                        ],
+                        status_label="Erro 404",
+                        css="erro",
+                    ),
+                    extra_attrs=attrs_fixos,
+                ),
+                sessao,
+            )
+        return _garantir_sessao_cookie(
+            _wrap_result(_erro_html(exc), extra_attrs=attrs_fixos), sessao
+        )
+    except Exception as exc:
+        return _garantir_sessao_cookie(
+            _wrap_result(_erro_html(exc), extra_attrs=attrs_fixos), sessao
+        )
+
+    imagens = out.get("imagens") or []
+    linhas: list[tuple[str, Any]] = [
+        ("ID do produto", pid),
+        ("Nome do produto", nome_produto),
+        ("Status HTTP", out.get("status_code") or 200),
+        ("Total de imagens", len(imagens)),
+        ("Origem do produto", origem_produto),
+        ("Origem", "Mercos Sandbox" if out.get("sandbox") else "Mercos"),
+    ]
+    if len(imagens) == 1:
+        linhas.insert(2, ("Hash da imagem", imagens[0].get("hash")))
+    card = _card(
+        "Imagens do produto" if imagens else "Produto sem imagem",
+        linhas
+        if imagens
+        else linhas + [("Mensagem", "A Mercos não retornou imagens para este produto.")],
+        status_label="Encontrado" if imagens else "Sem imagem",
+        css="ok" if imagens else "pendente",
+    )
+    tabela = ""
+    if imagens:
+        tem_url = any(img.get("url") not in (None, "") for img in imagens)
+        headers = ["ID da imagem", "Hash da imagem"] + (["URL/arquivo"] if tem_url else [])
+        rows = []
+        classes = []
+        for img in imagens:
+            row = [
+                img.get("id") if img.get("id") not in (None, "") else "—",
+                img.get("hash"),  # exatamente como retornado pela Mercos
+            ]
+            if tem_url:
+                row.append(img.get("url") if img.get("url") not in (None, "") else "—")
+            rows.append(row)
+            classes.append("destaque-homolog" if destaque else "")
+        tabela = _table(headers, rows, row_classes=classes)
+    ciclo_depois = catalogo_produtos.obter_ciclo(sessao)
+    if ciclo_antes.get("etapa_interna") != ciclo_depois.get("etapa_interna"):
+        catalogo_produtos._salvar_ciclo(sessao, ciclo_antes)
+    return _garantir_sessao_cookie(
+        _wrap_result(
+            card + tabela,
+            entity="produto",
+            entity_id=str(pid or ""),
+            extra_attrs={**attrs_fixos, "status-sync": "imagens"},
+        ),
+        sessao,
+    )
+
+
 @router.post("/homologacao-ui/acoes/categorias", response_class=HTMLResponse)
 def acao_categorias(request: Request, token: str = Form("")):
     _auth(request, token)

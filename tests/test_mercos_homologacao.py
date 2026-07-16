@@ -264,6 +264,36 @@ def test_put_produtos_exclusao_logica(client, monkeypatch):
     assert "id" not in capturado["body"]
 
 
+def test_get_imagens_produto_exige_token(monkeypatch):
+    monkeypatch.setenv("DIAGNOSTICOS_ABERTOS", "false")
+    monkeypatch.setenv("SYNC_TOKEN", "segredo-imagens")
+    from main import app
+
+    c = TestClient(app)
+    resp = c.get("/mercos/produtos/20400682/imagens")
+    assert resp.status_code == 403
+
+
+def test_get_imagens_produto_contrato_e_hash_exato(client, monkeypatch):
+    """Usa GET /v1/imagens_produto?produto_id e preserva o hash como retornado."""
+    capturado: dict = {}
+
+    def fake_get(path, *, params=None, **_kw):
+        capturado["path"] = path
+        capturado["params"] = dict(params or {})
+        return [{"produto_id": 20400682, "imagens": ["7a90b5ebfbf044ab"]}]
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    resp = client.get("/mercos/produtos/20400682/imagens")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert capturado["path"] == "/v1/imagens_produto"
+    assert capturado["params"] == {"produto_id": "20400682"}
+    assert data["produto_id"] == "20400682"
+    assert data["total"] == 1
+    assert data["imagens"][0]["hash"] == "7a90b5ebfbf044ab"
+
+
 def test_put_produtos_validacao_sem_campos(client, monkeypatch):
     called = MagicMock()
     monkeypatch.setattr("services.mercos_homolog_service.put_json", called)

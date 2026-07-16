@@ -2509,6 +2509,229 @@ def test_ui_produtos_alterar_erro_mercos(client, monkeypatch):
     assert "CompanyToken" not in resp.text
 
 
+def _seed_produto_imagem(client, monkeypatch):
+    """Sessão + produto 988c59d30ae54204 no catálogo local de produtos."""
+    from services import mercos_produtos_catalogo as catp
+
+    catp._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/produtos-reiniciar")
+    sessao = client.cookies.get("mercos_produtos_sessao")
+    catp.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 20400682,
+                "nome": "988c59d30ae54204",
+                "preco_tabela": 9.9,
+                "ultima_alteracao": "2026-07-16 10:00:00",
+                "ativo": True,
+            }
+        ],
+    )
+    return catp, sessao
+
+
+def test_ui_form_produto_imagens_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    assert "Imagem do Produto — Buscar" in html
+    assert 'id="input-produto-imagem-nome"' in html
+    assert 'id="btn-produto-imagens"' in html
+    assert "988c59d30ae54204" in html
+
+
+def test_ui_produto_imagens_exige_token(client):
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produto-imagens", data={"nome": "x"}
+    )
+    assert resp.status_code == 403
+
+
+def test_ui_produto_imagens_localiza_por_nome_e_usa_id(client, monkeypatch):
+    catp, sessao = _seed_produto_imagem(client, monkeypatch)
+    chamadas: list[dict] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        chamadas.append({"path": path, "params": dict(params or {})})
+        return [{"produto_id": 20400682, "imagens": ["7a90b5ebfbf044ab"]}]
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    cursor_antes = client.cookies.get("mercos_produtos_cursor")
+    etapa_antes = catp.obter_ciclo(sessao)["etapa_interna"]
+    ciclo_ativo_antes = catp.obter_ciclo(sessao)["ativo"]
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produto-imagens",
+        data={"nome": "988c59d30ae54204"},
+    )
+    assert resp.status_code == 200
+    # Uma única chamada de imagens, com o ID resolvido pelo nome
+    assert len(chamadas) == 1
+    assert chamadas[0]["path"] == "/v1/imagens_produto"
+    assert chamadas[0]["params"] == {"produto_id": "20400682"}
+    html = resp.text
+    assert "20400682" in html
+    assert "988c59d30ae54204" in html
+    assert "7a90b5ebfbf044ab" in html  # hash exatamente como retornado
+    assert "Hash da imagem" in html
+    assert "Status HTTP" in html
+    assert "Mercos Sandbox" in html
+    assert "destaque-homolog" in html  # produto da homologação destacado
+    assert 'data-cursor-fixo="1"' in html
+    assert "CompanyToken" not in html
+    assert '"produto_id"' not in html  # sem JSON cru
+    # Cursor e ciclo intactos
+    assert resp.cookies.get("mercos_produtos_cursor") is None
+    assert client.cookies.get("mercos_produtos_cursor") == cursor_antes
+    assert catp.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+    assert catp.obter_ciclo(sessao)["ativo"] == ciclo_ativo_antes
+
+
+def test_ui_produto_imagens_multiplas(client, monkeypatch):
+    _catp, _sessao = _seed_produto_imagem(client, monkeypatch)
+
+    def fake_get(path, *, params=None, **_kw):
+        return [
+            {
+                "produto_id": 20400682,
+                "imagens": ["hash-aaa-111", "hash-bbb-222", "hash-ccc-333"],
+            }
+        ]
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produto-imagens",
+        data={"nome": "988c59d30ae54204"},
+    )
+    assert resp.status_code == 200
+    html = resp.text
+    assert "hash-aaa-111" in html
+    assert "hash-bbb-222" in html
+    assert "hash-ccc-333" in html
+    assert "Total de imagens" in html
+
+
+def test_ui_produto_imagens_sem_imagem(client, monkeypatch):
+    _catp, _sessao = _seed_produto_imagem(client, monkeypatch)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json",
+        lambda path, *, params=None, **_kw: [
+            {"produto_id": 20400682, "imagens": []}
+        ],
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produto-imagens",
+        data={"nome": "988c59d30ae54204"},
+    )
+    assert resp.status_code == 200
+    assert "Produto sem imagem" in resp.text
+    assert "não retornou imagens" in resp.text
+
+
+def test_ui_produto_imagens_produto_nao_encontrado(client, monkeypatch):
+    from services import mercos_produtos_catalogo as catp
+
+    catp._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    chamadas: list[str] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        chamadas.append(path)
+        return []  # consulta controlada sem resultado
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produto-imagens",
+        data={"nome": "produto-inexistente"},
+    )
+    assert resp.status_code == 200
+    assert "Produto não encontrado" in resp.text
+    # Consulta controlada: uma única requisição de produtos, sem paginação
+    assert chamadas == ["/v1/produtos"]
+
+
+def test_ui_produto_imagens_consulta_controlada_pelo_nome(client, monkeypatch):
+    """Produto fora do catálogo local: 1 GET de produtos + 1 GET de imagens."""
+    from services import mercos_produtos_catalogo as catp
+
+    catp._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    chamadas: list[dict] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        chamadas.append({"path": path, "params": dict(params or {})})
+        if path == "/v1/produtos":
+            return [
+                {"id": 1, "nome": "outro"},
+                {"id": 20400682, "nome": "988c59d30ae54204"},
+            ]
+        return [{"produto_id": 20400682, "imagens": ["7a90b5ebfbf044ab"]}]
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/produto-imagens",
+        data={"nome": "988c59d30ae54204"},
+    )
+    assert resp.status_code == 200
+    assert [c["path"] for c in chamadas] == ["/v1/produtos", "/v1/imagens_produto"]
+    assert chamadas[1]["params"] == {"produto_id": "20400682"}
+    assert "7a90b5ebfbf044ab" in resp.text
+    assert "Consulta controlada na Mercos" in resp.text
+    # Não altera o catálogo acumulado nem cursor
+    sessao = client.cookies.get("mercos_produtos_sessao")
+    assert catp.total(sessao) == 0
+    assert resp.cookies.get("mercos_produtos_cursor") is None
+
+
+def test_ui_produto_imagens_erro_404_e_429(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+
+    _catp, _sessao = _seed_produto_imagem(client, monkeypatch)
+
+    def erro_404(path, *, params=None, **_kw):
+        raise MercosApiError("Mercos HTTP 404: nao encontrado", status_code=404)
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", erro_404)
+    r404 = client.post(
+        "/mercos/homologacao-ui/acoes/produto-imagens",
+        data={"nome": "988c59d30ae54204"},
+    )
+    assert r404.status_code == 200
+    assert "Imagens não encontradas" in r404.text
+    assert "404" in r404.text
+
+    def erro_429(path, *, params=None, **_kw):
+        raise MercosApiError("429", status_code=429, retry_after=9.0)
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", erro_429)
+    r429 = client.post(
+        "/mercos/homologacao-ui/acoes/produto-imagens",
+        data={"nome": "988c59d30ae54204"},
+    )
+    assert "Aguardando limite da Mercos" in r429.text
+    assert r429.headers.get("Retry-After") == "9"
+    assert "CompanyToken" not in r429.text
+
+
 def test_ui_form_cliente_incluir_presente(client):
     resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     html = resp.text
