@@ -235,7 +235,7 @@
         <!-- 1 -->
         <section class="panel" id="sec-produtos" data-homolog-sec="produto-buscar">
           <h2>Produto — Buscar</h2>
-          <p class="hint">Sincronização automática do catálogo. A primeira etapa é completa; as seguintes usam o cursor salvo (alterado_apos).</p>
+          <p class="hint">Ciclo de homologação em 3 etapas. Use somente «Sincronizar próxima etapa» durante o ciclo ativo. «Buscar produtos» fica bloqueado para não invalidar a evidência.</p>
           <div class="toolbar">
             <button type="button" id="btn-produtos-reiniciar" class="secondary">
               Reiniciar ciclo de sincronização
@@ -243,12 +243,13 @@
             <button type="button" id="btn-produtos-sincronizar">
               Sincronizar próxima etapa
             </button>
-            <button type="button"
+            <button type="button" id="btn-produtos-buscar"
               data-action="/mercos/homologacao-ui/acoes/produtos"
               data-target="res-produtos">
               Buscar produtos
             </button>
           </div>
+          <p class="hint" id="aviso-busca-bloqueada" hidden>Busca completa bloqueada durante a homologação.</p>
           <div class="toolbar">
             <label class="field">Localizar produto pelo nome
               <input type="text" id="input-produtos-nome" placeholder="Nome exato do produto" />
@@ -512,6 +513,7 @@
     (function () {
       var CURSOR_KEY = "mercos_produtos_cursor";
       var CATALOGO_KEY = "mercos_produtos_catalogo";
+      var CICLO_KEY = "mercos_produtos_ciclo_ativo";
       var produtosSyncBusy = false;
       var store = {
         cliente: localStorage.getItem("homolog_cliente_id") || "",
@@ -558,16 +560,77 @@
         return localStorage.getItem(CATALOGO_KEY) || "";
       }
 
+      function isCicloAtivoLocal() {
+        try {
+          var raw = localStorage.getItem(CATALOGO_KEY);
+          if (raw) {
+            var snap = JSON.parse(raw);
+            if (snap && snap.ciclo && snap.ciclo.ativo) return true;
+          }
+        } catch (e) {}
+        return localStorage.getItem(CICLO_KEY) === "1";
+      }
+
+      function setCicloAtivoLocal(ativo) {
+        if (ativo) localStorage.setItem(CICLO_KEY, "1");
+        else localStorage.removeItem(CICLO_KEY);
+        atualizarBuscaBloqueada();
+      }
+
+      function atualizarBuscaBloqueada() {
+        var btn = document.getElementById("btn-produtos-buscar");
+        var aviso = document.getElementById("aviso-busca-bloqueada");
+        var ativo = isCicloAtivoLocal();
+        if (btn) {
+          btn.disabled = !!ativo;
+          btn.hidden = !!ativo;
+          btn.setAttribute("aria-disabled", ativo ? "true" : "false");
+        }
+        if (aviso) aviso.hidden = !ativo;
+      }
+
       function setCatalogoFromBlob(target) {
         var blob = target.querySelector(".mercos-catalogo-blob");
         if (!blob) return;
         var texto = (blob.value || blob.textContent || "").trim();
         if (!texto) return;
         try {
-          JSON.parse(texto);
+          var snap = JSON.parse(texto);
           localStorage.setItem(CATALOGO_KEY, texto);
+          if (snap && snap.ciclo) {
+            setCicloAtivoLocal(!!snap.ciclo.ativo);
+          }
         } catch (e) { /* ignora blob inválido */ }
         blob.parentNode && blob.parentNode.removeChild(blob);
+      }
+
+      function applyCicloFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-catalogo-limpo") === "1") {
+          localStorage.setItem(
+            CATALOGO_KEY,
+            JSON.stringify({
+              produtos: {},
+              ids_ultimo_lote: [],
+              ultima_sync: {},
+              ciclo: {
+                ativo: true,
+                etapa_interna: 0,
+                chamadas_completas: 0,
+                chamadas_incrementais: 0
+              },
+              total: 0
+            })
+          );
+        }
+        if (wrap.hasAttribute("data-ciclo-ativo")) {
+          setCicloAtivoLocal(wrap.getAttribute("data-ciclo-ativo") === "1");
+        }
+        if (wrap.getAttribute("data-bloquear-busca-completa") === "1") {
+          setCicloAtivoLocal(true);
+        }
+        atualizarBuscaBloqueada();
       }
 
       function sleep(ms) {
@@ -621,6 +684,7 @@
           target.innerHTML = text;
           applyCursorFromResult(target);
           setCatalogoFromBlob(target);
+          applyCicloFromResult(target);
           var node = target.querySelector("[data-entity][data-id]");
           if (node) {
             remember(node.getAttribute("data-entity"), node.getAttribute("data-id"));
@@ -631,23 +695,29 @@
           return null;
         } finally {
           if (btn) btn.disabled = false;
+          atualizarBuscaBloqueada();
         }
       }
 
       var btnReiniciar = document.getElementById("btn-produtos-reiniciar");
       var btnSincronizar = document.getElementById("btn-produtos-sincronizar");
       var btnLocalizar = document.getElementById("btn-produtos-localizar");
+      var btnBuscar = document.getElementById("btn-produtos-buscar");
       var resProdutos = document.getElementById("res-produtos");
+
+      atualizarBuscaBloqueada();
 
       if (btnReiniciar && resProdutos) {
         btnReiniciar.addEventListener("click", async function () {
           if (produtosSyncBusy) return;
           produtosSyncBusy = true;
           setProdutosCursor("");
+          localStorage.removeItem(CATALOGO_KEY);
+          setCicloAtivoLocal(true);
           try {
             await postAcao(
               "/mercos/homologacao-ui/acoes/produtos-reiniciar",
-              { catalogo_json: getCatalogoJson() },
+              {},
               resProdutos,
               btnReiniciar
             );
@@ -655,6 +725,7 @@
             produtosSyncBusy = false;
             btnReiniciar.disabled = false;
             if (btnSincronizar) btnSincronizar.disabled = false;
+            atualizarBuscaBloqueada();
           }
         });
       }
@@ -679,6 +750,7 @@
             produtosSyncBusy = false;
             btnSincronizar.disabled = false;
             if (btnReiniciar) btnReiniciar.disabled = false;
+            atualizarBuscaBloqueada();
           }
         });
       }
@@ -705,6 +777,14 @@
 
       document.querySelectorAll("button[data-action]").forEach(function (btn) {
         btn.addEventListener("click", async function () {
+          if (btn.id === "btn-produtos-buscar" && isCicloAtivoLocal()) {
+            if (resProdutos) {
+              resProdutos.innerHTML =
+                '<div class="result-card erro"><h4>Busca completa bloqueada durante a homologação</h4>' +
+                "<p>Use apenas «Sincronizar próxima etapa» durante o ciclo ativo.</p></div>";
+            }
+            return;
+          }
           var url = btn.getAttribute("data-action");
           var targetId = btn.getAttribute("data-target");
           var target = document.getElementById(targetId);
@@ -722,6 +802,9 @@
             var el = document.getElementById(inputId);
             fieldMap[name] = el ? el.value : "";
           });
+          if (btn.id === "btn-produtos-buscar") {
+            fieldMap.catalogo_json = getCatalogoJson();
+          }
 
           btn.disabled = true;
           try {
@@ -734,6 +817,7 @@
             }
           } finally {
             btn.disabled = false;
+            atualizarBuscaBloqueada();
           }
         });
       });

@@ -314,6 +314,40 @@ def _linhas_ultima_sync(estado: dict[str, Any] | None) -> list[tuple[str, Any]]:
     ]
 
 
+def _linhas_ciclo(sessao_id: str, estado: dict[str, Any] | None = None) -> list[tuple[str, Any]]:
+    estado = estado or catalogo_produtos.obter(sessao_id)
+    ciclo = catalogo_produtos.obter_ciclo(sessao_id)
+    sync = (estado or {}).get("ultima_sync") or {}
+    tipo = sync.get("tipo")
+    tipo_label = (
+        "Completa"
+        if tipo == "completa"
+        else ("Incremental" if tipo == "incremental" else (tipo or "—"))
+    )
+    etapa = int(ciclo.get("etapa_interna") or 0)
+    return [
+        ("Etapa interna", f"{etapa}/3"),
+        ("Tipo da última busca", tipo_label),
+        ("Cursor base", sync.get("cursor_base") or "—"),
+        ("alterado_apos enviado", sync.get("alterado_apos_enviado") or "—"),
+        ("Novo cursor", sync.get("novo_cursor") or "—"),
+        ("Produtos no catálogo acumulado", len((estado or {}).get("produtos") or {})),
+        ("Chamadas completas no ciclo", ciclo.get("chamadas_completas") or 0),
+        ("Chamadas incrementais no ciclo", ciclo.get("chamadas_incrementais") or 0),
+    ]
+
+
+def _attrs_ciclo(sessao_id: str) -> dict[str, str]:
+    ciclo = catalogo_produtos.obter_ciclo(sessao_id)
+    return {
+        "ciclo-ativo": "1" if ciclo.get("ativo") else "0",
+        "etapa-interna": str(ciclo.get("etapa_interna") or 0),
+        "chamadas-completas": str(ciclo.get("chamadas_completas") or 0),
+        "chamadas-incrementais": str(ciclo.get("chamadas_incrementais") or 0),
+        "bloquear-busca-completa": "1" if ciclo.get("ativo") else "0",
+    }
+
+
 def _html_tabela_produtos(itens: list) -> str:
     rows = []
     classes: list[str] = []
@@ -366,9 +400,33 @@ def acao_produtos(
     request: Request,
     token: str = Form(""),
     alterado_apos: str = Form(""),
+    catalogo_json: str = Form(""),
 ):
-    """Busca simples (compatível). Preferir sincronizar-produtos para o ciclo incremental."""
+    """Busca simples — bloqueada durante ciclo ativo de homologação."""
     _auth(request, token)
+    sessao = _obter_ou_criar_sessao(request)
+    _hidratar_catalogo_form(sessao, catalogo_json)
+    if catalogo_produtos.ciclo_ativo(sessao):
+        resp = _wrap_result(
+            _card(
+                "Busca completa bloqueada durante a homologação",
+                [
+                    (
+                        "Mensagem",
+                        "Use apenas «Sincronizar próxima etapa» durante o ciclo ativo.",
+                    )
+                ]
+                + _linhas_ciclo(sessao),
+                status_label="Bloqueado",
+                css="erro",
+            ),
+            extra_attrs={
+                "status-sync": "bloqueado",
+                **_attrs_ciclo(sessao),
+            },
+        )
+        return _garantir_sessao_cookie(resp, sessao)
+
     filtro = (alterado_apos or "").strip()
     try:
         data = homolog.listar_produtos(
@@ -386,30 +444,45 @@ def acao_produtos(
                 f'Filtro usado: alterado_apos = <strong>{_esc(filtro)}</strong>'
             )
         head = f'<p class="meta">{" · ".join(head_parts)}</p>'
-        return _wrap_result(head + table)
+        resp = _wrap_result(head + table, extra_attrs=_attrs_ciclo(sessao))
+        return _garantir_sessao_cookie(resp, sessao)
     except Exception as exc:
-        return _wrap_result(_erro_html(exc))
+        resp = _wrap_result(_erro_html(exc))
+        return _garantir_sessao_cookie(resp, sessao)
 
 
 @router.post("/homologacao-ui/acoes/produtos-reiniciar", response_class=HTMLResponse)
-def acao_produtos_reiniciar(request: Request, token: str = Form("")):
-    """Apaga o cursor de produtos sem chamar a API Mercos (mantém catálogo local)."""
+def acao_produtos_reiniciar(
+    request: Request,
+    token: str = Form(""),
+):
+    """Apaga cursor e catálogo, inicia ciclo na etapa 0 — sem chamar a Mercos."""
     _auth(request, token)
     sessao = _obter_ou_criar_sessao(request)
+    catalogo_produtos.iniciar_ciclo(sessao)
+    estado = catalogo_produtos.obter(sessao)
     mensagem = (
         '<div class="result-card ok">'
         "<h4>Ciclo de sincronização reiniciado</h4>"
-        "<p>Cursor de produtos apagado. A próxima sincronização será completa. "
-        "O catálogo local acumulado foi preservado.</p>"
+        "<p>Cursor e catálogo anteriores apagados. Novo ciclo ativo na etapa 0. "
+        "Use «Sincronizar próxima etapa» para a busca completa.</p>"
         "</div>"
     )
+    resumo = _card(
+        "Estado do ciclo",
+        _linhas_ciclo(sessao, estado),
+        status_label="Ciclo ativo",
+        css="ok",
+    )
     resp = _wrap_result(
-        mensagem,
+        mensagem + resumo + _html_patch_catalogo(sessao),
         extra_attrs={
             "novo-cursor": "",
             "cursor-limpo": "1",
+            "catalogo-limpo": "1",
             "status-sync": "reiniciado",
-            "catalogo-total": str(catalogo_produtos.total(sessao)),
+            "catalogo-total": "0",
+            **_attrs_ciclo(sessao),
         },
     )
     resp = _set_cursor_cookie(resp, None)
@@ -423,45 +496,110 @@ def acao_produtos_sincronizar(
     cursor: str = Form(""),
     catalogo_json: str = Form(""),
 ):
-    """Uma sincronização por clique: completa (sem cursor) ou incremental."""
+    """Única ação que chama a Mercos no ciclo: etapa 0 completa; 1 e 2 incrementais."""
     _auth(request, token)
     sessao = _obter_ou_criar_sessao(request)
     _hidratar_catalogo_form(sessao, catalogo_json)
-    cursor_usado = _cursor_produtos(request, cursor)
+    ciclo = catalogo_produtos.obter_ciclo(sessao)
+    if not ciclo.get("ativo"):
+        catalogo_produtos.iniciar_ciclo(sessao)
+        ciclo = catalogo_produtos.obter_ciclo(sessao)
+
+    etapa = int(ciclo.get("etapa_interna") or 0)
+    cursor_form = _cursor_produtos(request, cursor)
+
+    # Etapa 0 → completa (ignora cursor residual). Etapas 1+ → incremental obrigatório.
+    if etapa == 0:
+        cursor_para_sync = None
+        tipo_esperado = "completa"
+    else:
+        if not cursor_form:
+            resp = _wrap_result(
+                _card(
+                    "Cursor ausente",
+                    [
+                        (
+                            "Mensagem",
+                            "Etapa incremental exige cursor salvo. Reinicie o ciclo se necessário.",
+                        )
+                    ]
+                    + _linhas_ciclo(sessao),
+                    status_label="Erro",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "erro", **_attrs_ciclo(sessao)},
+            )
+            return _garantir_sessao_cookie(resp, sessao)
+        cursor_para_sync = cursor_form
+        tipo_esperado = "incremental"
+
     try:
-        data = homolog.sincronizar_produtos(cursor_usado or None, max_paginas=50)
+        data = homolog.sincronizar_produtos(cursor_para_sync, max_paginas=50)
+        tipo_real = data.get("tipo") or tipo_esperado
+        if etapa >= 1 and tipo_real == "completa":
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [("Mensagem", "A etapa atual exige busca incremental com alterado_apos.")]
+                    + _linhas_ciclo(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo(sessao)},
+            )
+            return _garantir_sessao_cookie(resp, sessao)
+        if etapa >= 1 and not data.get("alterado_apos_enviado"):
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [("Mensagem", "alterado_apos não foi enviado na etapa incremental.")]
+                    + _linhas_ciclo(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo(sessao)},
+            )
+            return _garantir_sessao_cookie(resp, sessao)
+
         meta = {
-            "tipo": data.get("tipo"),
+            "tipo": tipo_real,
             "cursor_base": data.get("cursor_base"),
             "alterado_apos_enviado": data.get("alterado_apos_enviado"),
             "novo_cursor": data.get("novo_cursor"),
             "total_lote": data.get("total", 0),
         }
-        if data.get("tipo") == "completa":
-            estado = catalogo_produtos.substituir_completo(
+        # Completa substitui; incremental faz upsert (preserva catálogo)
+        if tipo_real == "completa":
+            catalogo_produtos.substituir_completo(
                 sessao, data.get("itens") or [], meta=meta
             )
         else:
-            estado = catalogo_produtos.upsert_incremental(
+            catalogo_produtos.upsert_incremental(
                 sessao, data.get("itens") or [], meta=meta
             )
-        tipo_label = "Completa" if data["tipo"] == "completa" else "Incremental"
-        cursor_base = data.get("cursor_base") or "—"
-        enviado = data.get("alterado_apos_enviado") or "—"
-        novo = data.get("novo_cursor") or "—"
+        try:
+            catalogo_produtos.registrar_sync_ciclo(sessao, tipo=tipo_real)
+        except ValueError as exc:
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [("Mensagem", str(exc))] + _linhas_ciclo(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo(sessao)},
+            )
+            return _garantir_sessao_cookie(resp, sessao)
+
+        estado = catalogo_produtos.obter(sessao)
         total = data.get("total", 0)
-        total_cat = len(estado.get("produtos") or {})
         resumo = _card(
             "Sincronização de produtos",
             [
                 ("Status da sincronização", "Concluída"),
-                ("Tipo da busca", tipo_label),
-                ("Cursor base salvo", cursor_base),
-                ("Alterado após enviado", enviado),
-                ("Novo cursor salvo", novo),
-                ("Total retornado", total),
-                ("Produtos no catálogo local", total_cat),
-            ],
+            ]
+            + _linhas_ciclo(sessao, estado)
+            + [("Total retornado no lote", total)],
             status_label="Status 200",
             css="ok",
         )
@@ -473,11 +611,12 @@ def acao_produtos_sincronizar(
                 "cursor-anterior": data.get("cursor_anterior") or "",
                 "cursor-base": data.get("cursor_base") or "",
                 "alterado-apos-enviado": data.get("alterado_apos_enviado") or "",
-                "tipo-busca": data.get("tipo") or "",
+                "tipo-busca": tipo_real,
                 "total": str(total),
-                "catalogo-total": str(total_cat),
-                "catalogo-modo": "replace" if data.get("tipo") == "completa" else "upsert",
+                "catalogo-total": str(len(estado.get("produtos") or {})),
+                "catalogo-modo": "replace" if tipo_real == "completa" else "upsert",
                 "status-sync": "concluida",
+                **_attrs_ciclo(sessao),
             },
         )
         resp = _set_cursor_cookie(resp, data.get("novo_cursor"))
@@ -486,7 +625,11 @@ def acao_produtos_sincronizar(
         html_erro = _erro_html(exc)
         resp = _wrap_result(
             html_erro,
-            extra_attrs={"status-sync": "erro", "http-status": str(exc.status_code or "")},
+            extra_attrs={
+                "status-sync": "erro",
+                "http-status": str(exc.status_code or ""),
+                **_attrs_ciclo(sessao),
+            },
         )
         if exc.status_code == 429:
             resp.status_code = 429
@@ -495,7 +638,10 @@ def acao_produtos_sincronizar(
             resp.status_code = 409
         return _garantir_sessao_cookie(resp, sessao)
     except Exception as exc:
-        resp = _wrap_result(_erro_html(exc), extra_attrs={"status-sync": "erro"})
+        resp = _wrap_result(
+            _erro_html(exc),
+            extra_attrs={"status-sync": "erro", **_attrs_ciclo(sessao)},
+        )
         return _garantir_sessao_cookie(resp, sessao)
 
 
@@ -506,10 +652,11 @@ def acao_produtos_localizar(
     nome: str = Form(""),
     catalogo_json: str = Form(""),
 ):
-    """Localiza pelo nome exato no catálogo local. Não chama Mercos nem altera cursor."""
+    """Localiza pelo nome exato no catálogo local. Não chama Mercos nem altera cursor/etapa."""
     _auth(request, token)
     sessao = _obter_ou_criar_sessao(request)
     _hidratar_catalogo_form(sessao, catalogo_json)
+    ciclo_antes = catalogo_produtos.obter_ciclo(sessao)
     nome_busca = (nome or "").strip()
     if not nome_busca:
         return _garantir_sessao_cookie(
@@ -536,10 +683,11 @@ def acao_produtos_localizar(
                         ("Nome buscado", nome_busca),
                         ("Produtos no catálogo local", catalogo_produtos.total(sessao)),
                     ]
-                    + _linhas_ultima_sync(estado),
+                    + _linhas_ciclo(sessao, estado),
                     status_label="Não encontrado",
                     css="erro",
-                )
+                ),
+                extra_attrs={"cursor-fixo": "1", **_attrs_ciclo(sessao)},
             ),
             sessao,
         )
@@ -558,7 +706,7 @@ def acao_produtos_localizar(
         ("Ativo", _ativo_produto(encontrado)),
         ("Origem", "Catálogo local sincronizado"),
     ]
-    linhas.extend(_linhas_ultima_sync(estado))
+    linhas.extend(_linhas_ciclo(sessao, estado))
     nota = ""
     if not no_ultimo_lote:
         nota = (
@@ -571,6 +719,10 @@ def acao_produtos_localizar(
         status_label="Encontrado",
         css="ok",
     )
+    # Garantir que etapa/ciclo não mudaram
+    ciclo_depois = catalogo_produtos.obter_ciclo(sessao)
+    if ciclo_antes.get("etapa_interna") != ciclo_depois.get("etapa_interna"):
+        catalogo_produtos._salvar_ciclo(sessao, ciclo_antes)
     resp = _wrap_result(
         nota + card + _html_patch_catalogo(sessao),
         extra_attrs={
@@ -578,9 +730,9 @@ def acao_produtos_localizar(
             "no-ultimo-lote": "1" if no_ultimo_lote else "0",
             "cursor-fixo": "1",
             "catalogo-total": str(catalogo_produtos.total(sessao)),
+            **_attrs_ciclo(sessao),
         },
     )
-    # Não altera cookie de cursor
     return _garantir_sessao_cookie(resp, sessao)
 
 

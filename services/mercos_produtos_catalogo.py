@@ -26,7 +26,40 @@ def _estado_vazio() -> dict[str, Any]:
             "novo_cursor": None,
             "total_lote": 0,
         },
+        "ciclo": _ciclo_vazio(),
     }
+
+
+def _ciclo_vazio() -> dict[str, Any]:
+    return {
+        "ativo": False,
+        "etapa_interna": 0,
+        "chamadas_completas": 0,
+        "chamadas_incrementais": 0,
+    }
+
+
+def _normalizar_ciclo(raw: Any) -> dict[str, Any]:
+    base = _ciclo_vazio()
+    if not isinstance(raw, dict):
+        return base
+    base["ativo"] = bool(raw.get("ativo"))
+    try:
+        etapa = int(raw.get("etapa_interna") or 0)
+    except (TypeError, ValueError):
+        etapa = 0
+    base["etapa_interna"] = max(0, min(3, etapa))
+    try:
+        base["chamadas_completas"] = max(0, int(raw.get("chamadas_completas") or 0))
+    except (TypeError, ValueError):
+        base["chamadas_completas"] = 0
+    try:
+        base["chamadas_incrementais"] = max(
+            0, int(raw.get("chamadas_incrementais") or 0)
+        )
+    except (TypeError, ValueError):
+        base["chamadas_incrementais"] = 0
+    return base
 
 
 def _normalizar_produto(item: dict) -> dict[str, Any] | None:
@@ -70,6 +103,77 @@ def limpar(sessao_id: str) -> None:
         _CATALOGOS.pop(sid, None)
 
 
+def obter_ciclo(sessao_id: str) -> dict[str, Any]:
+    return _normalizar_ciclo(obter(sessao_id).get("ciclo"))
+
+
+def ciclo_ativo(sessao_id: str) -> bool:
+    return bool(obter_ciclo(sessao_id).get("ativo"))
+
+
+def iniciar_ciclo(sessao_id: str) -> dict[str, Any]:
+    """Reinicia ciclo: limpa catálogo/cursor no servidor e define etapa 0."""
+    sid = (sessao_id or "").strip()
+    if not sid:
+        return _estado_vazio()
+    estado = _estado_vazio()
+    estado["ciclo"] = {
+        "ativo": True,
+        "etapa_interna": 0,
+        "chamadas_completas": 0,
+        "chamadas_incrementais": 0,
+    }
+    with _LOCK:
+        _CATALOGOS[sid] = estado
+        return deepcopy(estado)
+
+
+def _salvar_ciclo(sessao_id: str, ciclo: dict[str, Any]) -> dict[str, Any]:
+    sid = (sessao_id or "").strip()
+    with _LOCK:
+        estado = deepcopy(_CATALOGOS.get(sid) or _estado_vazio())
+        estado["ciclo"] = _normalizar_ciclo(ciclo)
+        _CATALOGOS[sid] = estado
+        return deepcopy(estado)
+
+
+def registrar_sync_ciclo(sessao_id: str, *, tipo: str) -> dict[str, Any]:
+    """Avança etapa após sync bem-sucedida (uma etapa por chamada)."""
+    ciclo = obter_ciclo(sessao_id)
+    if not ciclo.get("ativo"):
+        ciclo["ativo"] = True
+        ciclo["etapa_interna"] = 0
+        ciclo["chamadas_completas"] = 0
+        ciclo["chamadas_incrementais"] = 0
+    etapa = int(ciclo.get("etapa_interna") or 0)
+    if tipo == "completa":
+        if etapa != 0:
+            raise ValueError(
+                "Busca completa bloqueada: o ciclo já passou da etapa inicial."
+            )
+        ciclo["chamadas_completas"] = int(ciclo.get("chamadas_completas") or 0) + 1
+        ciclo["etapa_interna"] = 1
+    else:
+        if etapa < 1:
+            raise ValueError(
+                "Busca incremental inválida antes da etapa completa do ciclo."
+            )
+        ciclo["chamadas_incrementais"] = int(ciclo.get("chamadas_incrementais") or 0) + 1
+        if etapa < 3:
+            ciclo["etapa_interna"] = etapa + 1
+    ciclo["ativo"] = True
+    return _salvar_ciclo(sessao_id, ciclo)
+
+
+def _preservar_ciclo(estado_novo: dict[str, Any], sid: str) -> None:
+    with _LOCK:
+        prev = _CATALOGOS.get(sid)
+        if prev and isinstance(prev.get("ciclo"), dict):
+            estado_novo["ciclo"] = _normalizar_ciclo(prev.get("ciclo"))
+        elif "ciclo" not in estado_novo:
+            estado_novo["ciclo"] = _ciclo_vazio()
+
+
 def _aplicar_meta(estado: dict[str, Any], meta: dict[str, Any] | None) -> None:
     if not meta:
         return
@@ -111,7 +215,12 @@ def substituir_completo(
     meta_final.setdefault("tipo", "completa")
     meta_final.setdefault("total_lote", len(ids_lote))
     _aplicar_meta(estado, meta_final)
+    _preservar_ciclo(estado, sid)
     with _LOCK:
+        # _preservar_ciclo já leu o ciclo; reaplicar sob lock
+        prev = _CATALOGOS.get(sid)
+        if prev and isinstance(prev.get("ciclo"), dict):
+            estado["ciclo"] = _normalizar_ciclo(prev.get("ciclo"))
         _CATALOGOS[sid] = estado
         return deepcopy(estado)
 
@@ -149,11 +258,9 @@ def hidratar_se_vazio(
     sessao_id: str,
     payload: Any,
 ) -> dict[str, Any]:
-    """Recupera catálogo do cliente (localStorage) se o servidor estiver vazio."""
+    """Recupera catálogo/ciclo do cliente se o servidor estiver vazio (ex.: após F5)."""
     sid = (sessao_id or "").strip()
     atual = obter(sid)
-    if atual.get("produtos"):
-        return atual
     if payload is None or payload == "":
         return atual
     if isinstance(payload, str):
@@ -166,19 +273,43 @@ def hidratar_se_vazio(
             return atual
     if not isinstance(payload, dict):
         return atual
+
+    ciclo_cli = _normalizar_ciclo(payload.get("ciclo"))
+    ciclo_srv = _normalizar_ciclo(atual.get("ciclo"))
+
     produtos_src = payload.get("produtos")
     itens: list[dict] = []
     if isinstance(produtos_src, dict):
         itens = [v for v in produtos_src.values() if isinstance(v, dict)]
     elif isinstance(produtos_src, list):
         itens = [v for v in produtos_src if isinstance(v, dict)]
-    else:
-        return atual
-    if not itens:
-        return atual
-    meta = payload.get("ultima_sync") if isinstance(payload.get("ultima_sync"), dict) else None
-    # Hidrata como snapshot (não é sync Mercos): substitui só se vazio
-    return substituir_completo(sid, itens, meta=meta)
+
+    meta = (
+        payload.get("ultima_sync")
+        if isinstance(payload.get("ultima_sync"), dict)
+        else None
+    )
+
+    # Sem produtos no servidor: restaura do cliente
+    if not atual.get("produtos") and itens:
+        substituir_completo(sid, itens, meta=meta)
+        if ciclo_cli.get("ativo"):
+            _salvar_ciclo(sid, ciclo_cli)
+        return obter(sid)
+
+    # Servidor sem ciclo ativo, cliente tem: restaura só o ciclo (não reinicia)
+    if (not ciclo_srv.get("ativo")) and ciclo_cli.get("ativo"):
+        _salvar_ciclo(sid, ciclo_cli)
+        if meta:
+            with _LOCK:
+                estado = deepcopy(_CATALOGOS.get(sid) or _estado_vazio())
+                _aplicar_meta(estado, meta)
+                if payload.get("ids_ultimo_lote") and not estado.get("ids_ultimo_lote"):
+                    estado["ids_ultimo_lote"] = list(payload.get("ids_ultimo_lote") or [])
+                _CATALOGOS[sid] = estado
+        return obter(sid)
+
+    return obter(sid)
 
 
 def buscar_por_nome(
@@ -215,6 +346,7 @@ def snapshot_cliente(sessao_id: str) -> dict[str, Any]:
         "produtos": estado.get("produtos") or {},
         "ids_ultimo_lote": estado.get("ids_ultimo_lote") or [],
         "ultima_sync": estado.get("ultima_sync") or {},
+        "ciclo": _normalizar_ciclo(estado.get("ciclo")),
         "total": len(estado.get("produtos") or {}),
     }
 
@@ -232,6 +364,10 @@ def _reset_todos_para_testes() -> None:
 __all__ = [
     "obter",
     "limpar",
+    "obter_ciclo",
+    "ciclo_ativo",
+    "iniciar_ciclo",
+    "registrar_sync_ciclo",
     "substituir_completo",
     "upsert_incremental",
     "hidratar_se_vazio",
