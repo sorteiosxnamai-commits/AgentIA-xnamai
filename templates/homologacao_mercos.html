@@ -824,7 +824,13 @@
           fd.append(k, fields[k] == null ? "" : String(fields[k]));
         });
         if (btn) btn.disabled = true;
-        target.innerHTML = '<p class="loading">Carregando registros…</p>';
+        if (opts.entidade === "clientes" && opts.syncThrottle) {
+          target.innerHTML =
+            '<p class="loading">Aguardando limite da Mercos…<br>' +
+            '<span class="hint">Página atual: em andamento no servidor</span></p>';
+        } else {
+          target.innerHTML = '<p class="loading">Carregando registros…</p>';
+        }
         var controller = null;
         var abortTimer = null;
         try {
@@ -833,7 +839,6 @@
             body: fd,
             credentials: "same-origin"
           };
-          // Sync de clientes: timeout no browser + sem retry automático
           if (opts.entidade === "clientes" && opts.timeoutMs) {
             controller = typeof AbortController !== "undefined" ? new AbortController() : null;
             if (controller) {
@@ -844,11 +849,30 @@
             }
           }
           var resp = await fetch(url, fetchOpts);
-          if (resp.status === 429 && !(opts.entidade === "clientes" && opts.semRetry)) {
+
+          // Clientes sync: countdown explícito em 429, depois retoma (resume no servidor)
+          if (resp.status === 429 && opts.entidade === "clientes" && opts.syncThrottle) {
             var ra = parseFloat(resp.headers.get("Retry-After") || "10");
             if (!isFinite(ra) || ra < 0) ra = 10;
-            target.innerHTML = '<p class="loading">Limite da Mercos atingido. Aguardando ' + ra + 's…</p>';
-            await sleep(ra * 1000);
+            var paginaHdr = resp.headers.get("X-Mercos-Pagina") || "—";
+            var rest = Math.ceil(ra);
+            while (rest > 0) {
+              target.innerHTML =
+                '<div class="result-card pendente"><h4>Aguardando limite da Mercos</h4>' +
+                "<p>Segundos restantes: <strong>" + rest + "</strong></p>" +
+                "<p>Página atual: <strong>" + paginaHdr + "</strong></p></div>";
+              await sleep(1000);
+              rest -= 1;
+            }
+            target.innerHTML =
+              '<p class="loading">Aguardando limite da Mercos… retomando página ' +
+              paginaHdr + "…</p>";
+            resp = await fetch(url, fetchOpts);
+          } else if (resp.status === 429 && !(opts.entidade === "clientes" && opts.semRetry)) {
+            var ra2 = parseFloat(resp.headers.get("Retry-After") || "10");
+            if (!isFinite(ra2) || ra2 < 0) ra2 = 10;
+            target.innerHTML = '<p class="loading">Limite da Mercos atingido. Aguardando ' + ra2 + 's…</p>';
+            await sleep(ra2 * 1000);
             resp = await fetch(url, {
               method: "POST",
               body: fd,
@@ -1015,7 +1039,7 @@
               },
               resClientes,
               btnCliSincronizar,
-              { entidade: "clientes", semRetry: true, timeoutMs: 65000 }
+              { entidade: "clientes", syncThrottle: true, timeoutMs: 180000 }
             );
           } finally {
             clientesSyncBusy = false;

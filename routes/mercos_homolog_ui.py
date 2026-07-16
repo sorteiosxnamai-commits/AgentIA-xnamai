@@ -1061,6 +1061,7 @@ def acao_clientes_reiniciar(
     _auth(request, token)
     sessao = _obter_ou_criar_sessao_clientes(request)
     catalogo_clientes.iniciar_ciclo(sessao)
+    homolog._limpar_resumes_da_sessao(sessao)
     estado = catalogo_clientes.obter(sessao)
     mensagem = (
         '<div class="result-card ok">'
@@ -1134,7 +1135,9 @@ def acao_clientes_sincronizar(
         tipo_esperado = "incremental"
 
     try:
-        data = homolog.sincronizar_clientes(cursor_para_sync, max_paginas=20)
+        data = homolog.sincronizar_clientes(
+            cursor_para_sync, max_paginas=20, sessao_id=sessao
+        )
         tipo_real = data.get("tipo") or tipo_esperado
         if etapa >= 1 and tipo_real == "completa":
             resp = _wrap_result(
@@ -1245,6 +1248,40 @@ def acao_clientes_sincronizar(
         resp = _set_cursor_clientes_cookie(resp, data.get("novo_cursor"))
         return _garantir_sessao_clientes_cookie(resp, sessao)
     except MercosApiError as exc:
+        if exc.status_code == 429:
+            segundos = exc.retry_after
+            if segundos is None:
+                segundos = 10
+            try:
+                segundos = max(0, int(float(segundos)))
+            except (TypeError, ValueError):
+                segundos = 10
+            pagina_atual = exc.pagina if exc.pagina is not None else "—"
+            html_429 = _card(
+                "Aguardando limite da Mercos",
+                [
+                    ("Mensagem", "Aguardando limite da Mercos"),
+                    ("Segundos restantes", segundos),
+                    ("Página atual", pagina_atual),
+                ],
+                status_label="Aguardando",
+                css="pendente",
+            )
+            resp = _wrap_result(
+                html_429,
+                extra_attrs={
+                    "status-sync": "aguardando-429",
+                    "aguardando-mercos": "1",
+                    "segundos-espera": str(segundos),
+                    "pagina-atual": str(pagina_atual),
+                    "http-status": "429",
+                    **_attrs_ciclo_clientes(sessao),
+                },
+            )
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(segundos)
+            resp.headers["X-Mercos-Pagina"] = str(pagina_atual)
+            return _garantir_sessao_clientes_cookie(resp, sessao)
         html_erro = _erro_html(exc)
         resp = _wrap_result(
             html_erro,
@@ -1254,10 +1291,7 @@ def acao_clientes_sincronizar(
                 **_attrs_ciclo_clientes(sessao),
             },
         )
-        if exc.status_code == 429:
-            resp.status_code = 429
-            resp.headers["Retry-After"] = "10"
-        elif exc.status_code == 409:
+        if exc.status_code == 409:
             resp.status_code = 409
         elif exc.status_code == 504:
             resp.status_code = 504

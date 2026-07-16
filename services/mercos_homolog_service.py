@@ -102,6 +102,7 @@ def listar_clientes(
     paginacao_segura: bool = False,
     timeout_request: float | None = None,
     timeout_total: float | None = None,
+    sessao_id: str | None = None,
     **kw,
 ) -> dict:
     """GET /v1/clientes — repassa alterado_apos à Mercos (sem filtro local).
@@ -124,6 +125,7 @@ def listar_clientes(
                 else timeout_total
             ),
             params_extra=kw.get("params_extra"),
+            sessao_id=sessao_id,
         )
     params_extra = dict(kw.pop("params_extra", None) or {})
     if alterado_apos is not None and str(alterado_apos).strip():
@@ -260,11 +262,19 @@ CLIENTES_LOCK_TTL_SEGUNDOS = 120
 CLIENTES_MAX_PAGINAS_SYNC = 20
 CLIENTES_TIMEOUT_REQUEST_SEGUNDOS = 10
 CLIENTES_TIMEOUT_SYNC_SEGUNDOS = 60
+CLIENTES_TENTATIVAS_POR_PAGINA = 3
+CLIENTES_INTERVALO_ENTRE_PAGINAS = 1.0
+CLIENTES_BACKOFF_429 = (2.0, 5.0, 10.0)
 MOTIVO_PARADA_LOTE_VAZIO = "Lote vazio"
 MOTIVO_PARADA_REPETIDA = "Página repetida / nenhum registro novo"
 MOTIVO_PARADA_LIMITE = "Limite de páginas atingido"
 MOTIVO_PARADA_TIMEOUT = "Timeout da sincronização"
 MOTIVO_PARADA_FIM = "Todas as páginas lidas"
+MOTIVO_PARADA_THROTTLE = "Limite da Mercos (HTTP 429)"
+
+# Resume após 429 esgotado: continua da mesma página sem reiniciar o lote.
+_CLIENTES_RESUME: dict[str, dict[str, Any]] = {}
+_CLIENTES_RESUME_LOCK = threading.Lock()
 
 
 class _ExpiringLock:
@@ -332,6 +342,100 @@ def _ids_pagina(lote: list) -> list[Any]:
     return saida
 
 
+def _espera_por_429(tentativa: int, retry_after: float | None) -> float:
+    """Segundos de espera após um 429 (tentativa 0-based da falha atual)."""
+    if retry_after is not None:
+        try:
+            return max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            pass
+    idx = max(0, min(int(tentativa), len(CLIENTES_BACKOFF_429) - 1))
+    return float(CLIENTES_BACKOFF_429[idx])
+
+
+def _chave_resume_clientes(
+    sessao_id: str | None,
+    alterado_apos: str | None,
+) -> str:
+    return f"{(sessao_id or '').strip()}|{alterado_apos or ''}"
+
+
+def _salvar_resume_clientes(chave: str, estado: dict[str, Any]) -> None:
+    with _CLIENTES_RESUME_LOCK:
+        _CLIENTES_RESUME[chave] = dict(estado)
+
+
+def _carregar_resume_clientes(chave: str) -> dict[str, Any] | None:
+    with _CLIENTES_RESUME_LOCK:
+        raw = _CLIENTES_RESUME.get(chave)
+        return dict(raw) if isinstance(raw, dict) else None
+
+
+def _limpar_resume_clientes(chave: str) -> None:
+    with _CLIENTES_RESUME_LOCK:
+        _CLIENTES_RESUME.pop(chave, None)
+
+
+def _limpar_resumes_da_sessao(sessao_id: str) -> None:
+    prefix = f"{(sessao_id or '').strip()}|"
+    with _CLIENTES_RESUME_LOCK:
+        for chave in [k for k in _CLIENTES_RESUME if k.startswith(prefix)]:
+            _CLIENTES_RESUME.pop(chave, None)
+
+
+def _reset_resume_clientes_para_testes() -> None:
+    with _CLIENTES_RESUME_LOCK:
+        _CLIENTES_RESUME.clear()
+
+
+def _obter_lote_pagina_clientes(
+    *,
+    path: str,
+    params: dict[str, Any],
+    timeout: float,
+    pagina: int,
+) -> tuple[list[dict], float]:
+    """GET de uma página com até 3 tentativas e backoff/Retry-After.
+
+    Retorna (lote, segundos_esperados_em_429).
+    Em 429 esgotado, propaga MercosApiError com pagina e retry_after.
+    """
+    espera_total = 0.0
+    ultimo_retry: float | None = None
+    for tentativa in range(CLIENTES_TENTATIVAS_POR_PAGINA):
+        try:
+            payload = get_json(
+                path,
+                params=params,
+                timeout=timeout,
+                max_retries_429=0,  # throttling tratado aqui
+            )
+            lote = [i for i in _extrair_lista(payload) if isinstance(i, dict)]
+            return lote, espera_total
+        except MercosApiError as exc:
+            if exc.status_code == 504:
+                raise
+            if exc.status_code != 429:
+                raise
+            ultimo_retry = exc.retry_after
+            if tentativa >= CLIENTES_TENTATIVAS_POR_PAGINA - 1:
+                raise MercosApiError(
+                    "Mercos retornou 429 (throttling). Aguarde e tente novamente.",
+                    status_code=429,
+                    retry_after=_espera_por_429(tentativa, ultimo_retry),
+                    pagina=pagina,
+                ) from exc
+            espera = _espera_por_429(tentativa, ultimo_retry)
+            time.sleep(espera)
+            espera_total += espera
+    raise MercosApiError(
+        "Mercos retornou 429 (throttling). Aguarde e tente novamente.",
+        status_code=429,
+        retry_after=_espera_por_429(2, ultimo_retry),
+        pagina=pagina,
+    )
+
+
 def listar_clientes_paginado_seguro(
     *,
     alterado_apos: str | None = None,
@@ -340,8 +444,9 @@ def listar_clientes_paginado_seguro(
     timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
     timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
     params_extra: dict | None = None,
+    sessao_id: str | None = None,
 ) -> dict[str, Any]:
-    """Lista clientes com paradas anti-travamento (páginas repetidas / teto / timeout)."""
+    """Lista clientes com paradas anti-travamento e respeito a HTTP 429."""
     pagina = max(1, int(pagina_inicial or 1))
     limite = max(1, min(int(max_paginas or CLIENTES_MAX_PAGINAS_SYNC), CLIENTES_MAX_PAGINAS_SYNC))
     path = _path("clientes")
@@ -349,6 +454,7 @@ def listar_clientes_paginado_seguro(
     if alterado_apos is not None and str(alterado_apos).strip():
         extras["alterado_apos"] = str(alterado_apos).strip()
 
+    chave_resume = _chave_resume_clientes(sessao_id, extras.get("alterado_apos"))
     itens_brutos: list = []
     ids_vistos: set[str] = set()
     assinaturas: set[str] = set()
@@ -356,10 +462,21 @@ def listar_clientes_paginado_seguro(
     paginas_lidas = 0
     motivo = MOTIVO_PARADA_FIM
     status = "concluida"
+    espera_429_total = 0.0
     inicio = time.monotonic()
 
-    for _ in range(limite):
-        decorrido = time.monotonic() - inicio
+    resume = _carregar_resume_clientes(chave_resume) if sessao_id else None
+    if resume:
+        pagina = max(1, int(resume.get("pagina") or pagina))
+        itens_brutos = list(resume.get("itens") or [])
+        ids_vistos = set(str(x) for x in (resume.get("ids_vistos") or []))
+        assinaturas = set(resume.get("assinaturas") or [])
+        ids_pagina_anterior = resume.get("ids_pagina_anterior")
+        paginas_lidas = int(resume.get("paginas_lidas") or 0)
+
+    while paginas_lidas < limite:
+        # Tempo útil (ignora esperas de 429 no orçamento de sync)
+        decorrido = time.monotonic() - inicio - espera_429_total
         if decorrido >= timeout_total:
             motivo = MOTIVO_PARADA_TIMEOUT
             status = "timeout"
@@ -368,20 +485,34 @@ def listar_clientes_paginado_seguro(
         timeout_resto = max(0.5, min(timeout_request, timeout_total - decorrido))
         params = {"pagina": pagina, **extras}
         try:
-            payload = get_json(
-                path,
+            lote, espera_pag = _obter_lote_pagina_clientes(
+                path=path,
                 params=params,
                 timeout=timeout_resto,
-                max_retries_429=0,
+                pagina=pagina,
             )
+            espera_429_total += espera_pag
         except MercosApiError as exc:
             if exc.status_code == 504:
                 motivo = MOTIVO_PARADA_TIMEOUT
                 status = "timeout"
                 break
+            if exc.status_code == 429:
+                # Persiste progresso para continuar da mesma página no próximo clique/retry
+                _salvar_resume_clientes(
+                    chave_resume,
+                    {
+                        "pagina": pagina,
+                        "itens": itens_brutos,
+                        "ids_vistos": list(ids_vistos),
+                        "assinaturas": list(assinaturas),
+                        "ids_pagina_anterior": ids_pagina_anterior,
+                        "paginas_lidas": paginas_lidas,
+                    },
+                )
+                raise
             raise
 
-        lote = [i for i in _extrair_lista(payload) if isinstance(i, dict)]
         paginas_lidas += 1
 
         if not lote:
@@ -419,7 +550,9 @@ def listar_clientes_paginado_seguro(
             break
 
         pagina += 1
-        time.sleep(0.05)
+        time.sleep(CLIENTES_INTERVALO_ENTRE_PAGINAS)
+
+    _limpar_resume_clientes(chave_resume)
 
     itens = deduplicar_clientes_por_id_alteracao(itens_brutos)
     out: dict[str, Any] = {
@@ -431,6 +564,8 @@ def listar_clientes_paginado_seguro(
         "itens": itens,
         "motivo_parada": motivo,
         "status": status,
+        "espera_429_segundos": espera_429_total,
+        "pagina_atual": pagina,
     }
     if "alterado_apos" in extras:
         out["filtros"] = {"alterado_apos": extras["alterado_apos"]}
@@ -525,10 +660,12 @@ def sincronizar_clientes(
     sobreposicao_segundos: int = 1,
     timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
     timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    sessao_id: str | None = None,
 ) -> dict[str, Any]:
     """Uma sincronização Cliente GET com paginação anti-travamento.
 
-    Para em lote vazio, página repetida, sem IDs novos, teto de 20 páginas ou timeout.
+    Respeita HTTP 429 por página (Retry-After ou backoff 2/5/10, máx 3 tentativas).
+    Continua da página atual sem reiniciar o lote (resume após 429 esgotado).
     Lock liberado sempre no finally; locks > 2 min expiram.
     """
     if not _SYNC_CLIENTES_LOCK.acquire(blocking=False):
@@ -552,6 +689,7 @@ def sincronizar_clientes(
             max_paginas=max_paginas,
             timeout_request=timeout_request,
             timeout_total=timeout_total,
+            sessao_id=sessao_id,
         )
         itens = deduplicar_clientes_por_id_alteracao(data.get("itens") or [])
         total = len(itens)
@@ -575,6 +713,8 @@ def sincronizar_clientes(
             "filtros": data.get("filtros") or {},
             "status": status,
             "motivo_parada": data.get("motivo_parada") or MOTIVO_PARADA_FIM,
+            "espera_429_segundos": data.get("espera_429_segundos") or 0,
+            "pagina_atual": data.get("pagina_atual"),
         }
     finally:
         _SYNC_CLIENTES_LOCK.release()

@@ -28,10 +28,19 @@ MAX_RETRIES_429 = 3
 class MercosApiError(Exception):
     """Erro seguro da API Mercos (sem token)."""
 
-    def __init__(self, message: str, *, status_code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after: float | None = None,
+        pagina: int | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.message = message
+        self.retry_after = retry_after
+        self.pagina = pagina
 
 
 def _headers(application_token: str) -> dict[str, str]:
@@ -102,17 +111,24 @@ def request_mercos(
             if resp.status_code in (200, 201, 204):
                 return resp
             if resp.status_code == 429:
-                if tentativa < max_attempts - 1:
-                    retry_after = (resp.headers.get("Retry-After") or "").strip()
+                retry_raw = (resp.headers.get("Retry-After") or "").strip()
+                retry_val: float | None = None
+                if retry_raw:
                     try:
-                        espera = float(retry_after)
+                        retry_val = float(retry_raw)
                     except (TypeError, ValueError):
+                        retry_val = None
+                if tentativa < max_attempts - 1:
+                    if retry_val is not None:
+                        espera = retry_val
+                    else:
                         espera = 10.0 * (tentativa + 1)
                     time.sleep(max(0.0, espera))
                     continue
                 raise MercosApiError(
                     "Mercos retornou 429 (throttling). Aguarde e tente novamente.",
                     status_code=429,
+                    retry_after=retry_val,
                 )
             if resp.status_code == 401:
                 ultimo_401 = (resp.text or "")[:120]

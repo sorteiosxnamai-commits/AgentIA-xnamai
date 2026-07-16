@@ -1536,6 +1536,157 @@ def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
     assert html.split("mercos-clientes-catalogo-blob")[0].count("77eb21774dd340ff") == 1
 
 
+def test_clientes_throttle_respeita_retry_after(monkeypatch):
+    from services.mercos_homolog_service import (
+        _obter_lote_pagina_clientes,
+        _reset_resume_clientes_para_testes,
+    )
+    from services.mercos_api_client import MercosApiError
+
+    _reset_resume_clientes_para_testes()
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep",
+        lambda s: sleeps.append(float(s)),
+    )
+    n = {"c": 0}
+
+    def fake_get(path, *, params=None, **_kw):
+        n["c"] += 1
+        if n["c"] == 1:
+            raise MercosApiError("429", status_code=429, retry_after=7.0)
+        return [{"id": 1, "razao_social": "OK", "ultima_alteracao": "2026-07-15 10:00:00"}]
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    lote, espera = _obter_lote_pagina_clientes(
+        path="/v1/clientes",
+        params={"pagina": 2},
+        timeout=10,
+        pagina=2,
+    )
+    assert len(lote) == 1
+    assert sleeps == [7.0]
+    assert espera == 7.0
+
+
+def test_clientes_throttle_backoff_progressivo(monkeypatch):
+    from services.mercos_homolog_service import (
+        CLIENTES_BACKOFF_429,
+        _obter_lote_pagina_clientes,
+        _reset_resume_clientes_para_testes,
+    )
+    from services.mercos_api_client import MercosApiError
+
+    _reset_resume_clientes_para_testes()
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep",
+        lambda s: sleeps.append(float(s)),
+    )
+    n = {"c": 0}
+
+    def fake_get(path, *, params=None, **_kw):
+        n["c"] += 1
+        if n["c"] < 3:
+            raise MercosApiError("429", status_code=429, retry_after=None)
+        return [{"id": 9, "razao_social": "X", "ultima_alteracao": "2026-07-15 10:00:00"}]
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    lote, espera = _obter_lote_pagina_clientes(
+        path="/v1/clientes",
+        params={"pagina": 1},
+        timeout=10,
+        pagina=1,
+    )
+    assert len(lote) == 1
+    assert sleeps == [CLIENTES_BACKOFF_429[0], CLIENTES_BACKOFF_429[1]]
+    assert espera == sum(sleeps)
+
+
+def test_clientes_throttle_esgota_libera_lock_e_resume(client, monkeypatch):
+    from services import mercos_clientes_catalogo as cat
+    from services.mercos_homolog_service import (
+        _SYNC_CLIENTES_LOCK,
+        _carregar_resume_clientes,
+        _chave_resume_clientes,
+        _reset_resume_clientes_para_testes,
+    )
+    from services.mercos_api_client import MercosApiError
+
+    cat._reset_todos_para_testes()
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/clientes",
+    )
+
+    def always_429(path, *, params=None, **_kw):
+        raise MercosApiError("429", status_code=429, retry_after=3.0)
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", always_429)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert resp.status_code == 429
+    assert "Aguardando limite da Mercos" in resp.text
+    assert "Segundos restantes" in resp.text
+    assert "Página atual" in resp.text
+    assert resp.headers.get("Retry-After") == "3"
+    assert resp.headers.get("X-Mercos-Pagina") == "1"
+    # Lock liberado
+    assert _SYNC_CLIENTES_LOCK.acquire(blocking=False) is True
+    _SYNC_CLIENTES_LOCK.release()
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    resume = _carregar_resume_clientes(_chave_resume_clientes(sessao, None))
+    assert resume is not None
+    assert resume.get("pagina") == 1
+
+
+def test_clientes_intervalo_um_segundo_entre_paginas(monkeypatch):
+    from services.mercos_homolog_service import (
+        CLIENTES_INTERVALO_ENTRE_PAGINAS,
+        listar_clientes_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+
+    _reset_resume_clientes_para_testes()
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep",
+        lambda s: sleeps.append(float(s)),
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/clientes",
+    )
+
+    def fake_get(path, *, params=None, **_kw):
+        pagina = int((params or {}).get("pagina") or 1)
+        if pagina <= 2:
+            return [
+                {
+                    "id": pagina,
+                    "razao_social": f"C{pagina}",
+                    "ultima_alteracao": f"2026-07-15 10:0{pagina}:00",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    out = listar_clientes_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert out["total"] == 2
+    assert CLIENTES_INTERVALO_ENTRE_PAGINAS in sleeps
+
+
 def test_clientes_sync_para_em_pagina_repetida(client, monkeypatch):
     from services import mercos_clientes_catalogo as cat
     from services.mercos_homolog_service import MOTIVO_PARADA_REPETIDA
