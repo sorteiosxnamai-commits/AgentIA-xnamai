@@ -240,6 +240,15 @@ def test_homologacao_ui_tem_15_secoes_obrigatorias(client, monkeypatch):
     assert "Busca completa bloqueada durante a homologação" in body
     assert "Produto — Cadastrar" in body
     assert 'data-action="/mercos/homologacao-ui/acoes/produtos-criar"' in body
+    assert "Localizar cliente pela razão social" in body
+    assert "mercos_clientes_cursor" in body
+    assert "mercos_clientes_catalogo" in body
+    assert "btn-clientes-sincronizar" in body
+    assert "btn-clientes-buscar" in body
+    assert "btn-clientes-reiniciar" in body
+    assert "btn-clientes-localizar" in body
+    assert body.count("Sincronizar próxima etapa") >= 2
+    assert body.count("Reiniciar ciclo de sincronização") >= 2
 
 
 def test_acao_produtos_criar_sucesso_sem_interferir_ciclo(client, monkeypatch):
@@ -969,6 +978,373 @@ def test_produtos_reiniciar_ciclo_nao_chama_mercos(client, monkeypatch):
     assert "data-ciclo-ativo=\"1\"" in resp.text
     called.assert_not_called()
     sessao = client.cookies.get("mercos_produtos_sessao")
+    assert cat.total(sessao) == 0
+    assert cat.obter_ciclo(sessao)["etapa_interna"] == 0
+
+
+def test_clientes_sync_primeira_sem_alterado_apos(client, monkeypatch):
+    from services import mercos_clientes_catalogo as cat
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    capturado: dict = {}
+
+    def fake_listar(**kwargs):
+        capturado["kwargs"] = dict(kwargs)
+        return {
+            "ok": True,
+            "path": "/v1/clientes",
+            "total": 2,
+            "itens": [
+                {
+                    "id": 1,
+                    "razao_social": "Cliente Antigo",
+                    "nome_fantasia": "Antigo",
+                    "email": "a@test.com",
+                    "ultima_alteracao": "2026-07-14 10:00:00",
+                    "ativo": True,
+                },
+                {
+                    "id": 2,
+                    "razao_social": "77eb21774dd340ff",
+                    "nome_fantasia": "Homolog",
+                    "cnpj": "123",
+                    "email": "h@test.com",
+                    "ultima_alteracao": "2026-07-15 12:30:00",
+                    "ativo": True,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_clientes", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert resp.status_code == 200
+    assert capturado["kwargs"].get("alterado_apos") in (None, "")
+    html = resp.text
+    assert "Tipo da última busca" in html
+    assert "Completa" in html
+    assert "Etapa interna" in html
+    assert "1/3" in html
+    assert "Chamadas completas no ciclo" in html
+    assert "Novo cursor" in html
+    assert "2026-07-15 12:30:00" in html
+    from urllib.parse import unquote
+
+    cookie_raw = (resp.cookies.get("mercos_clientes_cursor") or "").strip('"')
+    assert unquote(cookie_raw) == "2026-07-15 12:30:00"
+    assert "data-novo-cursor=\"2026-07-15 12:30:00\"" in html
+    assert '"itens"' not in html
+
+
+def test_clientes_sync_etapas_2_e_3_com_alterado_apos(client, monkeypatch):
+    from services import mercos_clientes_catalogo as cat
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    chamadas = []
+
+    def fake_listar(**kwargs):
+        chamadas.append(dict(kwargs))
+        n = len(chamadas)
+        if n == 1:
+            return {
+                "ok": True,
+                "total": 1,
+                "itens": [
+                    {
+                        "id": 1,
+                        "razao_social": "A",
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                        "ativo": True,
+                    }
+                ],
+            }
+        return {
+            "ok": True,
+            "total": 1,
+            "itens": [
+                {
+                    "id": 2,
+                    "razao_social": "77eb21774dd340ff",
+                    "ultima_alteracao": f"2026-07-15 11:0{n}:00",
+                    "ativo": True,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_clientes", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+
+    bloqueado = client.post("/mercos/homologacao-ui/acoes/clientes-buscar")
+    assert bloqueado.status_code == 200
+    assert "Busca completa bloqueada durante a homologação" in bloqueado.text
+    assert len(chamadas) == 0
+
+    r1 = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert r1.status_code == 200
+    assert chamadas[0].get("alterado_apos") in (None, "")
+    assert "1/3" in r1.text
+
+    r2 = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-sincronizar",
+        data={"cursor": "2026-07-15 10:00:00"},
+    )
+    assert r2.status_code == 200
+    assert chamadas[1].get("alterado_apos") == "2026-07-15 09:59:59"
+    assert "2/3" in r2.text
+    assert "Incremental" in r2.text
+
+    r3 = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-sincronizar",
+        data={"cursor": "2026-07-15 11:02:00"},
+    )
+    assert r3.status_code == 200
+    assert chamadas[2].get("alterado_apos")
+    assert "3/3" in r3.text
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    ciclo = cat.obter_ciclo(sessao)
+    assert ciclo["chamadas_completas"] == 1
+    assert ciclo["chamadas_incrementais"] == 2
+    assert ciclo["etapa_interna"] == 3
+
+
+def test_clientes_catalogo_completa_salva_e_incremental_preserva(client, monkeypatch):
+    from services import mercos_clientes_catalogo as cat
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    fases = {"n": 0}
+
+    def fake_listar(**kwargs):
+        fases["n"] += 1
+        if fases["n"] == 1:
+            return {
+                "ok": True,
+                "total": 2,
+                "itens": [
+                    {
+                        "id": 1,
+                        "razao_social": "Cliente Base",
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                        "ativo": True,
+                    },
+                    {
+                        "id": 2,
+                        "razao_social": "Outro",
+                        "ultima_alteracao": "2026-07-15 11:00:00",
+                        "ativo": True,
+                    },
+                ],
+            }
+        return {
+            "ok": True,
+            "total": 1,
+            "itens": [
+                {
+                    "id": 3,
+                    "razao_social": "77eb21774dd340ff",
+                    "ultima_alteracao": "2026-07-16 08:00:00",
+                    "ativo": True,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_clientes", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    r1 = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert r1.status_code == 200
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    assert cat.total(sessao) == 2
+    assert "Clientes no catálogo acumulado" in r1.text
+
+    r2 = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-sincronizar",
+        data={"cursor": "2026-07-15 11:00:00"},
+    )
+    assert r2.status_code == 200
+    assert cat.total(sessao) == 3
+    assert "77eb21774dd340ff" in r2.text
+    estado = cat.obter(sessao)
+    assert "1" in estado["clientes"]
+    assert "2" in estado["clientes"]
+    assert "3" in estado["clientes"]
+
+
+def test_clientes_localizar_nao_chama_api_nem_altera_cursor(client, monkeypatch):
+    from services import mercos_clientes_catalogo as cat
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+
+    def fake_listar(**kwargs):
+        return {
+            "ok": True,
+            "total": 2,
+            "itens": [
+                {
+                    "id": 10,
+                    "razao_social": "Cliente Velho",
+                    "nome_fantasia": "Velho",
+                    "cnpj": "00",
+                    "email": "v@test.com",
+                    "ultima_alteracao": "2026-07-14 10:00:00",
+                    "ativo": True,
+                },
+                {
+                    "id": 11,
+                    "razao_social": "77eb21774dd340ff",
+                    "nome_fantasia": "Homolog Cli",
+                    "cnpj": "11.111.111/0001-11",
+                    "email": "homolog@test.com",
+                    "ultima_alteracao": "2026-07-15 11:00:00",
+                    "ativo": True,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_clientes", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    sync = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert sync.status_code == 200
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    assert cat.obter_ciclo(sessao)["chamadas_completas"] == 1
+
+    api = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_clientes", api
+    )
+    cursor_antes = client.cookies.get("mercos_clientes_cursor")
+    etapa_antes = cat.obter_ciclo(sessao)["etapa_interna"]
+    loc = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-localizar",
+        data={"razao_social": "77eb21774dd340ff"},
+    )
+    assert loc.status_code == 200
+    html = loc.text
+    assert "Cliente localizado" in html
+    assert "77eb21774dd340ff" in html
+    assert "Homolog Cli" in html
+    assert "11.111.111/0001-11" in html
+    assert "homolog@test.com" in html
+    assert "Catálogo local sincronizado" in html
+    assert "Origem" in html
+    api.assert_not_called()
+    assert client.cookies.get("mercos_clientes_cursor") == cursor_antes
+    assert cat.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+    assert cat.obter_ciclo(sessao)["chamadas_completas"] == 1
+
+
+def test_clientes_recarregar_nao_reinicia_ciclo(client, monkeypatch):
+    """Simula F5: memória limpa no servidor, cliente reidrata ciclo via localStorage."""
+    from services import mercos_clientes_catalogo as cat
+    import json
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+
+    def fake_listar(**kwargs):
+        return {
+            "ok": True,
+            "total": 1,
+            "itens": [
+                {
+                    "id": 1,
+                    "razao_social": "keep",
+                    "ultima_alteracao": "2026-07-15 10:00:00",
+                    "ativo": True,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_clientes", fake_listar
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    r1 = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
+    assert r1.status_code == 200
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    snap = cat.snapshot_sessao(sessao)
+    assert snap["ciclo"]["ativo"] is True
+    assert snap["ciclo"]["etapa_interna"] == 1
+
+    # Simula F5 limpando memória do servidor
+    cat._reset_todos_para_testes()
+    assert cat.obter_ciclo(sessao)["ativo"] is False
+
+    r2 = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-sincronizar",
+        data={
+            "cursor": "2026-07-15 10:00:00",
+            "catalogo_json": json.dumps(snap),
+        },
+    )
+    assert r2.status_code == 200
+    assert "2/3" in r2.text
+    assert cat.obter_ciclo(sessao)["chamadas_completas"] == 1
+    assert cat.obter_ciclo(sessao)["chamadas_incrementais"] == 1
+
+
+def test_clientes_reiniciar_ciclo_nao_chama_mercos(client, monkeypatch):
+    from services import mercos_clientes_catalogo as cat
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_clientes", called
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    assert resp.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in resp.text
+    assert "0/3" in resp.text
+    assert "data-ciclo-ativo=\"1\"" in resp.text
+    called.assert_not_called()
+    sessao = client.cookies.get("mercos_clientes_sessao")
     assert cat.total(sessao) == 0
     assert cat.obter_ciclo(sessao)["etapa_interna"] == 0
 

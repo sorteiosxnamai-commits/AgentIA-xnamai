@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from services import mercos_homolog_service as homolog
+from services import mercos_clientes_catalogo as catalogo_clientes
 from services import mercos_produtos_catalogo as catalogo_produtos
 from services.mercos_api_client import MercosApiError
 from services.mercos_service import mercos_ambiente_sandbox, mercos_configurado
@@ -33,6 +34,8 @@ _COOKIE = "mercos_homolog_ui"
 _COOKIE_MAX_AGE = 60 * 60 * 8
 _COOKIE_PRODUTOS_CURSOR = "mercos_produtos_cursor"
 _COOKIE_PRODUTOS_SESSAO = "mercos_produtos_sessao"
+_COOKIE_CLIENTES_CURSOR = "mercos_clientes_cursor"
+_COOKIE_CLIENTES_SESSAO = "mercos_clientes_sessao"
 _CURSOR_MAX_AGE = 60 * 60 * 24 * 30
 _SESSAO_MAX_AGE = 60 * 60 * 24 * 30
 
@@ -393,6 +396,137 @@ def _ativo_produto(item: dict) -> str:
     if "excluido" in item:
         return "Não" if item.get("excluido") else "Sim"
     return "—"
+
+
+def _cursor_clientes(request: Request, cursor_form: str = "") -> str:
+    form = (cursor_form or "").strip()
+    if form:
+        return form
+    raw = (request.cookies.get(_COOKIE_CLIENTES_CURSOR) or "").strip().strip('"')
+    if not raw:
+        return ""
+    try:
+        return unquote(raw)
+    except Exception:
+        return raw
+
+
+def _set_cursor_clientes_cookie(resp: HTMLResponse, cursor: str | None) -> HTMLResponse:
+    valor = (cursor or "").strip()
+    if valor:
+        resp.set_cookie(
+            key=_COOKIE_CLIENTES_CURSOR,
+            value=quote(valor, safe=""),
+            httponly=False,
+            max_age=_CURSOR_MAX_AGE,
+            samesite="lax",
+        )
+    else:
+        resp.delete_cookie(_COOKIE_CLIENTES_CURSOR)
+    return resp
+
+
+def _sessao_clientes(request: Request) -> str:
+    return (request.cookies.get(_COOKIE_CLIENTES_SESSAO) or "").strip()
+
+
+def _garantir_sessao_clientes_cookie(resp: HTMLResponse, sessao_id: str) -> HTMLResponse:
+    resp.set_cookie(
+        key=_COOKIE_CLIENTES_SESSAO,
+        value=sessao_id,
+        httponly=False,
+        max_age=_SESSAO_MAX_AGE,
+        samesite="lax",
+    )
+    return resp
+
+
+def _obter_ou_criar_sessao_clientes(request: Request) -> str:
+    existente = _sessao_clientes(request)
+    if existente:
+        return existente
+    return uuid.uuid4().hex
+
+
+def _hidratar_catalogo_clientes_form(sessao_id: str, catalogo_json: str = "") -> None:
+    catalogo_clientes.hidratar_se_vazio(sessao_id, catalogo_json or "")
+
+
+def _html_patch_catalogo_clientes(sessao_id: str) -> str:
+    snap = catalogo_clientes.snapshot_sessao(sessao_id)
+    blob = html.escape(json.dumps(snap, ensure_ascii=False, separators=(",", ":")))
+    return (
+        f'<textarea class="mercos-clientes-catalogo-blob" hidden readonly '
+        f'aria-hidden="true">{blob}</textarea>'
+    )
+
+
+def _linhas_ciclo_clientes(
+    sessao_id: str, estado: dict[str, Any] | None = None
+) -> list[tuple[str, Any]]:
+    estado = estado or catalogo_clientes.obter(sessao_id)
+    ciclo = catalogo_clientes.obter_ciclo(sessao_id)
+    sync = (estado or {}).get("ultima_sync") or {}
+    tipo = sync.get("tipo")
+    tipo_label = (
+        "Completa"
+        if tipo == "completa"
+        else ("Incremental" if tipo == "incremental" else (tipo or "—"))
+    )
+    etapa = int(ciclo.get("etapa_interna") or 0)
+    return [
+        ("Etapa interna", f"{etapa}/3"),
+        ("Tipo da última busca", tipo_label),
+        ("Cursor base", sync.get("cursor_base") or "—"),
+        ("alterado_apos enviado", sync.get("alterado_apos_enviado") or "—"),
+        ("Novo cursor", sync.get("novo_cursor") or "—"),
+        ("Clientes no catálogo acumulado", len((estado or {}).get("clientes") or {})),
+        ("Chamadas completas no ciclo", ciclo.get("chamadas_completas") or 0),
+        ("Chamadas incrementais no ciclo", ciclo.get("chamadas_incrementais") or 0),
+    ]
+
+
+def _attrs_ciclo_clientes(sessao_id: str) -> dict[str, str]:
+    ciclo = catalogo_clientes.obter_ciclo(sessao_id)
+    return {
+        "ciclo-ativo": "1" if ciclo.get("ativo") else "0",
+        "etapa-interna": str(ciclo.get("etapa_interna") or 0),
+        "chamadas-completas": str(ciclo.get("chamadas_completas") or 0),
+        "chamadas-incrementais": str(ciclo.get("chamadas_incrementais") or 0),
+        "bloquear-busca-completa": "1" if ciclo.get("ativo") else "0",
+    }
+
+
+def _html_tabela_clientes(itens: list) -> str:
+    rows = []
+    for item in itens or []:
+        ativo = _ativo_produto(item) if isinstance(item, dict) else "—"
+        rows.append(
+            [
+                _campo(item, "id"),
+                _campo(item, "razao_social", "nome"),
+                _campo(item, "nome_fantasia", "fantasia"),
+                _campo(item, "cnpj"),
+                _campo(item, "email"),
+                ativo,
+                item.get("ultima_alteracao")
+                if isinstance(item, dict)
+                and item.get("ultima_alteracao") not in (None, "")
+                else "—",
+            ]
+        )
+    return _table(
+        [
+            "ID",
+            "Razão social",
+            "Nome fantasia",
+            "CNPJ",
+            "E-mail",
+            "Ativo",
+            "Última alteração",
+        ],
+        rows,
+    )
 
 
 @router.post("/homologacao-ui/acoes/produtos", response_class=HTMLResponse)
@@ -871,24 +1005,336 @@ def acao_categorias(request: Request, token: str = Form("")):
 
 
 @router.post("/homologacao-ui/acoes/clientes-buscar", response_class=HTMLResponse)
-def acao_clientes_buscar(request: Request, token: str = Form("")):
+def acao_clientes_buscar(
+    request: Request,
+    token: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Busca simples — bloqueada durante ciclo ativo de homologação."""
     _auth(request, token)
+    sessao = _obter_ou_criar_sessao_clientes(request)
+    _hidratar_catalogo_clientes_form(sessao, catalogo_json)
+    if catalogo_clientes.ciclo_ativo(sessao):
+        resp = _wrap_result(
+            _card(
+                "Busca completa bloqueada durante a homologação",
+                [
+                    (
+                        "Mensagem",
+                        "Use apenas «Sincronizar próxima etapa» durante o ciclo ativo.",
+                    )
+                ]
+                + _linhas_ciclo_clientes(sessao),
+                status_label="Bloqueado",
+                css="erro",
+            ),
+            extra_attrs={
+                "status-sync": "bloqueado",
+                **_attrs_ciclo_clientes(sessao),
+            },
+        )
+        return _garantir_sessao_clientes_cookie(resp, sessao)
     try:
         data = homolog.listar_clientes(pagina_inicial=1, max_paginas=3)
-        rows = [
-            [
-                _campo(i, "id"),
-                _campo(i, "razao_social", "nome"),
-                _campo(i, "nome_fantasia", "fantasia"),
-                _campo(i, "email"),
-            ]
-            for i in (data.get("itens") or [])
-        ]
-        table = _table(["ID", "Razão Social", "Nome Fantasia", "Email"], rows)
-        head = f'<p class="meta">Total: <strong>{_esc(data.get("total", 0))}</strong> · Status: <strong>200</strong></p>'
-        return _wrap_result(head + table)
+        table = _html_tabela_clientes(data.get("itens") or [])
+        head = (
+            f'<p class="meta">Total: <strong>{_esc(data.get("total", 0))}</strong>'
+            " · Status: <strong>200</strong></p>"
+        )
+        resp = _wrap_result(head + table, extra_attrs=_attrs_ciclo_clientes(sessao))
+        return _garantir_sessao_clientes_cookie(resp, sessao)
     except Exception as exc:
-        return _wrap_result(_erro_html(exc))
+        resp = _wrap_result(_erro_html(exc))
+        return _garantir_sessao_clientes_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/clientes-reiniciar", response_class=HTMLResponse)
+def acao_clientes_reiniciar(
+    request: Request,
+    token: str = Form(""),
+):
+    """Apaga cursor e catálogo de clientes, inicia ciclo na etapa 0 — sem chamar a Mercos."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_clientes(request)
+    catalogo_clientes.iniciar_ciclo(sessao)
+    estado = catalogo_clientes.obter(sessao)
+    mensagem = (
+        '<div class="result-card ok">'
+        "<h4>Ciclo de sincronização reiniciado</h4>"
+        "<p>Cursor e catálogo anteriores apagados. Novo ciclo ativo na etapa 0. "
+        "Use «Sincronizar próxima etapa» para a busca completa.</p>"
+        "</div>"
+    )
+    resumo = _card(
+        "Estado do ciclo",
+        _linhas_ciclo_clientes(sessao, estado),
+        status_label="Ciclo ativo",
+        css="ok",
+    )
+    resp = _wrap_result(
+        mensagem + resumo + _html_patch_catalogo_clientes(sessao),
+        extra_attrs={
+            "novo-cursor": "",
+            "cursor-limpo": "1",
+            "catalogo-limpo": "1",
+            "status-sync": "reiniciado",
+            "catalogo-total": "0",
+            **_attrs_ciclo_clientes(sessao),
+        },
+    )
+    resp = _set_cursor_clientes_cookie(resp, None)
+    return _garantir_sessao_clientes_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/clientes-sincronizar", response_class=HTMLResponse)
+def acao_clientes_sincronizar(
+    request: Request,
+    token: str = Form(""),
+    cursor: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Única ação que chama a Mercos no ciclo: etapa 0 completa; 1 e 2 incrementais."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_clientes(request)
+    _hidratar_catalogo_clientes_form(sessao, catalogo_json)
+    ciclo = catalogo_clientes.obter_ciclo(sessao)
+    if not ciclo.get("ativo"):
+        catalogo_clientes.iniciar_ciclo(sessao)
+        ciclo = catalogo_clientes.obter_ciclo(sessao)
+
+    etapa = int(ciclo.get("etapa_interna") or 0)
+    cursor_form = _cursor_clientes(request, cursor)
+
+    if etapa == 0:
+        cursor_para_sync = None
+        tipo_esperado = "completa"
+    else:
+        if not cursor_form:
+            resp = _wrap_result(
+                _card(
+                    "Cursor ausente",
+                    [
+                        (
+                            "Mensagem",
+                            "Etapa incremental exige cursor salvo. Reinicie o ciclo se necessário.",
+                        )
+                    ]
+                    + _linhas_ciclo_clientes(sessao),
+                    status_label="Erro",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "erro", **_attrs_ciclo_clientes(sessao)},
+            )
+            return _garantir_sessao_clientes_cookie(resp, sessao)
+        cursor_para_sync = cursor_form
+        tipo_esperado = "incremental"
+
+    try:
+        data = homolog.sincronizar_clientes(cursor_para_sync, max_paginas=50)
+        tipo_real = data.get("tipo") or tipo_esperado
+        if etapa >= 1 and tipo_real == "completa":
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [
+                        (
+                            "Mensagem",
+                            "A etapa atual exige busca incremental com alterado_apos.",
+                        )
+                    ]
+                    + _linhas_ciclo_clientes(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo_clientes(sessao)},
+            )
+            return _garantir_sessao_clientes_cookie(resp, sessao)
+        if etapa >= 1 and not data.get("alterado_apos_enviado"):
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [
+                        (
+                            "Mensagem",
+                            "alterado_apos não foi enviado na etapa incremental.",
+                        )
+                    ]
+                    + _linhas_ciclo_clientes(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo_clientes(sessao)},
+            )
+            return _garantir_sessao_clientes_cookie(resp, sessao)
+
+        meta = {
+            "tipo": tipo_real,
+            "cursor_base": data.get("cursor_base"),
+            "alterado_apos_enviado": data.get("alterado_apos_enviado"),
+            "novo_cursor": data.get("novo_cursor"),
+            "total_lote": data.get("total", 0),
+        }
+        if tipo_real == "completa":
+            catalogo_clientes.substituir_completo(
+                sessao, data.get("itens") or [], meta=meta
+            )
+        else:
+            catalogo_clientes.upsert_incremental(
+                sessao, data.get("itens") or [], meta=meta
+            )
+        try:
+            catalogo_clientes.registrar_sync_ciclo(sessao, tipo=tipo_real)
+        except ValueError as exc:
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [("Mensagem", str(exc))] + _linhas_ciclo_clientes(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo_clientes(sessao)},
+            )
+            return _garantir_sessao_clientes_cookie(resp, sessao)
+
+        estado = catalogo_clientes.obter(sessao)
+        total = data.get("total", 0)
+        resumo = _card(
+            "Sincronização de clientes",
+            [
+                ("Status da sincronização", "Concluída"),
+                ("Total retornado no lote", total),
+            ]
+            + _linhas_ciclo_clientes(sessao, estado),
+            status_label="Status 200",
+            css="ok",
+        )
+        table = _html_tabela_clientes(data.get("itens") or [])
+        resp = _wrap_result(
+            resumo + table + _html_patch_catalogo_clientes(sessao),
+            extra_attrs={
+                "novo-cursor": data.get("novo_cursor") or "",
+                "cursor-anterior": data.get("cursor_anterior") or "",
+                "cursor-base": data.get("cursor_base") or "",
+                "alterado-apos-enviado": data.get("alterado_apos_enviado") or "",
+                "tipo-busca": tipo_real,
+                "total": str(total),
+                "catalogo-total": str(len(estado.get("clientes") or {})),
+                "catalogo-modo": "replace" if tipo_real == "completa" else "upsert",
+                "status-sync": "concluida",
+                **_attrs_ciclo_clientes(sessao),
+            },
+        )
+        resp = _set_cursor_clientes_cookie(resp, data.get("novo_cursor"))
+        return _garantir_sessao_clientes_cookie(resp, sessao)
+    except MercosApiError as exc:
+        html_erro = _erro_html(exc)
+        resp = _wrap_result(
+            html_erro,
+            extra_attrs={
+                "status-sync": "erro",
+                "http-status": str(exc.status_code or ""),
+                **_attrs_ciclo_clientes(sessao),
+            },
+        )
+        if exc.status_code == 429:
+            resp.status_code = 429
+            resp.headers["Retry-After"] = "10"
+        elif exc.status_code == 409:
+            resp.status_code = 409
+        return _garantir_sessao_clientes_cookie(resp, sessao)
+    except Exception as exc:
+        resp = _wrap_result(
+            _erro_html(exc),
+            extra_attrs={"status-sync": "erro", **_attrs_ciclo_clientes(sessao)},
+        )
+        return _garantir_sessao_clientes_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/clientes-localizar", response_class=HTMLResponse)
+def acao_clientes_localizar(
+    request: Request,
+    token: str = Form(""),
+    razao_social: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Localiza pela razão social exata no catálogo local. Não chama Mercos nem altera cursor."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_clientes(request)
+    _hidratar_catalogo_clientes_form(sessao, catalogo_json)
+    ciclo_antes = catalogo_clientes.obter_ciclo(sessao)
+    busca = (razao_social or "").strip()
+    if not busca:
+        return _garantir_sessao_clientes_cookie(
+            _wrap_result(
+                _card(
+                    "Localizar cliente",
+                    [("Mensagem", "Informe a razão social exata do cliente.")],
+                    status_label="Atenção",
+                    css="erro",
+                )
+            ),
+            sessao,
+        )
+
+    encontrado, no_ultimo_lote, estado = catalogo_clientes.buscar_por_razao_social(
+        sessao, busca
+    )
+    if not encontrado:
+        return _garantir_sessao_clientes_cookie(
+            _wrap_result(
+                _card(
+                    "Cliente não encontrado",
+                    [
+                        ("Razão social buscada", busca),
+                        ("Clientes no catálogo local", catalogo_clientes.total(sessao)),
+                    ]
+                    + _linhas_ciclo_clientes(sessao, estado),
+                    status_label="Não encontrado",
+                    css="erro",
+                ),
+                extra_attrs={"cursor-fixo": "1", **_attrs_ciclo_clientes(sessao)},
+            ),
+            sessao,
+        )
+
+    ultima = encontrado.get("ultima_alteracao")
+    if ultima is None or ultima == "":
+        ultima = "—"
+    linhas: list[tuple[str, Any]] = [
+        ("ID", encontrado.get("id")),
+        ("Razão social", encontrado.get("razao_social")),
+        ("Nome fantasia", encontrado.get("nome_fantasia") or "—"),
+        ("CNPJ", encontrado.get("cnpj") or "—"),
+        ("E-mail", encontrado.get("email") or "—"),
+        ("Ativo", _ativo_produto(encontrado)),
+        ("Última alteração", ultima),
+        ("Origem", "Catálogo local sincronizado"),
+    ]
+    linhas.extend(_linhas_ciclo_clientes(sessao, estado))
+    nota = ""
+    if not no_ultimo_lote:
+        nota = (
+            '<p class="hint">Cliente localizado no catálogo do ERP; '
+            "não veio no último lote incremental.</p>"
+        )
+    card = _card(
+        "Cliente localizado",
+        linhas,
+        status_label="Encontrado",
+        css="ok",
+    )
+    ciclo_depois = catalogo_clientes.obter_ciclo(sessao)
+    if ciclo_antes.get("etapa_interna") != ciclo_depois.get("etapa_interna"):
+        catalogo_clientes._salvar_ciclo(sessao, ciclo_antes)
+    resp = _wrap_result(
+        nota + card + _html_patch_catalogo_clientes(sessao),
+        extra_attrs={
+            "status-sync": "localizado",
+            "cursor-fixo": "1",
+            **_attrs_ciclo_clientes(sessao),
+        },
+    )
+    return _garantir_sessao_clientes_cookie(resp, sessao)
 
 
 @router.post("/homologacao-ui/acoes/clientes-criar", response_class=HTMLResponse)

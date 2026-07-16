@@ -312,9 +312,28 @@
         <!-- 3 -->
         <section class="panel" id="sec-clientes-buscar" data-homolog-sec="cliente-buscar">
           <h2>Cliente — Buscar</h2>
-          <p class="hint">Razão social, nome fantasia e e-mail.</p>
+          <p class="hint">Ciclo de homologação em 3 etapas. Use somente «Sincronizar próxima etapa» durante o ciclo ativo. «Buscar clientes» fica bloqueado para não invalidar a evidência.</p>
           <div class="toolbar">
-            <button type="button" data-action="/mercos/homologacao-ui/acoes/clientes-buscar" data-target="res-clientes-buscar">Buscar clientes</button>
+            <button type="button" id="btn-clientes-reiniciar" class="secondary">
+              Reiniciar ciclo de sincronização
+            </button>
+            <button type="button" id="btn-clientes-sincronizar">
+              Sincronizar próxima etapa
+            </button>
+            <button type="button" id="btn-clientes-buscar"
+              data-action="/mercos/homologacao-ui/acoes/clientes-buscar"
+              data-target="res-clientes-buscar">
+              Buscar clientes
+            </button>
+          </div>
+          <p class="hint" id="aviso-busca-clientes-bloqueada" hidden>Busca completa bloqueada durante a homologação.</p>
+          <div class="toolbar">
+            <label class="field">Localizar cliente pela razão social
+              <input type="text" id="input-clientes-razao" placeholder="Razão social exata" />
+            </label>
+            <button type="button" id="btn-clientes-localizar" class="secondary">
+              Localizar cliente
+            </button>
           </div>
           <div class="resultado" id="res-clientes-buscar"></div>
         </section>
@@ -552,7 +571,11 @@
       var CURSOR_KEY = "mercos_produtos_cursor";
       var CATALOGO_KEY = "mercos_produtos_catalogo";
       var CICLO_KEY = "mercos_produtos_ciclo_ativo";
+      var CLIENTES_CURSOR_KEY = "mercos_clientes_cursor";
+      var CLIENTES_CATALOGO_KEY = "mercos_clientes_catalogo";
+      var CLIENTES_CICLO_KEY = "mercos_clientes_ciclo_ativo";
       var produtosSyncBusy = false;
+      var clientesSyncBusy = false;
       var store = {
         cliente: localStorage.getItem("homolog_cliente_id") || "",
         pedido: localStorage.getItem("homolog_pedido_id") || "",
@@ -627,6 +650,51 @@
         if (aviso) aviso.hidden = !ativo;
       }
 
+      function getClientesCursor() {
+        return localStorage.getItem(CLIENTES_CURSOR_KEY) || "";
+      }
+
+      function setClientesCursor(valor) {
+        if (valor) {
+          localStorage.setItem(CLIENTES_CURSOR_KEY, valor);
+        } else {
+          localStorage.removeItem(CLIENTES_CURSOR_KEY);
+        }
+      }
+
+      function getClientesCatalogoJson() {
+        return localStorage.getItem(CLIENTES_CATALOGO_KEY) || "";
+      }
+
+      function isCicloClientesAtivoLocal() {
+        try {
+          var raw = localStorage.getItem(CLIENTES_CATALOGO_KEY);
+          if (raw) {
+            var snap = JSON.parse(raw);
+            if (snap && snap.ciclo && snap.ciclo.ativo) return true;
+          }
+        } catch (e) {}
+        return localStorage.getItem(CLIENTES_CICLO_KEY) === "1";
+      }
+
+      function setCicloClientesAtivoLocal(ativo) {
+        if (ativo) localStorage.setItem(CLIENTES_CICLO_KEY, "1");
+        else localStorage.removeItem(CLIENTES_CICLO_KEY);
+        atualizarBuscaClientesBloqueada();
+      }
+
+      function atualizarBuscaClientesBloqueada() {
+        var btn = document.getElementById("btn-clientes-buscar");
+        var aviso = document.getElementById("aviso-busca-clientes-bloqueada");
+        var ativo = isCicloClientesAtivoLocal();
+        if (btn) {
+          btn.disabled = !!ativo;
+          btn.hidden = !!ativo;
+          btn.setAttribute("aria-disabled", ativo ? "true" : "false");
+        }
+        if (aviso) aviso.hidden = !ativo;
+      }
+
       function setCatalogoFromBlob(target) {
         var blob = target.querySelector(".mercos-catalogo-blob");
         if (!blob) return;
@@ -637,6 +705,21 @@
           localStorage.setItem(CATALOGO_KEY, texto);
           if (snap && snap.ciclo) {
             setCicloAtivoLocal(!!snap.ciclo.ativo);
+          }
+        } catch (e) { /* ignora blob inválido */ }
+        blob.parentNode && blob.parentNode.removeChild(blob);
+      }
+
+      function setClientesCatalogoFromBlob(target) {
+        var blob = target.querySelector(".mercos-clientes-catalogo-blob");
+        if (!blob) return;
+        var texto = (blob.value || blob.textContent || "").trim();
+        if (!texto) return;
+        try {
+          var snap = JSON.parse(texto);
+          localStorage.setItem(CLIENTES_CATALOGO_KEY, texto);
+          if (snap && snap.ciclo) {
+            setCicloClientesAtivoLocal(!!snap.ciclo.ativo);
           }
         } catch (e) { /* ignora blob inválido */ }
         blob.parentNode && blob.parentNode.removeChild(blob);
@@ -671,6 +754,35 @@
         atualizarBuscaBloqueada();
       }
 
+      function applyCicloClientesFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-catalogo-limpo") === "1") {
+          localStorage.setItem(
+            CLIENTES_CATALOGO_KEY,
+            JSON.stringify({
+              clientes: {},
+              ids_ultimo_lote: [],
+              ultima_sync: {},
+              ciclo: {
+                ativo: true,
+                etapa_interna: 0,
+                chamadas_completas: 0,
+                chamadas_incrementais: 0
+              },
+              total: 0
+            })
+          );
+        }
+        if (wrap.hasAttribute("data-ciclo-ativo")) {
+          setCicloClientesAtivoLocal(wrap.getAttribute("data-ciclo-ativo") === "1");
+        }
+        if (wrap.getAttribute("data-bloquear-busca-completa") === "1") {
+          setCicloClientesAtivoLocal(true);
+        }
+        atualizarBuscaClientesBloqueada();
+      }
+
       function sleep(ms) {
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
       }
@@ -690,7 +802,23 @@
         }
       }
 
-      async function postAcao(url, fields, target, btn) {
+      function applyClientesCursorFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-cursor-fixo") === "1") {
+          return;
+        }
+        if (wrap.getAttribute("data-cursor-limpo") === "1") {
+          setClientesCursor("");
+          return;
+        }
+        if (wrap.hasAttribute("data-novo-cursor")) {
+          setClientesCursor(wrap.getAttribute("data-novo-cursor") || "");
+        }
+      }
+
+      async function postAcao(url, fields, target, btn, opts) {
+        opts = opts || {};
         var fd = new FormData();
         Object.keys(fields || {}).forEach(function (k) {
           fd.append(k, fields[k] == null ? "" : String(fields[k]));
@@ -720,9 +848,15 @@
             return null;
           }
           target.innerHTML = text;
-          applyCursorFromResult(target);
-          setCatalogoFromBlob(target);
-          applyCicloFromResult(target);
+          if (opts.entidade === "clientes") {
+            applyClientesCursorFromResult(target);
+            setClientesCatalogoFromBlob(target);
+            applyCicloClientesFromResult(target);
+          } else {
+            applyCursorFromResult(target);
+            setCatalogoFromBlob(target);
+            applyCicloFromResult(target);
+          }
           var node = target.querySelector("[data-entity][data-id]");
           if (node) {
             remember(node.getAttribute("data-entity"), node.getAttribute("data-id"));
@@ -734,6 +868,7 @@
         } finally {
           if (btn) btn.disabled = false;
           atualizarBuscaBloqueada();
+          atualizarBuscaClientesBloqueada();
         }
       }
 
@@ -744,6 +879,7 @@
       var resProdutos = document.getElementById("res-produtos");
 
       atualizarBuscaBloqueada();
+      atualizarBuscaClientesBloqueada();
 
       if (btnReiniciar && resProdutos) {
         btnReiniciar.addEventListener("click", async function () {
@@ -813,11 +949,95 @@
         });
       }
 
+      var btnCliReiniciar = document.getElementById("btn-clientes-reiniciar");
+      var btnCliSincronizar = document.getElementById("btn-clientes-sincronizar");
+      var btnCliLocalizar = document.getElementById("btn-clientes-localizar");
+      var resClientes = document.getElementById("res-clientes-buscar");
+
+      if (btnCliReiniciar && resClientes) {
+        btnCliReiniciar.addEventListener("click", async function () {
+          if (clientesSyncBusy) return;
+          clientesSyncBusy = true;
+          setClientesCursor("");
+          localStorage.removeItem(CLIENTES_CATALOGO_KEY);
+          setCicloClientesAtivoLocal(true);
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/clientes-reiniciar",
+              {},
+              resClientes,
+              btnCliReiniciar,
+              { entidade: "clientes" }
+            );
+          } finally {
+            clientesSyncBusy = false;
+            btnCliReiniciar.disabled = false;
+            if (btnCliSincronizar) btnCliSincronizar.disabled = false;
+            atualizarBuscaClientesBloqueada();
+          }
+        });
+      }
+
+      if (btnCliSincronizar && resClientes) {
+        btnCliSincronizar.addEventListener("click", async function () {
+          if (clientesSyncBusy) return;
+          clientesSyncBusy = true;
+          btnCliSincronizar.disabled = true;
+          if (btnCliReiniciar) btnCliReiniciar.disabled = true;
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/clientes-sincronizar",
+              {
+                cursor: getClientesCursor(),
+                catalogo_json: getClientesCatalogoJson()
+              },
+              resClientes,
+              btnCliSincronizar,
+              { entidade: "clientes" }
+            );
+          } finally {
+            clientesSyncBusy = false;
+            btnCliSincronizar.disabled = false;
+            if (btnCliReiniciar) btnCliReiniciar.disabled = false;
+            atualizarBuscaClientesBloqueada();
+          }
+        });
+      }
+
+      if (btnCliLocalizar && resClientes) {
+        btnCliLocalizar.addEventListener("click", async function () {
+          if (clientesSyncBusy) return;
+          var razaoEl = document.getElementById("input-clientes-razao");
+          var cursorAntes = getClientesCursor();
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/clientes-localizar",
+            {
+              razao_social: razaoEl ? razaoEl.value : "",
+              catalogo_json: getClientesCatalogoJson()
+            },
+            resClientes,
+            btnCliLocalizar,
+            { entidade: "clientes" }
+          );
+          if (getClientesCursor() !== cursorAntes) {
+            setClientesCursor(cursorAntes);
+          }
+        });
+      }
+
       document.querySelectorAll("button[data-action]").forEach(function (btn) {
         btn.addEventListener("click", async function () {
           if (btn.id === "btn-produtos-buscar" && isCicloAtivoLocal()) {
             if (resProdutos) {
               resProdutos.innerHTML =
+                '<div class="result-card erro"><h4>Busca completa bloqueada durante a homologação</h4>' +
+                "<p>Use apenas «Sincronizar próxima etapa» durante o ciclo ativo.</p></div>";
+            }
+            return;
+          }
+          if (btn.id === "btn-clientes-buscar" && isCicloClientesAtivoLocal()) {
+            if (resClientes) {
+              resClientes.innerHTML =
                 '<div class="result-card erro"><h4>Busca completa bloqueada durante a homologação</h4>' +
                 "<p>Use apenas «Sincronizar próxima etapa» durante o ciclo ativo.</p></div>";
             }
@@ -843,10 +1063,18 @@
           if (btn.id === "btn-produtos-buscar") {
             fieldMap.catalogo_json = getCatalogoJson();
           }
+          if (btn.id === "btn-clientes-buscar") {
+            fieldMap.catalogo_json = getClientesCatalogoJson();
+          }
+
+          var opts = {};
+          if (btn.id === "btn-clientes-buscar" || (url && url.indexOf("clientes") >= 0 && targetId === "res-clientes-buscar")) {
+            opts.entidade = "clientes";
+          }
 
           btn.disabled = true;
           try {
-            var resp = await postAcao(url, fieldMap, target, btn);
+            var resp = await postAcao(url, fieldMap, target, btn, opts);
             if (resp && storeKey) {
               var wrap = target.querySelector(".acao-resultado");
               if (wrap && wrap.getAttribute("data-id")) {
@@ -856,6 +1084,7 @@
           } finally {
             btn.disabled = false;
             atualizarBuscaBloqueada();
+            atualizarBuscaClientesBloqueada();
           }
         });
       });

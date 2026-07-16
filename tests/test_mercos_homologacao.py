@@ -83,6 +83,36 @@ def test_produtos_repassa_alterado_apos_para_mercos(client, monkeypatch):
     assert resp.json()["itens"][0]["nome"] == "4c2e97e74c634ea4"
 
 
+def test_clientes_repassa_alterado_apos_para_mercos(client, monkeypatch):
+    capturado: dict = {}
+
+    def fake_get_json(path, *, params=None):
+        capturado["path"] = path
+        capturado["params"] = dict(params or {})
+        return [
+            {
+                "id": 77,
+                "razao_social": "77eb21774dd340ff",
+                "ultima_alteracao": "2026-07-15 09:00:00",
+            }
+        ]
+
+    monkeypatch.setattr("services.mercos_api_client.get_json", fake_get_json)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path",
+        lambda chave: "/v1/clientes" if chave == "clientes" else f"/v1/{chave}",
+    )
+    resp = client.get(
+        "/mercos/clientes",
+        params={"alterado_apos": "2026-07-15 00:00:00", "max_paginas": 1},
+    )
+    assert resp.status_code == 200
+    assert capturado["path"] == "/v1/clientes"
+    assert capturado["params"]["alterado_apos"] == "2026-07-15 00:00:00"
+    assert "pagina" in capturado["params"]
+    assert resp.json()["itens"][0]["razao_social"] == "77eb21774dd340ff"
+
+
 def test_post_produtos_exige_token(client, monkeypatch):
     monkeypatch.setenv("DIAGNOSTICOS_ABERTOS", "false")
     monkeypatch.setenv("SYNC_TOKEN", "segredo-produtos")

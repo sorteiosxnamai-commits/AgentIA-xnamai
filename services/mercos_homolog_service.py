@@ -94,8 +94,17 @@ def listar_categorias(**kw) -> dict:
     return listar_paginado(_path("categorias"), **kw)
 
 
-def listar_clientes(**kw) -> dict:
-    return listar_paginado(_path("clientes"), **kw)
+def listar_clientes(alterado_apos: str | None = None, **kw) -> dict:
+    """GET /v1/clientes — repassa alterado_apos à Mercos (sem filtro local)."""
+    params_extra = dict(kw.pop("params_extra", None) or {})
+    if alterado_apos is not None and str(alterado_apos).strip():
+        params_extra["alterado_apos"] = str(alterado_apos).strip()
+    if params_extra:
+        kw["params_extra"] = params_extra
+    data = listar_paginado(_path("clientes"), **kw)
+    if "alterado_apos" in params_extra:
+        data["filtros"] = {"alterado_apos": params_extra["alterado_apos"]}
+    return data
 
 
 def listar_condicoes_pagamento(**kw) -> dict:
@@ -197,7 +206,7 @@ def cursor_com_sobreposicao(cursor: str, segundos: int = 1) -> str:
     return texto
 
 
-def deduplicar_produtos_por_id_alteracao(itens: list | None) -> list[dict]:
+def deduplicar_por_id_alteracao(itens: list | None) -> list[dict]:
     """Remove duplicados por (id, ultima_alteracao), preservando a ordem."""
     vistos: set[tuple[Any, str]] = set()
     saida: list[dict] = []
@@ -212,24 +221,26 @@ def deduplicar_produtos_por_id_alteracao(itens: list | None) -> list[dict]:
     return saida
 
 
+deduplicar_produtos_por_id_alteracao = deduplicar_por_id_alteracao
+deduplicar_clientes_por_id_alteracao = deduplicar_por_id_alteracao
+
 _SYNC_PRODUTOS_LOCK = threading.Lock()
+_SYNC_CLIENTES_LOCK = threading.Lock()
 
 
-def sincronizar_produtos(
-    cursor: str | None = None,
+def _sincronizar_entidade(
     *,
+    listar_fn,
+    lock: threading.Lock,
+    rotulo: str,
+    cursor: str | None = None,
     max_paginas: int = 50,
     sobreposicao_segundos: int = 1,
 ) -> dict[str, Any]:
-    """Uma sincronização Produto GET: completa (sem cursor) ou incremental.
-
-    Incremental envia alterado_apos = cursor salvo - 1s (sobreposicao).
-    O cursor real salvo continua sendo a maior ultima_alteracao recebida.
-    Impede cliques/chamadas duplicadas enquanto uma sync estiver em andamento.
-    """
-    if not _SYNC_PRODUTOS_LOCK.acquire(blocking=False):
+    """Uma sincronização GET: completa (sem cursor) ou incremental com sobreposição."""
+    if not lock.acquire(blocking=False):
         raise MercosApiError(
-            "Sincronização de produtos já em andamento. Aguarde a conclusão.",
+            f"Sincronização de {rotulo} já em andamento. Aguarde a conclusão.",
             status_code=409,
         )
     try:
@@ -241,12 +252,12 @@ def sincronizar_produtos(
             )
         else:
             alterado_apos = None
-        data = listar_produtos(
+        data = listar_fn(
             alterado_apos=alterado_apos,
             pagina_inicial=1,
             max_paginas=max_paginas,
         )
-        itens = deduplicar_produtos_por_id_alteracao(data.get("itens") or [])
+        itens = deduplicar_por_id_alteracao(data.get("itens") or [])
         total = len(itens)
         maior = maior_ultima_alteracao(itens)
         if maior:
@@ -268,7 +279,51 @@ def sincronizar_produtos(
             "status": "concluida",
         }
     finally:
-        _SYNC_PRODUTOS_LOCK.release()
+        lock.release()
+
+
+def sincronizar_produtos(
+    cursor: str | None = None,
+    *,
+    max_paginas: int = 50,
+    sobreposicao_segundos: int = 1,
+) -> dict[str, Any]:
+    """Uma sincronização Produto GET: completa (sem cursor) ou incremental.
+
+    Incremental envia alterado_apos = cursor salvo - 1s (sobreposicao).
+    O cursor real salvo continua sendo a maior ultima_alteracao recebida.
+    Impede cliques/chamadas duplicadas enquanto uma sync estiver em andamento.
+    """
+    return _sincronizar_entidade(
+        listar_fn=listar_produtos,
+        lock=_SYNC_PRODUTOS_LOCK,
+        rotulo="produtos",
+        cursor=cursor,
+        max_paginas=max_paginas,
+        sobreposicao_segundos=sobreposicao_segundos,
+    )
+
+
+def sincronizar_clientes(
+    cursor: str | None = None,
+    *,
+    max_paginas: int = 50,
+    sobreposicao_segundos: int = 1,
+) -> dict[str, Any]:
+    """Uma sincronização Cliente GET: completa (sem cursor) ou incremental.
+
+    Incremental envia alterado_apos = cursor salvo - 1s (sobreposicao).
+    O cursor real salvo continua sendo a maior ultima_alteracao recebida.
+    Impede cliques/chamadas duplicadas enquanto uma sync estiver em andamento.
+    """
+    return _sincronizar_entidade(
+        listar_fn=listar_clientes,
+        lock=_SYNC_CLIENTES_LOCK,
+        rotulo="clientes",
+        cursor=cursor,
+        max_paginas=max_paginas,
+        sobreposicao_segundos=sobreposicao_segundos,
+    )
 
 
 def listar_segmentos(**kw) -> dict:
@@ -604,8 +659,11 @@ __all__ = [
     "listar_produtos",
     "maior_ultima_alteracao",
     "cursor_com_sobreposicao",
+    "deduplicar_por_id_alteracao",
     "deduplicar_produtos_por_id_alteracao",
+    "deduplicar_clientes_por_id_alteracao",
     "sincronizar_produtos",
+    "sincronizar_clientes",
     "montar_payload_produto",
     "criar_produto",
     "listar_segmentos",
