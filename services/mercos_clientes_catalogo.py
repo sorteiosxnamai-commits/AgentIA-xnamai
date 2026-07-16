@@ -36,6 +36,9 @@ def _estado_vazio() -> dict[str, Any]:
             "paginas_lidas": 0,
             "motivo_parada": None,
             "status_sync": None,
+            "requisicoes_extras": None,
+            "requisicoes_previstas": None,
+            "requisicoes_executadas": None,
         },
         "ciclo": _ciclo_vazio(),
     }
@@ -195,6 +198,9 @@ def _aplicar_meta(estado: dict[str, Any], meta: dict[str, Any] | None) -> None:
         "paginas_lidas",
         "motivo_parada",
         "status_sync",
+        "requisicoes_extras",
+        "requisicoes_previstas",
+        "requisicoes_executadas",
     ):
         if chave in meta:
             sync[chave] = meta[chave]

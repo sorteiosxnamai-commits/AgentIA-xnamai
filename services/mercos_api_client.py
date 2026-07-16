@@ -164,6 +164,24 @@ def get_json(
     timeout: int | float = 30,
     max_retries_429: int = MAX_RETRIES_429,
 ) -> Any:
+    payload, _headers_resp = get_json_com_headers(
+        path,
+        params=params,
+        timeout=timeout,
+        max_retries_429=max_retries_429,
+    )
+    return payload
+
+
+def get_json_com_headers(
+    path: str,
+    *,
+    params: dict | None = None,
+    timeout: int | float = 30,
+    max_retries_429: int = MAX_RETRIES_429,
+) -> tuple[Any, dict[str, str]]:
+    """GET que retorna (payload, headers) — headers para paginação Mercos
+    (MEUSPEDIDOS_LIMITOU_REGISTROS / QTDE_TOTAL_REGISTROS / REQUISICOES_EXTRAS)."""
     resp = request_mercos(
         "GET",
         path,
@@ -171,10 +189,11 @@ def get_json(
         timeout=timeout,
         max_retries_429=max_retries_429,
     )
+    headers = dict(resp.headers or {})
     if resp.status_code == 204 or not (resp.text or "").strip():
-        return []
+        return [], headers
     try:
-        return resp.json()
+        return resp.json(), headers
     except Exception as exc:
         raise MercosApiError(f"Resposta Mercos inválida em GET {path}.", status_code=502) from exc
 

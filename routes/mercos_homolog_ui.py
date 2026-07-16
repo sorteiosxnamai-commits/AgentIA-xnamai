@@ -474,6 +474,11 @@ def _linhas_ciclo_clientes(
         else ("Incremental" if tipo == "incremental" else (tipo or "—"))
     )
     etapa = int(ciclo.get("etapa_interna") or 0)
+
+    def _num(chave: str) -> Any:
+        valor = sync.get(chave)
+        return valor if valor is not None else "—"
+
     return [
         ("Etapa interna", f"{etapa}/3"),
         ("Tipo da última busca", tipo_label),
@@ -481,8 +486,11 @@ def _linhas_ciclo_clientes(
         ("alterado_apos enviado", sync.get("alterado_apos_enviado") or "—"),
         ("Novo cursor", sync.get("novo_cursor") or "—"),
         ("Total de páginas consultadas", sync.get("paginas_lidas") or "—"),
+        ("Requisições extras informadas pela Mercos", _num("requisicoes_extras")),
+        ("Requisições previstas", _num("requisicoes_previstas")),
+        ("Requisições executadas", _num("requisicoes_executadas")),
         ("Total retornado em todas as páginas", sync.get("total_lote") or 0),
-        ("Clientes únicos no catálogo", len((estado or {}).get("clientes") or {})),
+        ("Total de clientes", len((estado or {}).get("clientes") or {})),
         ("Motivo da parada", sync.get("motivo_parada") or "—"),
         ("Status da sincronização", sync.get("status_sync") or "—"),
         ("Chamadas completas no ciclo", ciclo.get("chamadas_completas") or 0),
@@ -1190,6 +1198,9 @@ def acao_clientes_sincronizar(
             "paginas_lidas": data.get("paginas_lidas") or 0,
             "motivo_parada": motivo,
             "status_sync": status_label,
+            "requisicoes_extras": data.get("requisicoes_extras"),
+            "requisicoes_previstas": data.get("requisicoes_previstas"),
+            "requisicoes_executadas": data.get("requisicoes_executadas"),
         }
         if tipo_real == "completa":
             catalogo_clientes.substituir_completo(
@@ -1238,6 +1249,9 @@ def acao_clientes_sincronizar(
                 "tipo-busca": tipo_real,
                 "total": str(total),
                 "paginas-lidas": str(paginas),
+                "requisicoes-extras": str(data.get("requisicoes_extras") if data.get("requisicoes_extras") is not None else ""),
+                "requisicoes-previstas": str(data.get("requisicoes_previstas") if data.get("requisicoes_previstas") is not None else ""),
+                "requisicoes-executadas": str(data.get("requisicoes_executadas") or 0),
                 "motivo-parada": motivo,
                 "catalogo-total": str(len(estado.get("clientes") or {})),
                 "catalogo-modo": "replace" if tipo_real == "completa" else "upsert",

@@ -14,6 +14,7 @@ from services.mercos_api_client import (
     MercosApiError,
     _extrair_lista,
     get_json,
+    get_json_com_headers,
     listar_paginado,
     post_json,
     put_json,
@@ -263,7 +264,7 @@ CLIENTES_MAX_PAGINAS_SYNC = 20
 CLIENTES_TIMEOUT_REQUEST_SEGUNDOS = 10
 CLIENTES_TIMEOUT_SYNC_SEGUNDOS = 60
 CLIENTES_TENTATIVAS_POR_PAGINA = 3
-CLIENTES_INTERVALO_ENTRE_PAGINAS = 1.0
+CLIENTES_INTERVALO_ENTRE_PAGINAS = 2.0
 CLIENTES_BACKOFF_429 = (2.0, 5.0, 10.0)
 MOTIVO_PARADA_LOTE_VAZIO = "Lote vazio"
 MOTIVO_PARADA_REPETIDA = "Página repetida / nenhum registro novo"
@@ -271,6 +272,25 @@ MOTIVO_PARADA_LIMITE = "Limite de páginas atingido"
 MOTIVO_PARADA_TIMEOUT = "Timeout da sincronização"
 MOTIVO_PARADA_FIM = "Todas as páginas lidas"
 MOTIVO_PARADA_THROTTLE = "Limite da Mercos (HTTP 429)"
+MOTIVO_PARADA_EXTRAS = "Quantidade indicada pela Mercos concluída"
+
+# Headers de paginação retornados pela Mercos (case-insensitive)
+HEADER_LIMITOU_REGISTROS = "MEUSPEDIDOS_LIMITOU_REGISTROS"
+HEADER_QTDE_TOTAL_REGISTROS = "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS"
+HEADER_REQUISICOES_EXTRAS = "MEUSPEDIDOS_REQUISICOES_EXTRAS"
+
+
+def _header_int(headers: dict | None, nome: str) -> int | None:
+    """Lê um header numérico sem diferenciar maiúsculas/minúsculas."""
+    alvo = nome.strip().lower()
+    for chave, valor in (headers or {}).items():
+        if str(chave).strip().lower() != alvo:
+            continue
+        try:
+            return int(str(valor).strip())
+        except (TypeError, ValueError):
+            return None
+    return None
 
 # Resume após 429 esgotado: continua da mesma página sem reiniciar o lote.
 _CLIENTES_RESUME: dict[str, dict[str, Any]] = {}
@@ -394,24 +414,25 @@ def _obter_lote_pagina_clientes(
     params: dict[str, Any],
     timeout: float,
     pagina: int,
-) -> tuple[list[dict], float]:
+) -> tuple[list[dict], float, dict]:
     """GET de uma página com até 3 tentativas e backoff/Retry-After.
 
-    Retorna (lote, segundos_esperados_em_429).
+    Retorna (lote, segundos_esperados_em_429, headers_da_resposta).
+    Em 429 só repete a chamada atual (nunca reinicia a sincronização).
     Em 429 esgotado, propaga MercosApiError com pagina e retry_after.
     """
     espera_total = 0.0
     ultimo_retry: float | None = None
     for tentativa in range(CLIENTES_TENTATIVAS_POR_PAGINA):
         try:
-            payload = get_json(
+            payload, headers_resp = get_json_com_headers(
                 path,
                 params=params,
                 timeout=timeout,
                 max_retries_429=0,  # throttling tratado aqui
             )
             lote = [i for i in _extrair_lista(payload) if isinstance(i, dict)]
-            return lote, espera_total
+            return lote, espera_total, headers_resp
         except MercosApiError as exc:
             if exc.status_code == 504:
                 raise
@@ -449,11 +470,13 @@ def listar_clientes_paginado_seguro(
     """Lista clientes com paradas anti-travamento e respeito a HTTP 429.
 
     Contrato real da Mercos (diagnóstico 2026-07-16): o endpoint ignora o
-    parâmetro ``pagina`` e limita cada resposta (headers
-    MEUSPEDIDOS_LIMITOU_REGISTROS / MEUSPEDIDOS_QTDE_TOTAL_REGISTROS).
-    A paginação é por cursor: cada lote seguinte é obtido reenviando o GET
-    com ``alterado_apos`` igual à maior ``ultima_alteracao`` do lote anterior
-    (filtro estritamente maior), até vir lote vazio.
+    parâmetro ``pagina``; a paginação é por cursor ``alterado_apos`` (maior
+    ``ultima_alteracao`` do lote anterior, filtro estritamente maior).
+
+    A primeira resposta traz MEUSPEDIDOS_REQUISICOES_EXTRAS: quando presente,
+    executamos exatamente 1 + extras requisições — sem chamada final para
+    confirmar lote vazio. As paradas por lote vazio/página repetida/cursor sem
+    avanço são fallback para quando o header não existir.
     """
     pagina = max(1, int(pagina_inicial or 1))
     limite = max(1, min(int(max_paginas or CLIENTES_MAX_PAGINAS_SYNC), CLIENTES_MAX_PAGINAS_SYNC))
@@ -474,6 +497,10 @@ def listar_clientes_paginado_seguro(
     motivo = MOTIVO_PARADA_FIM
     status = "concluida"
     espera_429_total = 0.0
+    extras_lido = False
+    requisicoes_extras: int | None = None
+    requisicoes_previstas: int | None = None
+    qtde_total_header: int | None = None
     inicio = time.monotonic()
 
     resume = _carregar_resume_clientes(chave_resume) if sessao_id else None
@@ -485,6 +512,10 @@ def listar_clientes_paginado_seguro(
         assinaturas = set(resume.get("assinaturas") or [])
         ids_pagina_anterior = resume.get("ids_pagina_anterior")
         paginas_lidas = int(resume.get("paginas_lidas") or 0)
+        extras_lido = bool(resume.get("extras_lido"))
+        requisicoes_extras = resume.get("requisicoes_extras")
+        requisicoes_previstas = resume.get("requisicoes_previstas")
+        qtde_total_header = resume.get("qtde_total_header")
 
     while paginas_lidas < limite:
         # Tempo útil (ignora esperas de 429 no orçamento de sync)
@@ -499,7 +530,7 @@ def listar_clientes_paginado_seguro(
         if cursor_atual:
             params["alterado_apos"] = cursor_atual
         try:
-            lote, espera_pag = _obter_lote_pagina_clientes(
+            lote, espera_pag, headers_resp = _obter_lote_pagina_clientes(
                 path=path,
                 params=params,
                 timeout=timeout_resto,
@@ -523,6 +554,10 @@ def listar_clientes_paginado_seguro(
                         "assinaturas": list(assinaturas),
                         "ids_pagina_anterior": ids_pagina_anterior,
                         "paginas_lidas": paginas_lidas,
+                        "extras_lido": extras_lido,
+                        "requisicoes_extras": requisicoes_extras,
+                        "requisicoes_previstas": requisicoes_previstas,
+                        "qtde_total_header": qtde_total_header,
                     },
                 )
                 raise
@@ -530,6 +565,47 @@ def listar_clientes_paginado_seguro(
 
         paginas_lidas += 1
 
+        if not extras_lido:
+            # Primeira resposta: contrato de quantidade vem nos headers.
+            extras_lido = True
+            requisicoes_extras = _header_int(headers_resp, HEADER_REQUISICOES_EXTRAS)
+            qtde_total_header = _header_int(headers_resp, HEADER_QTDE_TOTAL_REGISTROS)
+            if requisicoes_extras is not None:
+                requisicoes_previstas = paginas_lidas + max(0, requisicoes_extras)
+
+        # Acumula clientes do lote (dedupe por id)
+        novos = 0
+        for item in lote:
+            chave = str(item.get("id"))
+            if chave in ids_vistos:
+                continue
+            ids_vistos.add(chave)
+            itens_brutos.append(item)
+            novos += 1
+
+        if requisicoes_previstas is not None:
+            # Modo dirigido pelo header: exatamente 1 + extras requisições,
+            # sem chamada final para confirmar lote vazio.
+            if paginas_lidas >= requisicoes_previstas:
+                motivo = MOTIVO_PARADA_EXTRAS
+                break
+            if not lote:
+                # Anomalia: sem dados para avançar o cursor.
+                motivo = MOTIVO_PARADA_LOTE_VAZIO
+                break
+            if paginas_lidas >= limite:
+                motivo = MOTIVO_PARADA_LIMITE
+                break
+            novo_cursor = maior_ultima_alteracao(lote)
+            if not novo_cursor or (cursor_atual and novo_cursor <= cursor_atual):
+                motivo = MOTIVO_PARADA_FIM
+                break
+            cursor_atual = novo_cursor
+            pagina += 1
+            time.sleep(CLIENTES_INTERVALO_ENTRE_PAGINAS)
+            continue
+
+        # Fallback (header ausente): paradas defensivas.
         if not lote:
             motivo = MOTIVO_PARADA_LOTE_VAZIO
             break
@@ -543,16 +619,6 @@ def listar_clientes_paginado_seguro(
         if ids_pagina_anterior is not None and ids_atual == ids_pagina_anterior:
             motivo = MOTIVO_PARADA_REPETIDA
             break
-
-        novos = 0
-        for item in lote:
-            chave = str(item.get("id"))
-            if chave in ids_vistos:
-                continue
-            ids_vistos.add(chave)
-            itens_brutos.append(item)
-            novos += 1
-
         if novos == 0:
             motivo = MOTIVO_PARADA_REPETIDA
             break
@@ -589,6 +655,10 @@ def listar_clientes_paginado_seguro(
         "status": status,
         "espera_429_segundos": espera_429_total,
         "pagina_atual": pagina,
+        "requisicoes_extras": requisicoes_extras,
+        "requisicoes_previstas": requisicoes_previstas,
+        "requisicoes_executadas": paginas_lidas,
+        "qtde_total_registros": qtde_total_header,
     }
     if alterado_apos_inicial:
         out["filtros"] = {"alterado_apos": alterado_apos_inicial}
@@ -738,6 +808,10 @@ def sincronizar_clientes(
             "motivo_parada": data.get("motivo_parada") or MOTIVO_PARADA_FIM,
             "espera_429_segundos": data.get("espera_429_segundos") or 0,
             "pagina_atual": data.get("pagina_atual"),
+            "requisicoes_extras": data.get("requisicoes_extras"),
+            "requisicoes_previstas": data.get("requisicoes_previstas"),
+            "requisicoes_executadas": data.get("requisicoes_executadas"),
+            "qtde_total_registros": data.get("qtde_total_registros"),
         }
     finally:
         _SYNC_CLIENTES_LOCK.release()

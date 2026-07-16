@@ -1180,7 +1180,7 @@ def test_clientes_catalogo_completa_salva_e_incremental_preserva(client, monkeyp
     assert r1.status_code == 200
     sessao = client.cookies.get("mercos_clientes_sessao")
     assert cat.total(sessao) == 2
-    assert "Clientes únicos no catálogo" in r1.text
+    assert "Total de clientes" in r1.text
 
     r2 = client.post(
         "/mercos/homologacao-ui/acoes/clientes-sincronizar",
@@ -1371,7 +1371,7 @@ def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
         "services.mercos_homolog_service._path",
         lambda chave: "/v1/clientes" if chave == "clientes" else f"/v1/{chave}",
     )
-    # Contrato real Mercos: paginação por cursor alterado_apos (sem "pagina").
+    # Contrato real Mercos: cursor alterado_apos + header REQUISICOES_EXTRAS.
     cursores_vistos: list[str | None] = []
 
     def fake_get(path, *, params=None, **_kw):
@@ -1380,50 +1380,65 @@ def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
         cursor = params.get("alterado_apos")
         cursores_vistos.append(cursor)
         if cursor is None:
-            return [
+            return (
+                [
+                    {
+                        "id": 1,
+                        "razao_social": "Cliente Pagina 1A",
+                        "ultima_alteracao": "2026-07-06 11:29:15",
+                        "ativo": True,
+                    },
+                    {
+                        "id": 2,
+                        "razao_social": "Cliente Pagina 1B",
+                        "ultima_alteracao": "2026-07-05 10:00:00",
+                        "ativo": True,
+                    },
+                ],
                 {
-                    "id": 1,
-                    "razao_social": "Cliente Pagina 1A",
-                    "ultima_alteracao": "2026-07-06 11:29:15",
-                    "ativo": True,
+                    "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+                    "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "5",
+                    "MEUSPEDIDOS_REQUISICOES_EXTRAS": "2",
                 },
-                {
-                    "id": 2,
-                    "razao_social": "Cliente Pagina 1B",
-                    "ultima_alteracao": "2026-07-05 10:00:00",
-                    "ativo": True,
-                },
-            ]
+            )
         if cursor == "2026-07-06 11:29:15":
-            return [
-                {
-                    "id": 3,
-                    "razao_social": "77eb21774dd340ff",
-                    "nome_fantasia": "Homolog",
-                    "cnpj": "11.111.111/0001-11",
-                    "email": "h@test.com",
-                    "ultima_alteracao": "2026-07-16 08:00:00",
-                    "ativo": True,
-                },
-                {
-                    "id": 3,
-                    "razao_social": "77eb21774dd340ff",
-                    "ultima_alteracao": "2026-07-16 08:00:00",
-                    "ativo": True,
-                },
-            ]
+            return (
+                [
+                    {
+                        "id": 3,
+                        "razao_social": "77eb21774dd340ff",
+                        "nome_fantasia": "Homolog",
+                        "cnpj": "11.111.111/0001-11",
+                        "email": "h@test.com",
+                        "ultima_alteracao": "2026-07-16 08:00:00",
+                        "ativo": True,
+                    },
+                    {
+                        "id": 3,
+                        "razao_social": "77eb21774dd340ff",
+                        "ultima_alteracao": "2026-07-16 08:00:00",
+                        "ativo": True,
+                    },
+                ],
+                {},
+            )
         if cursor == "2026-07-16 08:00:00":
-            return [
-                {
-                    "id": 4,
-                    "razao_social": "Ultimo",
-                    "ultima_alteracao": "2026-07-16 09:00:00",
-                    "ativo": True,
-                }
-            ]
-        return []
+            return (
+                [
+                    {
+                        "id": 4,
+                        "razao_social": "Ultimo",
+                        "ultima_alteracao": "2026-07-16 09:00:00",
+                        "ativo": True,
+                    }
+                ],
+                {},
+            )
+        return ([], {})
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
     resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
@@ -1431,20 +1446,26 @@ def test_clientes_sync_completa_percorre_varias_paginas(client, monkeypatch):
     html = resp.text
     assert "Completa" in html
     assert "Total de páginas consultadas" in html
-    assert 'data-paginas-lidas="4"' in html
-    # Cursor avança: sem filtro, depois maior ultima_alteracao de cada lote
+    # extras=2 → exatamente 3 requisições (1 inicial + 2), sem chamada extra
+    # para confirmar lote vazio.
+    assert 'data-paginas-lidas="3"' in html
     assert cursores_vistos == [
         None,
         "2026-07-06 11:29:15",
         "2026-07-16 08:00:00",
-        "2026-07-16 09:00:00",
     ]
     assert "Total retornado em todas as páginas" in html
     assert 'data-catalogo-total="4"' in html
     assert "77eb21774dd340ff" in html
-    assert "Clientes únicos no catálogo" in html
+    assert "Total de clientes" in html
+    assert "Requisições extras informadas pela Mercos" in html
+    assert "Requisições previstas" in html
+    assert "Requisições executadas" in html
+    assert 'data-requisicoes-extras="2"' in html
+    assert 'data-requisicoes-previstas="3"' in html
+    assert 'data-requisicoes-executadas="3"' in html
     assert "Motivo da parada" in html
-    assert "Lote vazio" in html or "Todas as páginas" in html or "Limite de páginas" in html
+    assert "Quantidade indicada pela Mercos concluída" in html
     assert "Novo cursor" in html
     cookie_raw = (resp.cookies.get("mercos_clientes_cursor") or "").strip('"')
     assert unquote(cookie_raw) == "2026-07-16 09:00:00"
@@ -1486,43 +1507,55 @@ def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
         cursor = params.get("alterado_apos")
         cursores.append(cursor)
         if cursor is None:
-            # Completa: 1 lote
-            return [
-                {
-                    "id": 1,
-                    "razao_social": "Base",
-                    "ultima_alteracao": "2026-07-15 10:00:00",
-                    "ativo": True,
-                }
-            ]
-        # Incremental: cursor salvo 10:00:00 - 1s de sobreposição
+            # Completa: extras=0 → apenas 1 requisição
+            return (
+                [
+                    {
+                        "id": 1,
+                        "razao_social": "Base",
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                        "ativo": True,
+                    }
+                ],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "0"},
+            )
+        # Incremental: cursor salvo 10:00:00 - 1s de sobreposição.
+        # Headers minúsculos para validar leitura case-insensitive.
         if cursor == "2026-07-15 09:59:59":
-            return [
-                {
-                    "id": 2,
-                    "razao_social": "Inc A",
-                    "ultima_alteracao": "2026-07-15 12:00:00",
-                    "ativo": True,
-                }
-            ]
+            return (
+                [
+                    {
+                        "id": 2,
+                        "razao_social": "Inc A",
+                        "ultima_alteracao": "2026-07-15 12:00:00",
+                        "ativo": True,
+                    }
+                ],
+                {"meuspedidos_requisicoes_extras": "1"},
+            )
         if cursor == "2026-07-15 12:00:00":
-            return [
-                {
-                    "id": 3,
-                    "razao_social": "77eb21774dd340ff",
-                    "ultima_alteracao": "2026-07-16 15:30:00",
-                    "ativo": True,
-                },
-                {
-                    "id": 3,
-                    "razao_social": "77eb21774dd340ff",
-                    "ultima_alteracao": "2026-07-16 15:30:00",
-                    "ativo": True,
-                },
-            ]
-        return []
+            return (
+                [
+                    {
+                        "id": 3,
+                        "razao_social": "77eb21774dd340ff",
+                        "ultima_alteracao": "2026-07-16 15:30:00",
+                        "ativo": True,
+                    },
+                    {
+                        "id": 3,
+                        "razao_social": "77eb21774dd340ff",
+                        "ultima_alteracao": "2026-07-16 15:30:00",
+                        "ativo": True,
+                    },
+                ],
+                {},
+            )
+        return ([], {})
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
     r1 = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
@@ -1532,11 +1565,12 @@ def test_clientes_sync_incremental_percorre_varias_paginas(client, monkeypatch):
         data={"cursor": "2026-07-15 10:00:00"},
     )
     assert r2.status_code == 200
-    # Incremental: 3 requisições (última vazia), cursor avançando
-    assert cursores[-3:] == [
+    # Completa: 1 requisição (extras=0). Incremental: extras=1 → 2 requisições,
+    # sem chamada final para confirmar lote vazio.
+    assert cursores == [
+        None,
         "2026-07-15 09:59:59",
         "2026-07-15 12:00:00",
-        "2026-07-16 15:30:00",
     ]
     html = r2.text
     assert "Incremental" in html
@@ -1568,12 +1602,17 @@ def test_clientes_throttle_respeita_retry_after(monkeypatch):
         n["c"] += 1
         if n["c"] == 1:
             raise MercosApiError("429", status_code=429, retry_after=7.0)
-        return [{"id": 1, "razao_social": "OK", "ultima_alteracao": "2026-07-15 10:00:00"}]
+        return (
+            [{"id": 1, "razao_social": "OK", "ultima_alteracao": "2026-07-15 10:00:00"}],
+            {},
+        )
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
-    lote, espera = _obter_lote_pagina_clientes(
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    lote, espera, _headers = _obter_lote_pagina_clientes(
         path="/v1/clientes",
-        params={"pagina": 2},
+        params={"alterado_apos": "2026-07-15 09:00:00"},
         timeout=10,
         pagina=2,
     )
@@ -1602,12 +1641,17 @@ def test_clientes_throttle_backoff_progressivo(monkeypatch):
         n["c"] += 1
         if n["c"] < 3:
             raise MercosApiError("429", status_code=429, retry_after=None)
-        return [{"id": 9, "razao_social": "X", "ultima_alteracao": "2026-07-15 10:00:00"}]
+        return (
+            [{"id": 9, "razao_social": "X", "ultima_alteracao": "2026-07-15 10:00:00"}],
+            {},
+        )
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
-    lote, espera = _obter_lote_pagina_clientes(
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    lote, espera, _headers = _obter_lote_pagina_clientes(
         path="/v1/clientes",
-        params={"pagina": 1},
+        params={},
         timeout=10,
         pagina=1,
     )
@@ -1645,7 +1689,9 @@ def test_clientes_throttle_esgota_libera_lock_e_resume(client, monkeypatch):
     def always_429(path, *, params=None, **_kw):
         raise MercosApiError("429", status_code=429, retry_after=3.0)
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", always_429)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", always_429
+    )
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
     resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
@@ -1685,15 +1731,24 @@ def test_clientes_intervalo_um_segundo_entre_paginas(monkeypatch):
     def fake_get(path, *, params=None, **_kw):
         cursor = (params or {}).get("alterado_apos")
         if cursor is None:
-            return [{"id": 1, "razao_social": "C1", "ultima_alteracao": "2026-07-15 10:01:00"}]
+            return (
+                [{"id": 1, "razao_social": "C1", "ultima_alteracao": "2026-07-15 10:01:00"}],
+                {},
+            )
         if cursor == "2026-07-15 10:01:00":
-            return [{"id": 2, "razao_social": "C2", "ultima_alteracao": "2026-07-15 10:02:00"}]
-        return []
+            return (
+                [{"id": 2, "razao_social": "C2", "ultima_alteracao": "2026-07-15 10:02:00"}],
+                {},
+            )
+        return ([], {})
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
     out = listar_clientes_paginado_seguro(max_paginas=20, timeout_total=60)
     assert out["total"] == 2
     assert CLIENTES_INTERVALO_ENTRE_PAGINAS in sleeps
+    assert CLIENTES_INTERVALO_ENTRE_PAGINAS == 2.0
 
 
 def test_clientes_sync_para_em_pagina_repetida(client, monkeypatch):
@@ -1724,9 +1779,12 @@ def test_clientes_sync_para_em_pagina_repetida(client, monkeypatch):
                 "ativo": True,
             }
         ]
-        return lote  # API repete o mesmo lote mesmo com cursor avançado → para
+        # Sem headers de extras → fallback; API repete o mesmo lote → para
+        return (lote, {})
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
     resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
@@ -1759,17 +1817,25 @@ def test_clientes_sync_para_sem_ids_novos(client, monkeypatch):
     def fake_get(path, *, params=None, **_kw):
         cursor = (params or {}).get("alterado_apos")
         if cursor is None:
-            return [
-                {"id": 1, "razao_social": "A", "ultima_alteracao": "2026-07-15 10:00:00"},
-                {"id": 2, "razao_social": "B", "ultima_alteracao": "2026-07-15 11:00:00"},
-            ]
+            return (
+                [
+                    {"id": 1, "razao_social": "A", "ultima_alteracao": "2026-07-15 10:00:00"},
+                    {"id": 2, "razao_social": "B", "ultima_alteracao": "2026-07-15 11:00:00"},
+                ],
+                {},
+            )
         # Mesmos IDs, assinatura diferente (outra ordem / alteração) → nenhum ID novo
-        return [
-            {"id": 2, "razao_social": "B2", "ultima_alteracao": "2026-07-15 12:00:00"},
-            {"id": 1, "razao_social": "A2", "ultima_alteracao": "2026-07-15 12:01:00"},
-        ]
+        return (
+            [
+                {"id": 2, "razao_social": "B2", "ultima_alteracao": "2026-07-15 12:00:00"},
+                {"id": 1, "razao_social": "A2", "ultima_alteracao": "2026-07-15 12:01:00"},
+            ],
+            {},
+        )
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
     resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
@@ -1801,16 +1867,21 @@ def test_clientes_sync_timeout_retorna_parciais(client, monkeypatch):
     def fake_get(path, *, params=None, **_kw):
         n["c"] += 1
         if n["c"] == 1:
-            return [
-                {
-                    "id": 1,
-                    "razao_social": "Parcial",
-                    "ultima_alteracao": "2026-07-15 10:00:00",
-                }
-            ]
+            return (
+                [
+                    {
+                        "id": 1,
+                        "razao_social": "Parcial",
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                    }
+                ],
+                {},
+            )
         raise MercosApiError("Timeout na chamada à Mercos.", status_code=504)
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
     resp = client.post("/mercos/homologacao-ui/acoes/clientes-sincronizar")
@@ -1839,15 +1910,20 @@ def test_clientes_sync_limite_20_paginas(monkeypatch):
     def fake_get(path, *, params=None, **_kw):
         n["c"] += 1
         i = n["c"]
-        return [
-            {
-                "id": i,
-                "razao_social": f"C{i}",
-                "ultima_alteracao": f"2026-07-15 10:{i:02d}:00",
-            }
-        ]
+        return (
+            [
+                {
+                    "id": i,
+                    "razao_social": f"C{i}",
+                    "ultima_alteracao": f"2026-07-15 10:{i:02d}:00",
+                }
+            ],
+            {},
+        )
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
     out = listar_clientes_paginado_seguro(max_paginas=20, timeout_total=60)
     assert out["paginas_lidas"] == 20
     assert out["total"] == 20
@@ -1856,7 +1932,8 @@ def test_clientes_sync_limite_20_paginas(monkeypatch):
 
 
 def test_clientes_paginacao_por_cursor_paginas_diferentes(monkeypatch):
-    """Contrato real Mercos: página 2 é obtida com alterado_apos do lote 1 e traz IDs diferentes."""
+    """Fallback sem headers: página 2 via alterado_apos do lote 1 traz IDs diferentes;
+    para no lote vazio quando o header REQUISICOES_EXTRAS não existe."""
     from services.mercos_homolog_service import (
         MOTIVO_PARADA_LOTE_VAZIO,
         listar_clientes_paginado_seguro,
@@ -1876,18 +1953,26 @@ def test_clientes_paginacao_por_cursor_paginas_diferentes(monkeypatch):
         params_vistos.append(params)
         cursor = params.get("alterado_apos")
         if cursor is None:
-            return [
-                {"id": 9282664, "razao_social": "Antigo A", "ultima_alteracao": "2026-07-06 11:27:03"},
-                {"id": 9282665, "razao_social": "Antigo B", "ultima_alteracao": "2026-07-06 11:29:15"},
-            ]
+            return (
+                [
+                    {"id": 9282664, "razao_social": "Antigo A", "ultima_alteracao": "2026-07-06 11:27:03"},
+                    {"id": 9282665, "razao_social": "Antigo B", "ultima_alteracao": "2026-07-06 11:29:15"},
+                ],
+                {},
+            )
         if cursor == "2026-07-06 11:29:15":
-            return [
-                {"id": 9282668, "razao_social": "Novo C", "ultima_alteracao": "2026-07-06 11:30:39"},
-                {"id": 9282669, "razao_social": "77eb21774dd340ff", "ultima_alteracao": "2026-07-06 11:31:57"},
-            ]
-        return []
+            return (
+                [
+                    {"id": 9282668, "razao_social": "Novo C", "ultima_alteracao": "2026-07-06 11:30:39"},
+                    {"id": 9282669, "razao_social": "77eb21774dd340ff", "ultima_alteracao": "2026-07-06 11:31:57"},
+                ],
+                {},
+            )
+        return ([], {})
 
-    monkeypatch.setattr("services.mercos_homolog_service.get_json", fake_get)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
     out = listar_clientes_paginado_seguro(max_paginas=20, timeout_total=60)
     # Nenhuma requisição usa "pagina"; a 2ª usa o cursor do lote 1
     assert all("pagina" not in p for p in params_vistos)
@@ -1898,6 +1983,167 @@ def test_clientes_paginacao_por_cursor_paginas_diferentes(monkeypatch):
     assert out["total"] == 4
     assert out["paginas_lidas"] == 3
     assert out["motivo_parada"] == MOTIVO_PARADA_LOTE_VAZIO
+    assert out["requisicoes_extras"] is None
+    assert out["requisicoes_previstas"] is None
+
+
+def _lotes_16_clientes_em_8_paginas() -> list[list[dict]]:
+    """16 clientes, 2 por lote, ultima_alteracao crescente (como o sandbox)."""
+    lotes = []
+    for p in range(8):
+        lotes.append(
+            [
+                {
+                    "id": 100 + 2 * p + i,
+                    "razao_social": f"Cliente {2 * p + i}",
+                    "ultima_alteracao": f"2026-07-06 11:{p:02d}:{i:02d}",
+                    "ativo": True,
+                }
+                for i in (1, 2)
+            ]
+        )
+    return lotes
+
+
+def test_clientes_extras_7_resulta_em_8_chamadas(monkeypatch):
+    """extras=7 → 1 inicial + 7 adicionais = 8 chamadas; sem 9ª para lote vazio."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        listar_clientes_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr("services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path", lambda chave: "/v1/clientes"
+    )
+    lotes = _lotes_16_clientes_em_8_paginas()
+    cursores: list[str | None] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        cursores.append((params or {}).get("alterado_apos"))
+        idx = len(cursores) - 1
+        assert idx < 8, "não pode existir 9ª chamada"
+        headers = (
+            {
+                "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+                "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "16",
+                "MEUSPEDIDOS_REQUISICOES_EXTRAS": "7",
+            }
+            if idx == 0
+            else {}
+        )
+        return (lotes[idx], headers)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_clientes_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert len(cursores) == 8
+    assert out["paginas_lidas"] == 8
+    assert out["requisicoes_extras"] == 7
+    assert out["requisicoes_previstas"] == 8
+    assert out["requisicoes_executadas"] == 8
+    assert out["total"] == 16
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    # Cursor avança a cada lote: alterado_apos = maior ultima_alteracao anterior
+    assert cursores[0] is None
+    for i in range(1, 8):
+        esperado = max(item["ultima_alteracao"] for item in lotes[i - 1])
+        assert cursores[i] == esperado
+
+
+def test_clientes_extras_respeita_retry_after_sem_reiniciar(monkeypatch):
+    """429 no meio do plano: espera Retry-After e repete só a chamada atual."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        listar_clientes_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+    from services.mercos_api_client import MercosApiError
+
+    _reset_resume_clientes_para_testes()
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep",
+        lambda s: sleeps.append(float(s)),
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service._path", lambda chave: "/v1/clientes"
+    )
+    lotes = _lotes_16_clientes_em_8_paginas()[:3]
+    estado = {"chamadas": 0, "falhou_429": False}
+    cursores: list[str | None] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        estado["chamadas"] += 1
+        cursor = (params or {}).get("alterado_apos")
+        # 2ª requisição falha uma vez com 429 antes de responder
+        if len(cursores) == 1 and not estado["falhou_429"]:
+            estado["falhou_429"] = True
+            raise MercosApiError("429", status_code=429, retry_after=4.0)
+        cursores.append(cursor)
+        idx = len(cursores) - 1
+        headers = {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "2"} if idx == 0 else {}
+        return (lotes[idx], headers)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_clientes_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert 4.0 in sleeps  # Retry-After respeitado
+    assert estado["chamadas"] == 4  # 3 planejadas + 1 repetição da chamada atual
+    assert cursores[0] is None  # sincronização não reiniciou
+    assert out["paginas_lidas"] == 3
+    assert out["total"] == 6
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+
+
+def test_clientes_localizar_nao_faz_requisicao_http(client, monkeypatch):
+    """Localizar usa só o catálogo local: nenhuma chamada HTTP à Mercos."""
+    from services import mercos_clientes_catalogo as cat
+
+    cat._reset_todos_para_testes()
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_configurado", lambda: True
+    )
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar cliente não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", explode)
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", explode)
+
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    sessao_resp = client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    assert sessao_resp.status_code == 200
+    sessao = client.cookies.get("mercos_clientes_sessao")
+    cat.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 77,
+                "razao_social": "77eb21774dd340ff",
+                "ultima_alteracao": "2026-07-06 11:31:57",
+                "ativo": True,
+            }
+        ],
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-localizar",
+        data={"razao_social": "77eb21774dd340ff"},
+    )
+    assert resp.status_code == 200
+    assert "Cliente localizado" in resp.text
+    assert "77eb21774dd340ff" in resp.text
+    # Não altera o cursor salvo
+    assert resp.cookies.get("mercos_clientes_cursor") is None
+    assert 'data-cursor-fixo="1"' in resp.text
 
 
 def test_clientes_lock_libera_em_erro_e_expira(monkeypatch):
