@@ -1470,6 +1470,106 @@ def _kw_filtros_tipos_pedido(
         kwargs_paginacao["params_extra"] = params_extra
     return kwargs_paginacao, filtros
 
+def listar_tipos_pedido_paginado_seguro(
+    *,
+    alterado_apos: str | None = None,
+    pagina_inicial: int = 1,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    params_extra: dict | None = None,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Lista tipos de pedido com o mesmo contrato seguro de usuários/pedidos.
+
+    Diagnóstico sandbox 2026-07-17 (4 chamadas): GET /v1/pedidos/tipo ignora
+    ``pagina``; a paginação é keyset por ``alterado_apos`` (filtro
+    estritamente maior sobre ultima_alteracao) e a resposta traz os headers
+    MEUSPEDIDOS_LIMITOU_REGISTROS / QTDE_TOTAL_REGISTROS / REQUISICOES_EXTRAS
+    (lote de 2 itens; ex.: total 12 → extras 5 → 6 chamadas na completa).
+    Registros excluídos vêm no próprio payload com o campo ``excluido``.
+    """
+    return _listar_paginado_seguro(
+        path=_path("tipos_pedido"),
+        resume_ns="tipos_pedido",
+        alterado_apos=alterado_apos,
+        pagina_inicial=pagina_inicial,
+        max_paginas=max_paginas,
+        timeout_request=timeout_request,
+        timeout_total=timeout_total,
+        params_extra=params_extra,
+        sessao_id=sessao_id,
+    )
+
+
+_SYNC_TIPOS_PEDIDO_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
+
+
+def sincronizar_tipos_pedido(
+    cursor: str | None = None,
+    *,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Uma sincronização Tipo de Pedido GET (padrão seguro de usuários).
+
+    Busca completa (sem cursor) percorre TODOS os lotes: executa exatamente
+    1 + MEUSPEDIDOS_REQUISICOES_EXTRAS chamadas quando o header existir, sem
+    chamada final esperando lote vazio. Incremental envia o cursor EXATO da
+    sincronização anterior (alterado_apos é estritamente maior — confirmado
+    no diagnóstico; sem overlap de 1s de produtos/clientes). Respeita
+    Retry-After/backoff por página e libera o lock sempre no finally.
+    """
+    if not _SYNC_TIPOS_PEDIDO_LOCK.acquire(blocking=False):
+        raise MercosApiError(
+            "Sincronização de tipos de pedido já em andamento. Aguarde a conclusão.",
+            status_code=409,
+        )
+    try:
+        cursor_base = (cursor or "").strip() or None
+        tipo = "incremental" if cursor_base else "completa"
+        # Cursor exato: enviado byte a byte como foi salvo.
+        alterado_apos = cursor_base
+        data = listar_tipos_pedido_paginado_seguro(
+            alterado_apos=alterado_apos,
+            pagina_inicial=1,
+            max_paginas=max_paginas,
+            timeout_request=timeout_request,
+            timeout_total=timeout_total,
+            sessao_id=sessao_id,
+        )
+        itens = deduplicar_por_id_alteracao(data.get("itens") or [])
+        total = len(itens)
+        maior = maior_ultima_alteracao(itens)
+        novo_cursor = maior if maior else cursor_base
+        status = data.get("status") or "concluida"
+        return {
+            "ok": True,
+            "tipo": tipo,
+            "cursor_base": cursor_base,
+            "alterado_apos_enviado": alterado_apos,
+            "cursor_anterior": cursor_base,
+            "novo_cursor": novo_cursor,
+            "total": total,
+            "itens": itens,
+            "path": data.get("path"),
+            "paginas_lidas": data.get("paginas_lidas"),
+            "filtros": data.get("filtros") or {},
+            "status": status,
+            "motivo_parada": data.get("motivo_parada") or MOTIVO_PARADA_FIM,
+            "espera_429_segundos": data.get("espera_429_segundos") or 0,
+            "pagina_atual": data.get("pagina_atual"),
+            "requisicoes_extras": data.get("requisicoes_extras"),
+            "requisicoes_previstas": data.get("requisicoes_previstas"),
+            "requisicoes_executadas": data.get("requisicoes_executadas"),
+            "qtde_total_registros": data.get("qtde_total_registros"),
+        }
+    finally:
+        _SYNC_TIPOS_PEDIDO_LOCK.release()
+
+
 def listar_tipos_pedido(
     params_mercos: dict | None = None,
     **kw,
@@ -1842,6 +1942,8 @@ __all__ = [
     "listar_tabelas_preco_produto",
     "listar_produtos_da_tabela_preco",
     "listar_tipos_pedido",
+    "listar_tipos_pedido_paginado_seguro",
+    "sincronizar_tipos_pedido",
     "listar_tipos_pedido_descoberta",
     "explorar_filtros_tipos_pedido",
     "COMBINACOES_FILTROS_TIPOS_PEDIDO",

@@ -5777,3 +5777,377 @@ def test_clientes_criar_valida_obrigatorios(client, monkeypatch):
     assert "Razão social" in resp.text
     assert "CNPJ/CPF" in resp.text
     api.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tipo de Pedido GET — ciclo de homologação em 3 etapas
+# ---------------------------------------------------------------------------
+
+
+def _prep_tipos(client, monkeypatch):
+    from services import mercos_tipos_pedido_catalogo as catt
+    from services.mercos_homolog_service import _reset_resume_clientes_para_testes
+
+    catt._reset_todos_para_testes()
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    return catt
+
+
+def test_ui_secao_tipos_pedido_ciclo_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    secao = html.split('id="sec-tipos"')[1].split("</section>")[0]
+    assert 'id="btn-tipos-reiniciar"' in secao
+    assert 'id="btn-tipos-sincronizar"' in secao
+    assert 'id="input-tipos-nome"' in secao
+    assert 'id="btn-tipos-localizar"' in secao
+    assert "Reiniciar ciclo de sincronização" in secao
+    assert "Localizar tipo de pedido" in secao
+    # Botões manuais antigos marcados para bloqueio durante o ciclo
+    assert secao.count("tipos-busca-manual") >= 5
+
+
+def test_tipos_pedido_reiniciar_nao_chama_mercos(client, monkeypatch):
+    catt = _prep_tipos(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called
+    )
+    resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido-reiniciar")
+    assert resp.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in resp.text
+    assert "0/3" in resp.text
+    assert 'data-ciclo-ativo="1"' in resp.text
+    called.assert_not_called()
+    sessao = client.cookies.get("mercos_tipos_pedido_sessao")
+    assert catt.total(sessao) == 0
+    assert catt.obter_ciclo(sessao)["etapa_interna"] == 0
+
+
+def _fake_tipos_sandbox(cursores_vistos):
+    """Contrato real do diagnóstico 2026-07-17: lote de 2, keyset alterado_apos,
+    MEUSPEDIDOS_REQUISICOES_EXTRAS informa os lotes restantes da completa."""
+
+    lotes_completa = {
+        None: (
+            [
+                {"id": 47660, "nome": "8cd2e36c38094a83", "excluido": False, "ultima_alteracao": "2026-07-14 14:37:38"},
+                {"id": 47659, "nome": "198314a3385b4af2", "excluido": False, "ultima_alteracao": "2026-07-15 14:37:33"},
+            ],
+            "2",
+        ),
+        "2026-07-15 14:37:33": (
+            [
+                {"id": 47661, "nome": "03823f68dbe34e7c", "excluido": False, "ultima_alteracao": "2026-07-15 15:17:48"},
+                {"id": 47666, "nome": "ad960ab474d24108", "excluido": False, "ultima_alteracao": "2026-07-15 16:22:51"},
+            ],
+            "2",
+        ),
+        "2026-07-15 16:22:51": (
+            [
+                {"id": 47670, "nome": "0956e338c1d94b28", "excluido": False, "ultima_alteracao": "2026-07-16 10:00:00"},
+                {"id": 47671, "nome": "5f00aaaa11112222", "excluido": True, "ultima_alteracao": "2026-07-16 11:00:00"},
+            ],
+            "2",
+        ),
+        "2026-07-16 11:00:00": (
+            [
+                {"id": 47672, "nome": "novotipo9999", "excluido": False, "ultima_alteracao": "2026-07-17 08:00:00"},
+            ],
+            "0",
+        ),
+        "2026-07-17 08:00:00": ([], "0"),
+    }
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/pedidos/tipo"
+        params = params or {}
+        assert "pagina" not in params
+        cursor = params.get("alterado_apos")
+        cursores_vistos.append(cursor)
+        itens, extras = lotes_completa[cursor]
+        headers = {
+            "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+            "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "6",
+            "MEUSPEDIDOS_REQUISICOES_EXTRAS": extras,
+        }
+        return (itens, headers)
+
+    return fake_get
+
+
+def test_tipos_pedido_ciclo_3_etapas_completa_todos_lotes(client, monkeypatch):
+    """Etapa 1 percorre TODOS os lotes (1 + extras) e o registro 0956e338…
+    aparece na busca completa; etapas 2 e 3 incrementais com cursor exato."""
+    catt = _prep_tipos(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_tipos_sandbox(cursores),
+    )
+    client.post("/mercos/homologacao-ui/acoes/tipos-pedido-reiniciar")
+    sessao = client.cookies.get("mercos_tipos_pedido_sessao")
+
+    # Etapa 1 — busca completa: extras=2 → exatamente 3 chamadas, todos os lotes
+    r1 = client.post("/mercos/homologacao-ui/acoes/tipos-pedido-sincronizar")
+    assert r1.status_code == 200
+    assert cursores == [None, "2026-07-15 14:37:33", "2026-07-15 16:22:51"]
+    assert "1/3" in r1.text
+    assert 'data-tipo-busca="completa"' in r1.text
+    # O registro solicitado pela Mercos veio na completa
+    assert "0956e338c1d94b28" in r1.text
+    # Registro excluído tratado (mantido no catálogo com a flag)
+    assert catt.total(sessao) == 6
+    estado = catt.obter(sessao)
+    assert "47670" in estado["tipos"]
+    assert estado["tipos"]["47671"]["excluido"] is True
+    assert catt.obter_ciclo(sessao)["chamadas_completas"] == 1
+    assert 'data-requisicoes-executadas="3"' in r1.text
+
+    # Etapa 2 — incremental com alterado_apos = cursor EXATO da etapa 1
+    r2 = client.post("/mercos/homologacao-ui/acoes/tipos-pedido-sincronizar")
+    assert r2.status_code == 200
+    assert cursores[3] == "2026-07-16 11:00:00"
+    assert "2/3" in r2.text
+    assert 'data-tipo-busca="incremental"' in r2.text
+    assert 'data-cursor-base="2026-07-16 11:00:00"' in r2.text
+    assert 'data-alterado-apos-enviado="2026-07-16 11:00:00"' in r2.text
+    # Sem overlap de 1s (contrato de tipos de pedido é cursor exato)
+    assert "2026-07-16 10:59:59" not in r2.text
+    # Catálogo acumulado: mantém anteriores e adiciona o novo
+    assert catt.total(sessao) == 7
+    estado = catt.obter(sessao)
+    assert "47660" in estado["tipos"]
+    assert "47672" in estado["tipos"]
+
+    # Etapa 3 — incremental com o cursor EXATO produzido pela etapa 2
+    r3 = client.post("/mercos/homologacao-ui/acoes/tipos-pedido-sincronizar")
+    assert r3.status_code == 200
+    assert cursores[4] == "2026-07-17 08:00:00"
+    assert 'data-cursor-base="2026-07-17 08:00:00"' in r3.text
+    assert 'data-alterado-apos-enviado="2026-07-17 08:00:00"' in r3.text
+    assert "3/3" in r3.text
+    ciclo = catt.obter_ciclo(sessao)
+    assert ciclo["chamadas_completas"] == 1
+    assert ciclo["chamadas_incrementais"] == 2
+    assert ciclo["etapa_interna"] == 3
+    assert catt.total(sessao) == 7
+    # Cartão operacional sem JSON cru nem token
+    assert "Requisições previstas" in r3.text
+    assert "Requisições executadas" in r3.text
+    assert "CompanyToken" not in r3.text
+
+
+def test_tipos_pedido_extras_headers_limita_chamadas(monkeypatch):
+    """extras=2 → exatamente 3 chamadas; sem 4ª esperando lote vazio."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        listar_tipos_pedido_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    chamadas: list[str | None] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/pedidos/tipo"
+        chamadas.append((params or {}).get("alterado_apos"))
+        assert len(chamadas) <= 3, "não pode existir 4ª chamada"
+        if len(chamadas) == 1:
+            return (
+                [
+                    {"id": 1, "nome": "T1", "ultima_alteracao": "2026-07-14 14:37:38"},
+                    {"id": 2, "nome": "T2", "ultima_alteracao": "2026-07-15 14:37:33"},
+                ],
+                {
+                    "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+                    "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "6",
+                    "MEUSPEDIDOS_REQUISICOES_EXTRAS": "2",
+                },
+            )
+        if len(chamadas) == 2:
+            return (
+                [
+                    {"id": 3, "nome": "T3", "ultima_alteracao": "2026-07-15 15:17:48"},
+                    {"id": 4, "nome": "T4", "ultima_alteracao": "2026-07-15 16:22:51"},
+                ],
+                {},
+            )
+        return (
+            [
+                {"id": 5, "nome": "0956e338c1d94b28", "ultima_alteracao": "2026-07-16 10:00:00"},
+                {"id": 6, "nome": "T6", "ultima_alteracao": "2026-07-16 11:00:00"},
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_tipos_pedido_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert len(chamadas) == 3
+    assert chamadas[0] is None
+    assert chamadas[1] == "2026-07-15 14:37:33"
+    assert chamadas[2] == "2026-07-15 16:22:51"
+    assert out["total"] == 6
+    assert out["requisicoes_extras"] == 2
+    assert out["requisicoes_previstas"] == 3
+    assert out["requisicoes_executadas"] == 3
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    nomes = [i.get("nome") for i in out["itens"]]
+    assert "0956e338c1d94b28" in nomes
+
+
+def test_tipos_pedido_localizar_nao_faz_requisicao_http(client, monkeypatch):
+    """Localizar usa só o catálogo local (nome completo ou prefixo); cursor intacto."""
+    catt = _prep_tipos(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar tipo de pedido não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", explode)
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", explode)
+
+    client.post("/mercos/homologacao-ui/acoes/tipos-pedido-reiniciar")
+    sessao = client.cookies.get("mercos_tipos_pedido_sessao")
+    catt.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 47670,
+                "nome": "0956e338c1d94b28",
+                "excluido": False,
+                "ultima_alteracao": "2026-07-16 10:00:00",
+            }
+        ],
+    )
+    etapa_antes = catt.obter_ciclo(sessao)["etapa_interna"]
+
+    # Por prefixo (como a Mercos pede: nome começa com 0956e338)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/tipos-pedido-localizar",
+        data={"nome": "0956e338"},
+    )
+    assert resp.status_code == 200
+    assert "Tipo de pedido localizado" in resp.text
+    assert "0956e338c1d94b28" in resp.text
+    assert "Excluído" in resp.text
+    # Não altera cursor nem etapa
+    assert resp.cookies.get("mercos_tipos_pedido_cursor") is None
+    assert 'data-cursor-fixo="1"' in resp.text
+    assert catt.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+    # Por nome completo
+    resp2 = client.post(
+        "/mercos/homologacao-ui/acoes/tipos-pedido-localizar",
+        data={"nome": "0956e338c1d94b28"},
+    )
+    assert "Tipo de pedido localizado" in resp2.text
+
+
+def test_tipos_pedido_buscas_manuais_bloqueadas_durante_ciclo(client, monkeypatch):
+    _prep_tipos(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called
+    )
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", called)
+    client.post("/mercos/homologacao-ui/acoes/tipos-pedido-reiniciar")
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/tipos-pedido",
+        data={"alterado_apos": "2026-07-15 00:00:00"},
+    )
+    assert resp.status_code == 200
+    assert "Busca manual bloqueada durante a homologação" in resp.text
+
+    resp2 = client.post("/mercos/homologacao-ui/acoes/tipos-pedido-combinacoes")
+    assert resp2.status_code == 200
+    assert "Busca manual bloqueada durante a homologação" in resp2.text
+    called.assert_not_called()
+
+
+def test_tipos_pedido_429_retorna_retry_after_e_libera_lock(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import _SYNC_TIPOS_PEDIDO_LOCK
+
+    _prep_tipos(client, monkeypatch)
+
+    def sempre_429(path, *, params=None, **_kw):
+        raise MercosApiError("429", status_code=429, retry_after=12.0)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", sempre_429
+    )
+    client.post("/mercos/homologacao-ui/acoes/tipos-pedido-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido-sincronizar")
+    assert resp.status_code == 429
+    assert resp.headers.get("Retry-After") == "12"
+    assert "Aguardando limite da Mercos" in resp.text
+    # Lock liberado no finally: nova aquisição funciona
+    assert _SYNC_TIPOS_PEDIDO_LOCK.acquire(blocking=False) is True
+    _SYNC_TIPOS_PEDIDO_LOCK.release()
+
+
+def test_tipos_pedido_incremental_envia_cursor_exato(monkeypatch):
+    """alterado_apos = cursor base byte a byte, sem overlap de 1s."""
+    from services.mercos_homolog_service import sincronizar_tipos_pedido
+
+    capt: dict = {}
+
+    def fake_listar(alterado_apos=None, **_kw):
+        capt["alterado_apos"] = alterado_apos
+        return {"itens": [], "paginas_lidas": 1}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_tipos_pedido_paginado_seguro",
+        fake_listar,
+    )
+    out = sincronizar_tipos_pedido("2026-07-16 11:00:00")
+    assert capt["alterado_apos"] == "2026-07-16 11:00:00"
+    assert out["cursor_base"] == "2026-07-16 11:00:00"
+    assert out["alterado_apos_enviado"] == "2026-07-16 11:00:00"
+    assert out["tipo"] == "incremental"
+
+
+def test_tipos_pedido_sincronizar_bloqueia_concorrencia(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import _SYNC_TIPOS_PEDIDO_LOCK
+
+    _prep_tipos(client, monkeypatch)
+    assert _SYNC_TIPOS_PEDIDO_LOCK.acquire(blocking=False) is True
+    try:
+        client.post("/mercos/homologacao-ui/acoes/tipos-pedido-reiniciar")
+        resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido-sincronizar")
+        assert resp.status_code == 409
+        assert "já em andamento" in resp.text
+    finally:
+        _SYNC_TIPOS_PEDIDO_LOCK.release()
+
+
+def test_demais_homologacoes_intactas_apos_tipos_pedido(client, monkeypatch):
+    """Ciclos de produtos, clientes, usuários e pedidos continuam registrados."""
+    _prep_tipos(client, monkeypatch)
+    client.post("/mercos/homologacao-ui/acoes/tipos-pedido-reiniciar")
+    for rota in (
+        "/mercos/homologacao-ui/acoes/produtos-reiniciar",
+        "/mercos/homologacao-ui/acoes/clientes-reiniciar",
+        "/mercos/homologacao-ui/acoes/usuarios-reiniciar",
+        "/mercos/homologacao-ui/acoes/pedidos-reiniciar",
+    ):
+        resp = client.post(rota)
+        assert resp.status_code == 200, rota
+        assert "Ciclo de sincronização reiniciado" in resp.text
+
