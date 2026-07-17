@@ -3280,6 +3280,163 @@ def test_pedidos_post_e_put_continuam_funcionando(client, monkeypatch):
     assert r2.status_code == 200
 
 
+def test_ui_pedido_incluir_tem_linhas_de_itens_e_seletor_condicao(client, monkeypatch):
+    """A seção Pedido — Incluir mostra pelo menos duas linhas de item e o seletor."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    assert html.count("pedido-item-linha") >= 2
+    assert 'id="btn-pedido-item-add"' in html
+    assert 'id="select-pedido-condicao"' in html
+    assert 'id="btn-pedido-carregar-condicoes"' in html
+    # Valores da etapa 3/3 pré-preenchidos
+    assert 'value="9290584"' in html
+    assert 'value="20400740"' in html
+    assert 'value="78.95"' in html
+    assert 'value="20400741"' in html
+    assert 'value="67.65"' in html
+
+
+def test_condicoes_opcoes_exige_token(client):
+    resp = client.post("/mercos/homologacao-ui/acoes/condicoes-opcoes")
+    assert resp.status_code == 403
+
+
+def test_condicoes_opcoes_lista_nome_e_id(client, monkeypatch):
+    """O seletor reutiliza o catálogo de condições, mostrando nome e ID."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_condicoes_pagamento",
+        lambda **_k: {
+            "ok": True,
+            "total": 3,
+            "itens": [
+                {"id": 3, "nome": "À vista", "excluido": False},
+                {"id": 4, "nome": "30 dias", "excluido": False},
+                {"id": 5, "nome": "Antiga", "excluido": True},
+            ],
+        },
+    )
+    resp = client.post("/mercos/homologacao-ui/acoes/condicoes-opcoes")
+    assert resp.status_code == 200
+    assert "À vista (ID 3)" in resp.text
+    assert "30 dias (ID 4)" in resp.text
+    assert "Antiga" not in resp.text  # excluída não aparece
+
+
+def test_pedido_post_dois_itens_em_um_unico_post(client, monkeypatch):
+    """Um único POST com dois itens (4x78.95 e 2x67.65), condição À vista."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[dict] = []
+
+    def fake_criar_pedido(body):
+        chamadas.append(body)
+        return {"ok": True, "status_code": 201, "id": 777, "dados": {"numero": 42}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_pedido", fake_criar_pedido
+    )
+    itens_json = (
+        '[{"produto_id": "20400740", "quantidade": "4", "preco": "78.95"},'
+        ' {"produto_id": "20400741", "quantidade": "2", "preco": "67.65"}]'
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-criar",
+        data={
+            "cliente_id": "9290584",
+            "itens_json": itens_json,
+            "condicao_pagamento_id": "3",
+            "condicao_pagamento_nome": "À vista",
+        },
+    )
+    assert resp.status_code == 200
+
+    # Um único POST enviado (não dois pedidos)
+    assert len(chamadas) == 1
+    body = chamadas[0]
+    assert body["cliente_id"] == 9290584
+    assert body["condicao_pagamento_id"] == 3
+    itens = body["itens"]
+    assert len(itens) == 2
+    assert itens[0] == {
+        "produto_id": 20400740,
+        "quantidade": 4.0,
+        "preco_tabela": 78.95,
+    }
+    assert itens[1] == {
+        "produto_id": 20400741,
+        "quantidade": 2.0,
+        "preco_tabela": 67.65,
+    }
+    # Cliente somente no pedido, não dentro dos itens
+    assert all("cliente_id" not in item for item in itens)
+
+    html = resp.text
+    assert "777" in html
+    assert "À vista" in html
+    assert "Quantidade de itens" in html
+    assert "451.10" in html  # 4*78.95 + 2*67.65
+    assert "78.95" in html and "67.65" in html
+    # Sem JSON bruto nem token no cartão
+    assert '"produto_id"' not in html
+    assert "segredo-ui-homolog" not in html
+
+
+def test_pedido_post_sem_itens_retorna_erro_sem_chamar_mercos(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    criar = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.criar_pedido", criar)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-criar",
+        data={"cliente_id": "9290584", "itens_json": "[]"},
+    )
+    assert resp.status_code == 200
+    assert "Itens obrigatórios" in resp.text
+    criar.assert_not_called()
+
+
+def test_pedido_post_item_sem_produto_e_ignorado(client, monkeypatch):
+    """Linhas sem código de produto não entram no payload; só linhas válidas."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[dict] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_pedido",
+        lambda body: chamadas.append(body)
+        or {"ok": True, "status_code": 201, "id": 778, "dados": {}},
+    )
+    itens_json = (
+        '[{"produto_id": "", "quantidade": "1", "preco": "5.00"},'
+        ' {"produto_id": "20400740", "quantidade": "4", "preco": "78.95"}]'
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-criar",
+        data={"cliente_id": "9290584", "itens_json": itens_json},
+    )
+    assert resp.status_code == 200
+    assert len(chamadas) == 1
+    assert len(chamadas[0]["itens"]) == 1
+    assert chamadas[0]["itens"][0]["produto_id"] == 20400740
+
+
 def test_acao_tipos_pedido_exige_token(client):
     resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido")
     assert resp.status_code == 403

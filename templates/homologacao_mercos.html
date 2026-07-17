@@ -676,28 +676,51 @@
         <!-- 12b -->
         <section class="panel" id="sec-pedidos-criar" data-homolog-sec="pedido-incluir">
           <h2>Pedido — Incluir</h2>
-          <p class="hint">Emite pedido comercial com item e quantidade.</p>
+          <p class="hint">Emite um único pedido com vários itens no mesmo POST. Use «Carregar condições» para escolher a condição de pagamento pelo nome (ex.: À vista).</p>
           <div class="toolbar">
             <label class="field">Código do cliente
-              <input type="text" id="input-pedido-cliente" placeholder="Cliente" />
-            </label>
-            <label class="field">Código do produto
-              <input type="text" id="input-pedido-produto" placeholder="Produto" />
-            </label>
-            <label class="field">Quantidade
-              <input type="text" id="input-pedido-qtd" value="1" />
-            </label>
-            <label class="field">Preço
-              <input type="text" id="input-pedido-preco" value="10.00" />
+              <input type="text" id="input-pedido-cliente" value="9290584" />
             </label>
             <label class="field">Condição de pagamento
-              <input type="text" id="input-pedido-condicao" placeholder="Opcional" />
+              <select id="select-pedido-condicao">
+                <option value="">Clique em «Carregar condições»…</option>
+              </select>
             </label>
-            <button type="button"
-              data-action="/mercos/homologacao-ui/acoes/pedidos-criar"
-              data-target="res-pedidos-criar"
-              data-store="pedido"
-              data-fields="cliente_id:input-pedido-cliente,produto_id:input-pedido-produto,quantidade:input-pedido-qtd,preco:input-pedido-preco,condicao_pagamento_id:input-pedido-condicao">
+            <button type="button" id="btn-pedido-carregar-condicoes" class="secondary">
+              Carregar condições
+            </button>
+          </div>
+          <div id="pedido-itens">
+            <div class="toolbar pedido-item-linha">
+              <label class="field">Código do produto
+                <input type="text" class="pedido-item-produto" value="20400740" />
+              </label>
+              <label class="field">Quantidade
+                <input type="text" class="pedido-item-qtd" value="4" />
+              </label>
+              <label class="field">Preço
+                <input type="text" class="pedido-item-preco" value="78.95" />
+              </label>
+              <button type="button" class="secondary pedido-item-remover">Remover item</button>
+            </div>
+            <div class="toolbar pedido-item-linha">
+              <label class="field">Código do produto
+                <input type="text" class="pedido-item-produto" value="20400741" />
+              </label>
+              <label class="field">Quantidade
+                <input type="text" class="pedido-item-qtd" value="2" />
+              </label>
+              <label class="field">Preço
+                <input type="text" class="pedido-item-preco" value="67.65" />
+              </label>
+              <button type="button" class="secondary pedido-item-remover">Remover item</button>
+            </div>
+          </div>
+          <div class="toolbar">
+            <button type="button" id="btn-pedido-item-add" class="secondary">
+              Adicionar item
+            </button>
+            <button type="button" id="btn-pedido-incluir">
               Incluir pedido
             </button>
           </div>
@@ -1686,6 +1709,116 @@
           if (getPedidosCursor() !== cursorAntes) {
             setPedidosCursor(cursorAntes);
           }
+        });
+      }
+
+      // Pedido — Incluir: itens dinâmicos + seletor de condição de pagamento
+      var btnPedidoIncluir = document.getElementById("btn-pedido-incluir");
+      var btnPedidoItemAdd = document.getElementById("btn-pedido-item-add");
+      var btnPedidoCondicoes = document.getElementById("btn-pedido-carregar-condicoes");
+      var pedidoItensWrap = document.getElementById("pedido-itens");
+      var selectPedidoCondicao = document.getElementById("select-pedido-condicao");
+      var resPedidosCriar = document.getElementById("res-pedidos-criar");
+
+      function novaLinhaItemPedido() {
+        var linha = document.createElement("div");
+        linha.className = "toolbar pedido-item-linha";
+        linha.innerHTML =
+          '<label class="field">Código do produto <input type="text" class="pedido-item-produto" /></label>' +
+          '<label class="field">Quantidade <input type="text" class="pedido-item-qtd" value="1" /></label>' +
+          '<label class="field">Preço <input type="text" class="pedido-item-preco" value="0.00" /></label>' +
+          '<button type="button" class="secondary pedido-item-remover">Remover item</button>';
+        return linha;
+      }
+
+      function coletarItensPedido() {
+        var itens = [];
+        if (!pedidoItensWrap) return itens;
+        pedidoItensWrap.querySelectorAll(".pedido-item-linha").forEach(function (linha) {
+          var prod = linha.querySelector(".pedido-item-produto");
+          var qtd = linha.querySelector(".pedido-item-qtd");
+          var preco = linha.querySelector(".pedido-item-preco");
+          var pid = prod ? String(prod.value || "").trim() : "";
+          if (!pid) return;
+          itens.push({
+            produto_id: pid,
+            quantidade: qtd ? String(qtd.value || "1").trim() : "1",
+            preco: preco ? String(preco.value || "0").trim() : "0"
+          });
+        });
+        return itens;
+      }
+
+      if (btnPedidoItemAdd && pedidoItensWrap) {
+        btnPedidoItemAdd.addEventListener("click", function () {
+          pedidoItensWrap.appendChild(novaLinhaItemPedido());
+        });
+      }
+
+      if (pedidoItensWrap) {
+        pedidoItensWrap.addEventListener("click", function (ev) {
+          var alvo = ev.target;
+          if (!alvo || !alvo.classList || !alvo.classList.contains("pedido-item-remover")) return;
+          var linhas = pedidoItensWrap.querySelectorAll(".pedido-item-linha");
+          if (linhas.length <= 1) return;
+          var linha = alvo.closest(".pedido-item-linha");
+          if (linha) linha.remove();
+        });
+      }
+
+      if (btnPedidoCondicoes && selectPedidoCondicao) {
+        btnPedidoCondicoes.addEventListener("click", async function () {
+          btnPedidoCondicoes.disabled = true;
+          selectPedidoCondicao.innerHTML = '<option value="">Carregando…</option>';
+          try {
+            var resp = await fetch("/mercos/homologacao-ui/acoes/condicoes-opcoes", {
+              method: "POST",
+              body: new FormData(),
+              credentials: "same-origin"
+            });
+            var html = await resp.text();
+            if (resp.ok && html && html.indexOf("<option") >= 0) {
+              selectPedidoCondicao.innerHTML = html;
+              var opcoes = selectPedidoCondicao.querySelectorAll("option[data-nome]");
+              for (var i = 0; i < opcoes.length; i++) {
+                var nome = (opcoes[i].getAttribute("data-nome") || "").toLowerCase();
+                if (nome.indexOf("vista") >= 0) {
+                  selectPedidoCondicao.value = opcoes[i].value;
+                  break;
+                }
+              }
+            } else {
+              selectPedidoCondicao.innerHTML =
+                '<option value="">Não foi possível carregar. Tente novamente.</option>';
+            }
+          } catch (err) {
+            selectPedidoCondicao.innerHTML =
+              '<option value="">Não foi possível carregar. Tente novamente.</option>';
+          } finally {
+            btnPedidoCondicoes.disabled = false;
+          }
+        });
+      }
+
+      if (btnPedidoIncluir && resPedidosCriar) {
+        btnPedidoIncluir.addEventListener("click", async function () {
+          var clienteEl = document.getElementById("input-pedido-cliente");
+          var condicaoNome = "";
+          if (selectPedidoCondicao && selectPedidoCondicao.selectedIndex >= 0) {
+            var opt = selectPedidoCondicao.options[selectPedidoCondicao.selectedIndex];
+            condicaoNome = opt ? (opt.getAttribute("data-nome") || "") : "";
+          }
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/pedidos-criar",
+            {
+              cliente_id: clienteEl ? clienteEl.value : "",
+              itens_json: JSON.stringify(coletarItensPedido()),
+              condicao_pagamento_id: selectPedidoCondicao ? selectPedidoCondicao.value : "",
+              condicao_pagamento_nome: condicaoNome
+            },
+            resPedidosCriar,
+            btnPedidoIncluir
+          );
         });
       }
 

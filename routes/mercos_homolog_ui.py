@@ -3281,61 +3281,155 @@ def acao_pedidos_localizar(
     return _garantir_sessao_pedidos_cookie(resp, sessao)
 
 
+@router.post("/homologacao-ui/acoes/condicoes-opcoes", response_class=HTMLResponse)
+def acao_condicoes_opcoes(request: Request, token: str = Form("")):
+    """Opções (nome + ID) para o seletor de condição de pagamento do Pedido POST.
+
+    Reutiliza o catálogo GET /v1/condicoes_pagamento já homologado.
+    """
+    _auth(request, token)
+    try:
+        data = homolog.listar_condicoes_pagamento(pagina_inicial=1, max_paginas=3)
+        opcoes = ['<option value="">Selecione a condição…</option>']
+        for item in data.get("itens") or []:
+            if not isinstance(item, dict) or item.get("excluido"):
+                continue
+            cid = item.get("id")
+            nome = str(item.get("nome") or "").strip()
+            if cid in (None, "") or not nome:
+                continue
+            opcoes.append(
+                f'<option value="{_esc(cid)}" data-nome="{_esc(nome)}">'
+                f"{_esc(nome)} (ID {_esc(cid)})</option>"
+            )
+        return HTMLResponse("".join(opcoes))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
+def _parse_itens_pedido(
+    itens_json: str,
+    produto_id: str,
+    quantidade: str,
+    preco: str,
+) -> list[dict[str, Any]]:
+    """Itens do formulário: lista JSON interna (linhas da UI) ou campos únicos legados."""
+    brutos: list[dict] = []
+    texto = (itens_json or "").strip()
+    if texto:
+        try:
+            payload = json.loads(texto)
+        except json.JSONDecodeError:
+            payload = []
+        if isinstance(payload, list):
+            brutos = [i for i in payload if isinstance(i, dict)]
+    elif (produto_id or "").strip():
+        brutos = [{"produto_id": produto_id, "quantidade": quantidade, "preco": preco}]
+
+    itens: list[dict[str, Any]] = []
+    for bruto in brutos:
+        pid = str(bruto.get("produto_id") or "").strip()
+        if not pid:
+            continue
+        qtd = float(str(bruto.get("quantidade") or "1").replace(",", "."))
+        preco_f = float(str(bruto.get("preco") or "0").replace(",", "."))
+        itens.append(
+            {
+                "produto_id": int(pid) if pid.isdigit() else pid,
+                "quantidade": qtd,
+                "preco_tabela": round(preco_f, 2),
+            }
+        )
+    return itens
+
+
 @router.post("/homologacao-ui/acoes/pedidos-criar", response_class=HTMLResponse)
 def acao_pedidos_criar(
     request: Request,
     token: str = Form(""),
     cliente_id: str = Form(""),
+    itens_json: str = Form(""),
     produto_id: str = Form(""),
     quantidade: str = Form("1"),
     preco: str = Form("10.00"),
     condicao_pagamento_id: str = Form(""),
+    condicao_pagamento_nome: str = Form(""),
 ):
+    """POST /v2/pedidos com um único pedido e lista de itens.
+
+    Contrato oficial (Apiary): cliente_id e condicao_pagamento_id ficam no
+    pedido; cada item usa produto_id, quantidade e preco_tabela — o cliente
+    não vai dentro dos itens.
+    """
     _auth(request, token)
-    if not (cliente_id or "").strip() or not (produto_id or "").strip():
+    if not (cliente_id or "").strip():
         return _wrap_result(
             _card(
                 "Campos obrigatórios",
-                [("Ação", "Informe o código do cliente e do produto.")],
+                [("Ação", "Informe o código do cliente.")],
                 status_label="Pendente",
                 css="pendente",
             )
         )
     try:
-        qtd = float(quantidade or "1")
-        preco_f = float(str(preco or "10").replace(",", "."))
+        itens = _parse_itens_pedido(itens_json, produto_id, quantidade, preco)
+    except (TypeError, ValueError):
+        itens = []
+    if not itens:
+        return _wrap_result(
+            _card(
+                "Itens obrigatórios",
+                [
+                    (
+                        "Ação",
+                        "Informe pelo menos um item com código do produto, quantidade e preço.",
+                    )
+                ],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    try:
         body: dict[str, Any] = {
             "cliente_id": int(cliente_id) if str(cliente_id).isdigit() else cliente_id,
             "data_emissao": date.today().isoformat(),
             "observacoes": f"Pedido homologação visual Xnamai {_agora_br()}",
-            "itens": [
-                {
-                    "produto_id": int(produto_id) if str(produto_id).isdigit() else produto_id,
-                    "quantidade": qtd,
-                    "preco_tabela": round(preco_f, 2),
-                }
-            ],
+            "itens": itens,
         }
         if (condicao_pagamento_id or "").strip():
             cid_pag = condicao_pagamento_id.strip()
             body["condicao_pagamento_id"] = int(cid_pag) if cid_pag.isdigit() else cid_pag
-        else:
-            body["condicao_pagamento"] = "a vista"
 
         out = homolog.criar_pedido(body)
         pid = out.get("id") or (out.get("dados") or {}).get("id")
         numero = (out.get("dados") or {}).get("numero") or "—"
+        total_calculado = round(
+            sum(i["quantidade"] * i["preco_tabela"] for i in itens), 2
+        )
+        condicao_label = (condicao_pagamento_nome or "").strip()
+        if (condicao_pagamento_id or "").strip():
+            sufixo = f"(ID {condicao_pagamento_id.strip()})"
+            condicao_label = f"{condicao_label} {sufixo}".strip() if condicao_label else sufixo
+        linhas: list[tuple[str, Any]] = [
+            ("Status HTTP", out.get("status_code") or 201),
+            ("ID do pedido", pid),
+            ("Número do pedido", numero),
+            ("Cliente", cliente_id),
+            ("Condição de pagamento", condicao_label or "—"),
+            ("Quantidade de itens", len(itens)),
+        ]
+        for idx, item in enumerate(itens, start=1):
+            linhas.append(
+                (
+                    f"Item {idx}",
+                    f"Produto {item['produto_id']} · Quantidade {item['quantidade']:g} · "
+                    f"Preço {item['preco_tabela']:.2f}",
+                )
+            )
+        linhas.append(("Total calculado", f"{total_calculado:.2f}"))
         card = _card(
             "Pedido criado",
-            [
-                ("Status", out.get("status_code") or 201),
-                ("ID do pedido", pid),
-                ("Número do pedido", numero),
-                ("Cliente", cliente_id),
-                ("Produto", produto_id),
-                ("Quantidade", qtd),
-                ("Preço", round(preco_f, 2)),
-            ],
+            linhas,
             status_label=f"Status {out.get('status_code') or 201}",
             css="ok",
         )
