@@ -839,6 +839,40 @@
           <div class="resultado" id="res-pedidos-cancelar"></div>
         </section>
 
+        <!-- 13c -->
+        <section class="panel" id="sec-pedidos-faturar" data-homolog-sec="pedido-faturar">
+          <h2>Pedido — Faturar</h2>
+          <p class="hint">Localiza o pedido pelo número no catálogo local (sem chamar a Mercos) e registra o faturamento. Sincronize os pedidos antes de faturar.</p>
+          <div class="toolbar">
+            <label class="field">Número do pedido
+              <input type="text" id="input-pedido-faturar-numero" value="19" />
+            </label>
+            <label class="field">ID do pedido (Mercos)
+              <input type="text" id="input-pedido-faturar-id" placeholder="Preenchido ao localizar" />
+            </label>
+            <label class="field">Cliente
+              <input type="text" id="input-pedido-faturar-cliente" value="b2aeaa9b298a404b" />
+            </label>
+            <label class="field">Total do pedido
+              <input type="text" id="input-pedido-faturar-total" value="91.51" />
+            </label>
+            <label class="field">Valor faturado
+              <input type="text" id="input-pedido-faturar-valor" value="91.51" />
+            </label>
+            <button type="button" class="secondary" id="btn-pedido-faturar-localizar">
+              Localizar pedido
+            </button>
+            <button type="button"
+              id="btn-pedido-faturar"
+              data-action="/mercos/homologacao-ui/acoes/pedidos-faturar"
+              data-target="res-pedidos-faturar"
+              data-fields="pedido_id:input-pedido-faturar-id,numero:input-pedido-faturar-numero,cliente:input-pedido-faturar-cliente,total:input-pedido-faturar-total,valor_faturado:input-pedido-faturar-valor">
+              Faturar pedido
+            </button>
+          </div>
+          <div class="resultado" id="res-pedidos-faturar"></div>
+        </section>
+
         <!-- 14 -->
         <section class="panel" id="sec-titulos-criar" data-homolog-sec="titulo-incluir">
           <h2>Títulos — Incluir</h2>
@@ -1801,6 +1835,38 @@
           );
           if (getPedidosCursor() !== cursorAntes) {
             setPedidosCursor(cursorAntes);
+          }
+        });
+      }
+
+      // Pedido — Faturar: localizar só no catálogo local e preencher o ID Mercos
+      var btnPedFaturarLocalizar = document.getElementById("btn-pedido-faturar-localizar");
+      var resPedidosFaturar = document.getElementById("res-pedidos-faturar");
+
+      if (btnPedFaturarLocalizar && resPedidosFaturar) {
+        btnPedFaturarLocalizar.addEventListener("click", async function () {
+          var numeroEl = document.getElementById("input-pedido-faturar-numero");
+          var clienteEl = document.getElementById("input-pedido-faturar-cliente");
+          var totalEl = document.getElementById("input-pedido-faturar-total");
+          var idEl = document.getElementById("input-pedido-faturar-id");
+          var cursorAntes = getPedidosCursor();
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/pedidos-faturar-localizar",
+            {
+              numero: numeroEl ? numeroEl.value : "",
+              cliente: clienteEl ? clienteEl.value : "",
+              total: totalEl ? totalEl.value : "",
+              catalogo_json: getPedidosCatalogoJson()
+            },
+            resPedidosFaturar,
+            btnPedFaturarLocalizar
+          );
+          if (getPedidosCursor() !== cursorAntes) {
+            setPedidosCursor(cursorAntes);
+          }
+          var wrap = resPedidosFaturar.querySelector("[data-pedido-faturar-id]");
+          if (wrap && idEl) {
+            idEl.value = wrap.getAttribute("data-pedido-faturar-id") || "";
           }
         });
       }

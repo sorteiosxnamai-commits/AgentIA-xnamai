@@ -3725,6 +3725,206 @@ def acao_pedidos_cancelar(
         return _wrap_result(_erro_html(exc))
 
 
+def _fmt_valor_2casas(valor: Any) -> str:
+    try:
+        return f"{float(str(valor).replace(',', '.')):.2f}"
+    except (TypeError, ValueError):
+        return str(valor or "—")
+
+
+@router.post("/homologacao-ui/acoes/pedidos-faturar-localizar", response_class=HTMLResponse)
+def acao_pedidos_faturar_localizar(
+    request: Request,
+    token: str = Form(""),
+    numero: str = Form(""),
+    cliente: str = Form(""),
+    total: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Localiza o pedido a faturar pelo número, só no catálogo local de Pedido GET.
+
+    Não chama a Mercos, não altera cursor nem etapa. Confere também o cliente
+    e o total informados e devolve o ID interno para preencher o formulário.
+    """
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_pedidos(request)
+    _hidratar_catalogo_pedidos_form(sessao, catalogo_json)
+    ciclo_antes = catalogo_pedidos.obter_ciclo(sessao)
+    numero_busca = (numero or "").strip()
+    if not numero_busca:
+        return _garantir_sessao_pedidos_cookie(
+            _wrap_result(
+                _card(
+                    "Localizar pedido",
+                    [("Mensagem", "Informe o número do pedido a faturar.")],
+                    status_label="Atenção",
+                    css="erro",
+                )
+            ),
+            sessao,
+        )
+
+    estado = catalogo_pedidos.obter(sessao)
+    encontrado = None
+    for ped in (estado.get("pedidos") or {}).values():
+        if isinstance(ped, dict) and str(ped.get("numero") or "") == numero_busca:
+            encontrado = dict(ped)
+            break
+
+    if not encontrado:
+        resp = _wrap_result(
+            _card(
+                "Pedido não encontrado no catálogo local",
+                [
+                    ("Número buscado", numero_busca),
+                    ("Pedidos no catálogo local", catalogo_pedidos.total(sessao)),
+                    ("Mensagem", "Sincronize os pedidos antes de faturar."),
+                ],
+                status_label="Não encontrado",
+                css="erro",
+            ),
+            extra_attrs={"cursor-fixo": "1", "status-sync": "localizado"},
+        )
+        return _garantir_sessao_pedidos_cookie(resp, sessao)
+
+    razoes = _razoes_clientes_por_id(request)
+    razao = str(
+        encontrado.get("cliente_razao_social")
+        or razoes.get(str(encontrado.get("cliente_id")))
+        or ""
+    )
+    cliente_esperado = (cliente or "").strip()
+    cliente_confere = (
+        "Sim"
+        if cliente_esperado and razao and razao.lower() == cliente_esperado.lower()
+        else ("—" if not cliente_esperado or not razao else "Não")
+    )
+    total_local = _fmt_valor_2casas(encontrado.get("total"))
+    total_esperado = (total or "").strip()
+    total_confere = (
+        "Sim"
+        if total_esperado and total_local == _fmt_valor_2casas(total_esperado)
+        else ("—" if not total_esperado else "Não")
+    )
+    pid = str(encontrado.get("id"))
+    card = _card(
+        "Pedido localizado para faturamento",
+        [
+            ("ID do pedido (Mercos)", pid),
+            ("Número do pedido", numero_busca),
+            ("Cliente", razao or "—"),
+            ("Cliente confere", cliente_confere),
+            ("Total do pedido", total_local),
+            ("Total confere", total_confere),
+            ("Origem", "Catálogo local sincronizado"),
+        ],
+        status_label="Encontrado",
+        css="ok",
+    )
+    ciclo_depois = catalogo_pedidos.obter_ciclo(sessao)
+    if ciclo_antes.get("etapa_interna") != ciclo_depois.get("etapa_interna"):
+        catalogo_pedidos._salvar_ciclo(sessao, ciclo_antes)
+    resp = _wrap_result(
+        card,
+        extra_attrs={
+            "cursor-fixo": "1",
+            "status-sync": "localizado",
+            "pedido-faturar-id": pid,
+        },
+    )
+    return _garantir_sessao_pedidos_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/pedidos-faturar", response_class=HTMLResponse)
+def acao_pedidos_faturar(
+    request: Request,
+    token: str = Form(""),
+    pedido_id: str = Form(""),
+    numero: str = Form(""),
+    cliente: str = Form(""),
+    total: str = Form(""),
+    valor_faturado: str = Form(""),
+):
+    """POST /v1/faturamento — um único POST por clique, contrato oficial.
+
+    Corpo objeto com pedido_id (ID Mercos), valor_faturado e data_faturamento.
+    Sem DELETE, sem PUT comum de pedidos, sem criar novo pedido.
+    """
+    _auth(request, token)
+    pid = (pedido_id or "").strip()
+    if not pid:
+        return _wrap_result(
+            _card(
+                "Pedido não localizado",
+                [
+                    (
+                        "Ação",
+                        "Use «Localizar pedido» para preencher o ID Mercos antes de faturar.",
+                    )
+                ],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    try:
+        valor = float(str(valor_faturado or "").replace(",", "."))
+    except (TypeError, ValueError):
+        valor = 0.0
+    if valor <= 0:
+        return _wrap_result(
+            _card(
+                "Valor faturado inválido",
+                [("Ação", "Informe um valor faturado maior que zero.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    try:
+        out = homolog.faturar_pedido(pid, valor)
+        status = out.get("status_code") or 201
+        card = _card(
+            "Pedido faturado",
+            [
+                ("Status HTTP", status),
+                ("ID do pedido", pid),
+                ("Número do pedido", (numero or "").strip() or "—"),
+                ("Cliente", (cliente or "").strip() or "—"),
+                ("Total do pedido", _fmt_valor_2casas(total) if (total or "").strip() else "—"),
+                ("Valor faturado", f"{valor:.2f}"),
+                ("Status atual", "Faturado"),
+                ("Origem", "Mercos Sandbox"),
+            ],
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="pedido", entity_id=pid)
+    except MercosApiError as exc:
+        mensagem = exc.message or "Não foi possível faturar o pedido."
+        texto = mensagem.lower()
+        if "cancelado" in texto:
+            titulo = "Pedido cancelado não pode ser faturado"
+        elif "faturado" in texto and ("já" in texto or "ja " in texto):
+            titulo = "Pedido já faturado"
+        elif "inexistente" in texto or exc.status_code == 404:
+            titulo = "Pedido não encontrado"
+        else:
+            titulo = "Não foi possível faturar o pedido"
+        return _wrap_result(
+            _card(
+                titulo,
+                [
+                    ("Status HTTP", exc.status_code or "—"),
+                    ("ID do pedido", pid),
+                    ("Mensagem", mensagem),
+                ],
+                status_label=f"Erro {exc.status_code or ''}".strip(),
+                css="erro",
+            )
+        )
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 def _numero_documento(valor: str = "") -> str:
     """Número do documento Mercos: obrigatório, máx. 18 caracteres."""
     doc = (valor or "").strip()

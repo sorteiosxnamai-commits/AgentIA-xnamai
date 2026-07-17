@@ -4124,6 +4124,320 @@ def test_pedidos_get_post_put_intactos_apos_cancelamento(client, monkeypatch):
     assert r3.status_code == 200
 
 
+def test_ui_secao_pedido_faturar_presente(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    assert 'id="sec-pedidos-faturar"' in html
+    assert "Pedido — Faturar" in html
+    assert "Localizar pedido" in html
+    assert "Faturar pedido" in html
+    # Valores da etapa 1/1 pré-preenchidos
+    assert 'value="19"' in html
+    assert 'value="b2aeaa9b298a404b"' in html
+    assert 'value="91.51"' in html
+
+
+def test_faturamento_rotas_registradas_sem_404(client):
+    """Botões de faturar apontam para rotas existentes (403 sem token, nunca 404)."""
+    from fastapi.testclient import TestClient
+    from main import app
+
+    anonimo = TestClient(app)
+    for url in (
+        "/mercos/homologacao-ui/acoes/pedidos-faturar",
+        "/mercos/homologacao-ui/acoes/pedidos-faturar-localizar",
+    ):
+        resp = anonimo.post(url)
+        assert resp.status_code != 404, f"rota inexistente: {url}"
+
+
+def test_faturamento_servico_metodo_post_endpoint_e_payload(monkeypatch):
+    """POST /v1/faturamento com pedido_id, valor_faturado e data_faturamento."""
+    from services import mercos_homolog_service as homolog
+
+    chamadas: list[tuple[str, str, dict]] = []
+
+    class _RespFake:
+        status_code = 201
+        text = ""
+        headers: dict = {}
+
+        def json(self):
+            return {}
+
+    def fake_request(metodo, path, **kw):
+        chamadas.append((metodo, path, kw.get("json_body") or {}))
+        return _RespFake()
+
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", fake_request)
+    out = homolog.faturar_pedido("2150140", 91.51)
+    assert out["status_code"] == 201
+    assert len(chamadas) == 1
+    metodo, path, body = chamadas[0]
+    assert metodo == "POST"  # nunca DELETE nem PUT
+    assert path == "/v1/faturamento"
+    assert body["pedido_id"] == 2150140
+    assert body["valor_faturado"] == 91.51
+    assert body["data_faturamento"]  # obrigatório no contrato (AAAA-MM-DD)
+    assert len(body["data_faturamento"].split("-")) == 3
+    assert "id" not in body
+
+
+def test_faturamento_localiza_pelo_numero_sem_requisicao_http(client, monkeypatch):
+    """Localizar busca só o catálogo local, confere cliente/total e devolve o ID."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services import mercos_pedidos_catalogo
+
+    mercos_pedidos_catalogo._reset_todos_para_testes()
+    mercos_pedidos_catalogo.substituir_completo(
+        "sessao-faturar",
+        [
+            {
+                "id": 2150140,
+                "numero": 19,
+                "cliente_id": 9290584,
+                "cliente_razao_social": "b2aeaa9b298a404b",
+                "total": 91.51,
+                "status": "2",
+            }
+        ],
+    )
+    client.cookies.set("mercos_pedidos_sessao", "sessao-faturar")
+
+    http = MagicMock(side_effect=AssertionError("não pode chamar a Mercos"))
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", http)
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", http)
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-faturar-localizar",
+        data={"numero": "19", "cliente": "b2aeaa9b298a404b", "total": "91.51"},
+    )
+    assert resp.status_code == 200
+    html = resp.text
+    assert 'data-pedido-faturar-id="2150140"' in html
+    assert "b2aeaa9b298a404b" in html
+    assert "91.51" in html
+    assert html.count("Sim") >= 2  # cliente confere e total conferem
+    http.assert_not_called()
+    mercos_pedidos_catalogo._reset_todos_para_testes()
+
+
+def test_faturamento_localizar_fora_do_catalogo_pede_sincronizacao(
+    client, monkeypatch
+):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services import mercos_pedidos_catalogo
+
+    mercos_pedidos_catalogo._reset_todos_para_testes()
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-faturar-localizar",
+        data={"numero": "19"},
+    )
+    assert resp.status_code == 200
+    assert "Sincronize os pedidos antes de faturar." in resp.text
+
+
+def test_faturamento_um_unico_post_com_valor_91_51(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+
+    def fake_post_json(path, body):
+        chamadas.append((path, body))
+        return {"ok": True, "status_code": 201, "id": None, "dados": {}}
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", fake_post_json)
+    put = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", put)
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-faturar",
+        data={
+            "pedido_id": "2150140",
+            "numero": "19",
+            "cliente": "b2aeaa9b298a404b",
+            "total": "91.51",
+            "valor_faturado": "91.51",
+        },
+    )
+    assert resp.status_code == 200
+    assert len(chamadas) == 1
+    path, body = chamadas[0]
+    assert path == "/v1/faturamento"
+    assert body["pedido_id"] == 2150140
+    assert body["valor_faturado"] == 91.51
+    put.assert_not_called()
+
+    html = resp.text
+    assert "Status HTTP" in html and "201" in html
+    assert "Faturado" in html
+    assert "b2aeaa9b298a404b" in html
+    assert "Mercos Sandbox" in html
+    assert '"pedido_id"' not in html  # sem JSON cru
+    assert "segredo-ui-homolog" not in html
+
+
+def test_faturamento_sem_id_localizado_nao_chama_mercos(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    post = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", post)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-faturar",
+        data={"pedido_id": "", "valor_faturado": "91.51"},
+    )
+    assert resp.status_code == 200
+    assert "Localizar pedido" in resp.text or "Pedido não localizado" in resp.text
+    post.assert_not_called()
+
+
+def test_faturamento_valor_zero_ou_negativo_nao_chama_mercos(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    post = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", post)
+    for valor in ("", "0", "-5"):
+        resp = client.post(
+            "/mercos/homologacao-ui/acoes/pedidos-faturar",
+            data={"pedido_id": "2150140", "valor_faturado": valor},
+        )
+        assert resp.status_code == 200
+        assert "Valor faturado inválido" in resp.text
+    post.assert_not_called()
+
+
+def test_faturamento_pedido_cancelado_erro_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    def boom(path, body):
+        raise MercosApiError(
+            "Não é possível faturar um pedido cancelado", status_code=412
+        )
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", boom)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-faturar",
+        data={"pedido_id": "2150137", "valor_faturado": "91.51"},
+    )
+    assert resp.status_code == 200
+    assert "Pedido cancelado não pode ser faturado" in resp.text
+    assert "412" in resp.text
+
+
+def test_faturamento_pedido_ja_faturado_erro_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    def boom(path, body):
+        raise MercosApiError("Pedido já faturado", status_code=412)
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", boom)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-faturar",
+        data={"pedido_id": "2150140", "valor_faturado": "91.51"},
+    )
+    assert resp.status_code == 200
+    assert "Pedido já faturado" in resp.text
+
+
+def test_faturamento_erro_412_generico_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    def boom(path, body):
+        raise MercosApiError("Não foi possível alterar o faturamento.", status_code=412)
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", boom)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-faturar",
+        data={"pedido_id": "2150140", "valor_faturado": "91.51"},
+    )
+    assert resp.status_code == 200
+    assert "Não foi possível faturar o pedido" in resp.text
+    assert '"mensagem"' not in resp.text  # sem JSON cru
+
+
+def test_pedidos_fluxos_intactos_apos_faturamento(client, monkeypatch):
+    """GET (localizar), POST, PUT e Cancelamento seguem funcionando."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 201, "id": None, "dados": {}},
+    )
+    client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-faturar",
+        data={"pedido_id": "2150140", "valor_faturado": "91.51"},
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_pedido",
+        lambda body: {"ok": True, "status_code": 201, "id": 557, "dados": {}},
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.alterar_pedido",
+        lambda pid, body: {"ok": True, "status_code": 200, "dados": {"id": pid}},
+    )
+    r1 = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-criar",
+        data={
+            "cliente_id": "9290584",
+            "itens_json": '[{"produto_id": "20400740", "quantidade": "4", "preco": "78.95"}]',
+        },
+    )
+    assert r1.status_code == 200 and "557" in r1.text
+    r2 = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-alterar",
+        data={"pedido_id": "557", "produto_id": "20400740", "preco": "10.00"},
+    )
+    assert r2.status_code == 200
+    r3 = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-localizar",
+        data={"razao_social": "qualquer"},
+    )
+    assert r3.status_code == 200
+    r4 = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-cancelar",
+        data={"pedido_id": "2150137"},
+    )
+    assert r4.status_code == 200
+
+
 def test_acao_tipos_pedido_exige_token(client):
     resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido")
     assert resp.status_code == 403

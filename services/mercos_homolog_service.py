@@ -45,6 +45,8 @@ PATHS = {
     "pedidos_v2": "/v2/pedidos",
     # Doc oficial Mercos (Apiary): POST /v1/pedidos/cancelar/{id}, id só na URL
     "pedidos_cancelar": "/v1/pedidos/cancelar",
+    # Doc oficial Mercos (Apiary): POST /v1/faturamento (corpo objeto)
+    "faturamento": "/v1/faturamento",
 }
 
 
@@ -97,6 +99,7 @@ def inventario_homologacao() -> dict[str, Any]:
             {"entidade": "Pedidos", "metodo": "POST", "path": _path("pedidos_v2"), "status": "pronto"},
             {"entidade": "Pedidos", "metodo": "PUT", "path": _path("pedidos") + "/{id}", "status": "pronto"},
             {"entidade": "Cancelamento de Pedidos", "metodo": "POST", "path": _path("pedidos_cancelar") + "/{id}", "status": "pronto"},
+            {"entidade": "Faturamento de Pedido", "metodo": "POST", "path": _path("faturamento"), "status": "pronto"},
             {"entidade": "Títulos", "metodo": "POST", "path": _path("titulos"), "status": "pronto"},
             {"entidade": "Títulos", "metodo": "PUT", "path": _path("titulos") + "/{id}", "status": "pronto"},
             {"entidade": "DELETE", "metodo": "DELETE", "path": "-", "status": "nao_requerido_ata"},
@@ -1708,6 +1711,47 @@ def cancelar_pedido(pedido_id: int | str) -> dict:
     return post_json(f"{_path('pedidos_cancelar')}/{pid}", {})
 
 
+def faturar_pedido(
+    pedido_id: int | str,
+    valor_faturado: float,
+    *,
+    data_faturamento: str | None = None,
+    numero_nf: str | None = None,
+    informacoes_adicionais: str | None = None,
+) -> dict:
+    """POST /v1/faturamento — corpo objeto, contrato oficial (Apiary).
+
+    Obrigatórios: pedido_id (ID Mercos, não o número do pedido),
+    valor_faturado (decimal, 2 casas) e data_faturamento ("AAAA-MM-DD").
+    Opcionais: numero_nf e informacoes_adicionais. Sucesso 201; erros 412.
+    Não usa DELETE nem o PUT comum de pedidos.
+    """
+    pid = str(pedido_id or "").strip()
+    if not pid:
+        raise MercosApiError(
+            "Informe o ID Mercos do pedido para faturamento.", status_code=422
+        )
+    try:
+        valor = round(float(valor_faturado), 2)
+    except (TypeError, ValueError):
+        valor = 0.0
+    if valor <= 0:
+        raise MercosApiError(
+            "Valor faturado deve ser maior que zero.", status_code=422
+        )
+    body: dict[str, Any] = {
+        "pedido_id": int(pid) if pid.isdigit() else pid,
+        "valor_faturado": valor,
+        "data_faturamento": (data_faturamento or "").strip()
+        or datetime.now().date().isoformat(),
+    }
+    if (numero_nf or "").strip():
+        body["numero_nf"] = numero_nf.strip()[:500]
+    if (informacoes_adicionais or "").strip():
+        body["informacoes_adicionais"] = informacoes_adicionais.strip()[:500]
+    return post_json(_path("faturamento"), body)
+
+
 def alterar_pedido(pedido_id: int | str, body: dict) -> dict:
     """PUT /v1/pedidos/{id} — id só na URL; nunca no JSON (Mercos rejeita extra keys)."""
     payload = dict(body or {})
@@ -1773,6 +1817,7 @@ __all__ = [
     "criar_pedido",
     "alterar_pedido",
     "cancelar_pedido",
+    "faturar_pedido",
     "criar_titulo",
     "alterar_titulo",
 ]
