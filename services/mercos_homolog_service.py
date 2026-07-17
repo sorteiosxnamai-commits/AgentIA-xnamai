@@ -43,6 +43,8 @@ PATHS = {
     "titulos": "/v1/titulos",
     "pedidos": "/v1/pedidos",
     "pedidos_v2": "/v2/pedidos",
+    # Doc oficial Mercos (Apiary): POST /v1/pedidos/cancelar/{id}, id só na URL
+    "pedidos_cancelar": "/v1/pedidos/cancelar",
 }
 
 
@@ -94,6 +96,7 @@ def inventario_homologacao() -> dict[str, Any]:
             {"entidade": "Usuários", "metodo": "GET", "path": _path("usuarios"), "status": "pronto"},
             {"entidade": "Pedidos", "metodo": "POST", "path": _path("pedidos_v2"), "status": "pronto"},
             {"entidade": "Pedidos", "metodo": "PUT", "path": _path("pedidos") + "/{id}", "status": "pronto"},
+            {"entidade": "Cancelamento de Pedidos", "metodo": "POST", "path": _path("pedidos_cancelar") + "/{id}", "status": "pronto"},
             {"entidade": "Títulos", "metodo": "POST", "path": _path("titulos"), "status": "pronto"},
             {"entidade": "Títulos", "metodo": "PUT", "path": _path("titulos") + "/{id}", "status": "pronto"},
             {"entidade": "DELETE", "metodo": "DELETE", "path": "-", "status": "nao_requerido_ata"},
@@ -1690,6 +1693,21 @@ def criar_pedido(body: dict) -> dict:
     return post_json(_path("pedidos_v2"), body)
 
 
+def cancelar_pedido(pedido_id: int | str) -> dict:
+    """POST /v1/pedidos/cancelar/{id} — cancelamento oficial Mercos.
+
+    Contrato (Apiary): id só na URL, corpo vazio (o cancelamento é processado
+    apenas pelo identificador). Sucesso 200; 412 com mensagem em erros como
+    pedido inexistente ou já cancelado. Não usa DELETE nem o PUT comum.
+    """
+    pid = str(pedido_id or "").strip()
+    if not pid:
+        raise MercosApiError(
+            "Informe o ID do pedido para cancelamento.", status_code=422
+        )
+    return post_json(f"{_path('pedidos_cancelar')}/{pid}", {})
+
+
 def alterar_pedido(pedido_id: int | str, body: dict) -> dict:
     """PUT /v1/pedidos/{id} — id só na URL; nunca no JSON (Mercos rejeita extra keys)."""
     payload = dict(body or {})
@@ -1754,6 +1772,7 @@ __all__ = [
     "alterar_forma_pagamento",
     "criar_pedido",
     "alterar_pedido",
+    "cancelar_pedido",
     "criar_titulo",
     "alterar_titulo",
 ]

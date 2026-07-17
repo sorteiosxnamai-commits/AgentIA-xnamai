@@ -3649,6 +3649,82 @@ def acao_pedidos_alterar(
         return _wrap_result(_erro_html(exc))
 
 
+@router.post("/homologacao-ui/acoes/pedidos-cancelar", response_class=HTMLResponse)
+def acao_pedidos_cancelar(
+    request: Request,
+    token: str = Form(""),
+    pedido_id: str = Form(""),
+):
+    """POST /v1/pedidos/cancelar/{id} — um único cancelamento por clique.
+
+    Contrato oficial: id só na URL, corpo vazio, sem motivo/observação, sem
+    DELETE e sem o PUT comum de pedidos. O pedido permanece no sistema com
+    status Cancelado. Não altera ciclo GET, POST, PUT nem títulos.
+    """
+    _auth(request, token)
+    pid = (pedido_id or "").strip()
+    if not pid:
+        return _wrap_result(
+            _card(
+                "Pedido não informado",
+                [("Ação", "Informe o ID do pedido a cancelar.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+
+    # Status anterior: só consulta o catálogo local já sincronizado (sem
+    # chamada extra à Mercos e sem alterar cursor/etapa do ciclo GET).
+    status_anterior = "—"
+    sessao = (request.cookies.get(_COOKIE_PEDIDOS_SESSAO) or "").strip()
+    if sessao:
+        ped_local = (catalogo_pedidos.obter(sessao).get("pedidos") or {}).get(pid)
+        if isinstance(ped_local, dict) and ped_local.get("status") not in (None, ""):
+            status_anterior = ped_local.get("status")
+
+    try:
+        out = homolog.cancelar_pedido(pid)
+        status = out.get("status_code") or 200
+        numero = (out.get("dados") or {}).get("numero") or "—"
+        card = _card(
+            "Pedido cancelado",
+            [
+                ("Status HTTP", status),
+                ("ID do pedido", pid),
+                ("Número do pedido", numero),
+                ("Status anterior", status_anterior),
+                ("Status atual", "Cancelado"),
+                ("Origem", "Mercos Sandbox"),
+            ],
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="pedido", entity_id=pid)
+    except MercosApiError as exc:
+        mensagem = exc.message or "Não foi possível cancelar o pedido."
+        texto = mensagem.lower()
+        if "inexistente" in texto or exc.status_code == 404:
+            titulo = "Pedido não encontrado"
+        elif "cancelado" in texto:
+            titulo = "Pedido já cancelado"
+        else:
+            titulo = "Não foi possível cancelar o pedido"
+        return _wrap_result(
+            _card(
+                titulo,
+                [
+                    ("Status HTTP", exc.status_code or "—"),
+                    ("ID do pedido", pid),
+                    ("Mensagem", mensagem),
+                ],
+                status_label=f"Erro {exc.status_code or ''}".strip(),
+                css="erro",
+            )
+        )
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 def _numero_documento(valor: str = "") -> str:
     """Número do documento Mercos: obrigatório, máx. 18 caracteres."""
     doc = (valor or "").strip()

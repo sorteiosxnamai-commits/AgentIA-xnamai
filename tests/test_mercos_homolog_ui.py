@@ -3916,6 +3916,214 @@ def test_pedido_post_item_sem_produto_e_ignorado(client, monkeypatch):
     assert chamadas[0]["itens"][0]["produto_id"] == 20400740
 
 
+def test_ui_secao_pedido_cancelar_presente(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    assert 'id="sec-pedidos-cancelar"' in html
+    assert "Pedido — Cancelar" in html
+    assert "Cancelar pedido" in html
+    assert 'value="2150137"' in html  # ID da etapa 4/4 pré-preenchido
+
+
+def test_pedidos_cancelar_endpoint_metodo_e_id_na_url(client, monkeypatch):
+    """POST /v1/pedidos/cancelar/{id}: uma única chamada, id só na URL, corpo vazio."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+
+    def fake_post_json(path, body):
+        chamadas.append((path, body))
+        return {"ok": True, "status_code": 200, "id": None, "dados": {}}
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", fake_post_json)
+    # PUT comum e DELETE não podem ser usados no cancelamento
+    put = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", put)
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-cancelar",
+        data={"pedido_id": "2150137"},
+    )
+    assert resp.status_code == 200
+    assert len(chamadas) == 1
+    path, body = chamadas[0]
+    assert path == "/v1/pedidos/cancelar/2150137"
+    assert body == {}  # id nunca no corpo; sem motivo (contrato não aceita)
+    put.assert_not_called()
+
+    html = resp.text
+    assert "Status HTTP" in html
+    assert "2150137" in html
+    assert "Cancelado" in html
+    assert "Mercos Sandbox" in html
+    assert '"pedido_id"' not in html  # sem JSON cru
+    assert "segredo-ui-homolog" not in html
+
+
+def test_pedidos_cancelar_metodo_http_post(monkeypatch):
+    """O serviço de cancelamento envia método POST (nunca DELETE)."""
+    from services import mercos_homolog_service as homolog
+
+    metodos: list[tuple[str, str]] = []
+
+    class _RespFake:
+        status_code = 200
+        text = ""
+        headers: dict = {}
+
+        def json(self):
+            return {}
+
+    def fake_request(metodo, path, **kw):
+        metodos.append((metodo, path))
+        return _RespFake()
+
+    monkeypatch.setattr(
+        "services.mercos_api_client.request_mercos", fake_request
+    )
+    out = homolog.cancelar_pedido("2150137")
+    assert out["status_code"] == 200
+    assert metodos == [("POST", "/v1/pedidos/cancelar/2150137")]
+
+
+def test_pedidos_cancelar_mostra_status_anterior_do_catalogo(client, monkeypatch):
+    """Status anterior vem do catálogo local, sem chamada extra à Mercos."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services import mercos_pedidos_catalogo
+
+    mercos_pedidos_catalogo._reset_todos_para_testes()
+    mercos_pedidos_catalogo.substituir_completo(
+        "sessao-cancelar",
+        [{"id": 2150137, "cliente_id": 9290584, "status": "2", "total": 451.10}],
+    )
+    client.cookies.set("mercos_pedidos_sessao", "sessao-cancelar")
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 200, "id": None, "dados": {}},
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-cancelar",
+        data={"pedido_id": "2150137"},
+    )
+    assert resp.status_code == 200
+    assert "Status anterior" in resp.text
+    assert "Status atual" in resp.text
+    mercos_pedidos_catalogo._reset_todos_para_testes()
+
+
+def test_pedidos_cancelar_sem_id_nao_chama_mercos(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    post = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", post)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-cancelar", data={"pedido_id": " "}
+    )
+    assert resp.status_code == 200
+    assert "Pedido não informado" in resp.text
+    post.assert_not_called()
+
+
+def test_pedidos_cancelar_inexistente_mostra_erro_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    def boom(path, body):
+        raise MercosApiError(
+            "Pedido 2150137 inexistente para conta 1234567", status_code=412
+        )
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", boom)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-cancelar",
+        data={"pedido_id": "2150137"},
+    )
+    assert resp.status_code == 200
+    assert "Pedido não encontrado" in resp.text
+    assert "412" in resp.text
+    assert '"mensagem"' not in resp.text  # sem JSON cru
+
+
+def test_pedidos_cancelar_ja_cancelado_mostra_erro_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    def boom(path, body):
+        raise MercosApiError("Pedido já cancelado", status_code=412)
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", boom)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-cancelar",
+        data={"pedido_id": "2150137"},
+    )
+    assert resp.status_code == 200
+    assert "Pedido já cancelado" in resp.text
+
+
+def test_pedidos_get_post_put_intactos_apos_cancelamento(client, monkeypatch):
+    """Cancelar não interfere em Pedido GET (localizar), POST e PUT."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 200, "id": None, "dados": {}},
+    )
+    client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-cancelar",
+        data={"pedido_id": "2150137"},
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_pedido",
+        lambda body: {"ok": True, "status_code": 201, "id": 556, "dados": {}},
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.alterar_pedido",
+        lambda pid, body: {"ok": True, "status_code": 200, "dados": {"id": pid}},
+    )
+    r1 = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-criar",
+        data={
+            "cliente_id": "9290584",
+            "itens_json": '[{"produto_id": "20400740", "quantidade": "4", "preco": "78.95"}]',
+        },
+    )
+    assert r1.status_code == 200 and "556" in r1.text
+    r2 = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-alterar",
+        data={"pedido_id": "556", "produto_id": "20400740", "preco": "10.00"},
+    )
+    assert r2.status_code == 200
+    r3 = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-localizar",
+        data={"razao_social": "qualquer"},
+    )
+    assert r3.status_code == 200
+
+
 def test_acao_tipos_pedido_exige_token(client):
     resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido")
     assert resp.status_code == 403

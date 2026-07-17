@@ -821,6 +821,24 @@
           <div class="resultado" id="res-pedidos-alterar"></div>
         </section>
 
+        <!-- 13b -->
+        <section class="panel" id="sec-pedidos-cancelar" data-homolog-sec="pedido-cancelar">
+          <h2>Pedido — Cancelar</h2>
+          <p class="hint">Cancela um pedido existente. O registro permanece no sistema com status Cancelado e não pode ser reativado.</p>
+          <div class="toolbar">
+            <label class="field">ID do pedido
+              <input type="text" id="input-pedido-cancelar-id" value="2150137" />
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/pedidos-cancelar"
+              data-target="res-pedidos-cancelar"
+              data-fields="pedido_id:input-pedido-cancelar-id">
+              Cancelar pedido
+            </button>
+          </div>
+          <div class="resultado" id="res-pedidos-cancelar"></div>
+        </section>
+
         <!-- 14 -->
         <section class="panel" id="sec-titulos-criar" data-homolog-sec="titulo-incluir">
           <h2>Títulos — Incluir</h2>
