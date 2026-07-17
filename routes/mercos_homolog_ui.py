@@ -3882,22 +3882,32 @@ def acao_pedidos_faturar(
     try:
         out = homolog.faturar_pedido(pid, valor)
         status = out.get("status_code") or 201
+        faturamento_id = out.get("id")
+        linhas = [
+            ("Status HTTP", status),
+            ("ID do pedido", pid),
+            ("Número do pedido", (numero or "").strip() or "—"),
+            ("Cliente", (cliente or "").strip() or "—"),
+            ("Total do pedido", _fmt_valor_2casas(total) if (total or "").strip() else "—"),
+            ("Valor faturado", f"{valor:.2f}"),
+            ("Status atual", "Faturado"),
+            ("Origem", "Mercos Sandbox"),
+        ]
+        if faturamento_id not in (None, ""):
+            # Necessário na etapa PUT: a URL de alteração usa o ID do faturamento
+            linhas.insert(2, ("ID do faturamento", faturamento_id))
         card = _card(
             "Pedido faturado",
-            [
-                ("Status HTTP", status),
-                ("ID do pedido", pid),
-                ("Número do pedido", (numero or "").strip() or "—"),
-                ("Cliente", (cliente or "").strip() or "—"),
-                ("Total do pedido", _fmt_valor_2casas(total) if (total or "").strip() else "—"),
-                ("Valor faturado", f"{valor:.2f}"),
-                ("Status atual", "Faturado"),
-                ("Origem", "Mercos Sandbox"),
-            ],
+            linhas,
             status_label=f"Status {status}",
             css="ok",
         )
-        return _wrap_result(card, entity="pedido", entity_id=pid)
+        extra = (
+            {"faturamento-id": str(faturamento_id)}
+            if faturamento_id not in (None, "")
+            else None
+        )
+        return _wrap_result(card, entity="pedido", entity_id=pid, extra_attrs=extra)
     except MercosApiError as exc:
         mensagem = exc.message or "Não foi possível faturar o pedido."
         texto = mensagem.lower()
@@ -3915,6 +3925,105 @@ def acao_pedidos_faturar(
                 [
                     ("Status HTTP", exc.status_code or "—"),
                     ("ID do pedido", pid),
+                    ("Mensagem", mensagem),
+                ],
+                status_label=f"Erro {exc.status_code or ''}".strip(),
+                css="erro",
+            )
+        )
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
+@router.post("/homologacao-ui/acoes/faturamento-alterar", response_class=HTMLResponse)
+def acao_faturamento_alterar(
+    request: Request,
+    token: str = Form(""),
+    faturamento_id: str = Form(""),
+    pedido_id: str = Form(""),
+    numero: str = Form(""),
+    cliente: str = Form(""),
+    total: str = Form(""),
+    valor_anterior: str = Form(""),
+    novo_valor: str = Form(""),
+):
+    """PUT /v1/faturamento/{id} — um único PUT por clique.
+
+    Contrato oficial: a URL recebe o ID do FATURAMENTO (não o do pedido);
+    o corpo reenvia pedido_id, valor_faturado e data_faturamento. Não executa
+    POST de faturamento, DELETE nem o PUT comum de pedidos.
+    """
+    _auth(request, token)
+    fid = (faturamento_id or "").strip()
+    pid = (pedido_id or "").strip()
+    if not fid or not pid:
+        return _wrap_result(
+            _card(
+                "Faturamento não identificado",
+                [
+                    (
+                        "Ação",
+                        "Informe o ID do faturamento (mostrado no cartão do POST de "
+                        "faturamento) e o ID Mercos do pedido.",
+                    )
+                ],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    try:
+        valor = float(str(novo_valor or "").replace(",", "."))
+    except (TypeError, ValueError):
+        valor = 0.0
+    if valor <= 0:
+        return _wrap_result(
+            _card(
+                "Valor faturado inválido",
+                [("Ação", "Informe um novo valor faturado maior que zero.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    try:
+        out = homolog.alterar_faturamento(fid, pid, valor)
+        status = out.get("status_code") or 201
+        card = _card(
+            "Faturamento alterado",
+            [
+                ("Status HTTP", status),
+                ("ID do pedido", pid),
+                ("Número do pedido", (numero or "").strip() or "—"),
+                ("Cliente", (cliente or "").strip() or "—"),
+                ("Total do pedido", _fmt_valor_2casas(total) if (total or "").strip() else "—"),
+                (
+                    "Valor faturado anterior",
+                    _fmt_valor_2casas(valor_anterior)
+                    if (valor_anterior or "").strip()
+                    else "—",
+                ),
+                ("Novo valor faturado", f"{valor:.2f}"),
+                ("Status atual", "Faturamento alterado"),
+                ("Origem", "Mercos Sandbox"),
+            ],
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="pedido", entity_id=pid)
+    except MercosApiError as exc:
+        mensagem = exc.message or "Não foi possível alterar o faturamento."
+        texto = mensagem.lower()
+        if "inexistente" in texto or exc.status_code == 404:
+            titulo = "Faturamento não encontrado"
+        elif "cancelado" in texto:
+            titulo = "Pedido cancelado não pode ter faturamento alterado"
+        else:
+            titulo = "Não foi possível alterar o faturamento"
+        return _wrap_result(
+            _card(
+                titulo,
+                [
+                    ("Status HTTP", exc.status_code or "—"),
+                    ("ID do faturamento", fid),
                     ("Mensagem", mensagem),
                 ],
                 status_label=f"Erro {exc.status_code or ''}".strip(),

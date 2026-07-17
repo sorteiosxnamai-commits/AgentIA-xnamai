@@ -873,6 +873,40 @@
           <div class="resultado" id="res-pedidos-faturar"></div>
         </section>
 
+        <!-- 13d -->
+        <section class="panel" id="sec-faturamento-alterar" data-homolog-sec="faturamento-alterar">
+          <h2>Faturamento de pedido — Alterar</h2>
+          <p class="hint">Altera o valor de um faturamento existente. A URL usa o ID do faturamento (mostrado no cartão do POST de faturamento); nenhum novo faturamento é criado.</p>
+          <div class="toolbar">
+            <label class="field">ID do faturamento
+              <input type="text" id="input-faturamento-alt-fatid" placeholder="Preenchido após faturar" />
+            </label>
+            <label class="field">ID do pedido Mercos
+              <input type="text" id="input-faturamento-alt-pedido" value="2150142" />
+            </label>
+            <label class="field">Número do pedido
+              <input type="text" id="input-faturamento-alt-numero" value="20" />
+            </label>
+            <label class="field">Cliente
+              <input type="text" id="input-faturamento-alt-cliente" value="457564bfe6984fc6" />
+            </label>
+            <label class="field">Total do pedido
+              <input type="text" id="input-faturamento-alt-total" value="43.44" />
+            </label>
+            <label class="field">Novo valor faturado
+              <input type="text" id="input-faturamento-alt-valor" value="10.86" />
+            </label>
+            <input type="hidden" id="input-faturamento-alt-valor-anterior" value="43.44" />
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/faturamento-alterar"
+              data-target="res-faturamento-alterar"
+              data-fields="faturamento_id:input-faturamento-alt-fatid,pedido_id:input-faturamento-alt-pedido,numero:input-faturamento-alt-numero,cliente:input-faturamento-alt-cliente,total:input-faturamento-alt-total,valor_anterior:input-faturamento-alt-valor-anterior,novo_valor:input-faturamento-alt-valor">
+              Alterar faturamento
+            </button>
+          </div>
+          <div class="resultado" id="res-faturamento-alterar"></div>
+        </section>
+
         <!-- 14 -->
         <section class="panel" id="sec-titulos-criar" data-homolog-sec="titulo-incluir">
           <h2>Títulos — Incluir</h2>
@@ -2083,6 +2117,14 @@
               var wrap = target.querySelector(".acao-resultado");
               if (wrap && wrap.getAttribute("data-id")) {
                 remember(storeKey, wrap.getAttribute("data-id"));
+              }
+            }
+            // POST de faturamento devolve o ID do faturamento: preenche a seção de alteração
+            var fatWrap = target.querySelector("[data-faturamento-id]");
+            if (fatWrap) {
+              var fatInput = document.getElementById("input-faturamento-alt-fatid");
+              if (fatInput) {
+                fatInput.value = fatWrap.getAttribute("data-faturamento-id") || "";
               }
             }
           } finally {
