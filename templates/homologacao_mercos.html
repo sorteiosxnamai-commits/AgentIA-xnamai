@@ -1338,6 +1338,14 @@
             target.innerHTML = '<div class="result-card erro"><h4>Acesso negado</h4><p>Não foi possível carregar os dados nesta sessão.</p></div>';
             return null;
           }
+          if (resp.status === 404 || (!resp.ok && text && text.trim().charAt(0) === "{")) {
+            // Nunca mostrar JSON cru (ex.: {"detail":"Not Found"} de servidor desatualizado)
+            target.innerHTML =
+              '<div class="result-card erro"><h4>Ação indisponível</h4>' +
+              "<p>O servidor não reconheceu esta ação. Atualize a página e tente de novo; " +
+              "se continuar, reinicie o servidor para carregar a versão mais recente.</p></div>";
+            return null;
+          }
           if (!text || !String(text).trim()) {
             target.innerHTML = '<div class="result-card erro"><h4>Resposta vazia</h4><p>A sincronização não retornou conteúdo. Tente novamente.</p></div>';
             return resp;

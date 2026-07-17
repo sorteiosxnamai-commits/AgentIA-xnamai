@@ -3418,6 +3418,57 @@ def test_ui_secao_forma_pagamento_incluir_presente(client, monkeypatch):
     assert 'id="input-forma-pgto-ativo"' in html
 
 
+def test_botao_formas_pagamento_usa_url_registrada(client, monkeypatch):
+    """A URL do botão renderizado na UI e a rota FastAPI são exatamente iguais."""
+    import re
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    m = re.search(r'data-action="([^"]*formas-pagamento-criar[^"]*)"', html)
+    assert m, "botão de forma de pagamento sem data-action na UI"
+    url = m.group(1)
+    assert url == "/mercos/homologacao-ui/acoes/formas-pagamento-criar"
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 201, "id": 90233, "dados": {}},
+    )
+    resp = client.post(url, data={"nome": "cca8fdd8c4a24557", "ativo": "sim"})
+    assert resp.status_code != 404
+    assert resp.status_code == 200
+    assert "Status 201" in resp.text
+    assert "90233" in resp.text
+
+
+def test_todos_os_botoes_data_action_apontam_para_rotas_existentes(
+    client, monkeypatch
+):
+    """Nenhum botão da UI pode apontar para rota inexistente (404).
+
+    Sem cookie de sessão, toda ação registrada responde 403 (token exigido);
+    404 indicaria botão com URL errada ou rota não registrada.
+    """
+    import re
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    urls = sorted(set(re.findall(r'data-action="([^"]+)"', html)))
+    assert urls, "nenhum botão data-action encontrado na UI"
+    from fastapi.testclient import TestClient
+    from main import app
+
+    anonimo = TestClient(app)  # sem cookie: espera 403, nunca 404
+    for url in urls:
+        resp = anonimo.post(url)
+        assert resp.status_code != 404, f"rota inexistente para o botão: {url}"
+
+
 def test_formas_pagamento_criar_exige_token(client):
     resp = client.post(
         "/mercos/homologacao-ui/acoes/formas-pagamento-criar",
