@@ -2575,10 +2575,14 @@ def test_usuarios_lock_libera_em_erro(monkeypatch):
 
 def _prep_pedidos(client, monkeypatch):
     from services import mercos_pedidos_catalogo as catp
-    from services.mercos_homolog_service import _reset_resume_clientes_para_testes
+    from services.mercos_homolog_service import (
+        _reset_rate_limiters_para_testes,
+        _reset_resume_clientes_para_testes,
+    )
 
     catp._reset_todos_para_testes()
     _reset_resume_clientes_para_testes()
+    _reset_rate_limiters_para_testes()
     monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
     monkeypatch.setattr(
         "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
@@ -2728,6 +2732,9 @@ def test_pedidos_ciclo_2_etapas_completa_e_incremental(client, monkeypatch):
     # Cartão operacional sem JSON cru nem token
     assert "Requisições previstas" in r2.text
     assert "Requisições executadas" in r2.text
+    assert "Intervalo mínimo aplicado" in r2.text
+    assert "Menor intervalo real entre chamadas" in r2.text
+    assert "Throttling respeitado" in r2.text
     assert "CompanyToken" not in r2.text
     assert '"cliente_razao_social"' not in r2.text.split("<textarea")[0]
 
@@ -2781,6 +2788,188 @@ def test_pedidos_extras_headers_limita_chamadas(monkeypatch):
     assert out["requisicoes_previstas"] == 2
     assert out["requisicoes_executadas"] == 2
     assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+
+
+class _RelogioFake:
+    """Relógio monotônico controlado para testar o rate limiter."""
+
+    def __init__(self):
+        self.t = 0.0
+        self.esperas: list[float] = []
+
+    def agora(self) -> float:
+        return self.t
+
+    def dormir(self, segundos: float) -> None:
+        self.esperas.append(round(float(segundos), 6))
+        self.t += float(segundos)
+
+
+def test_pedidos_rate_limiter_intervalo_minimo_antes_de_cada_request(monkeypatch):
+    """Duas páginas (1 + extras) nunca são chamadas antes do intervalo mínimo."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        PEDIDOS_INTERVALO_MINIMO_SEGUNDOS,
+        _RateLimiterMercos,
+        _reset_resume_clientes_para_testes,
+        listar_pedidos_paginado_seguro,
+    )
+
+    assert PEDIDOS_INTERVALO_MINIMO_SEGUNDOS == 5.0
+    _reset_resume_clientes_para_testes()
+    clk = _RelogioFake()
+    limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
+    instantes: list[float] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/pedidos"
+        instantes.append(clk.t)
+        clk.t += 0.3  # duração variável da requisição
+        if len(instantes) == 1:
+            return (
+                [{"id": 1, "cliente_id": 10, "total": 5.0, "ultima_alteracao": "2026-07-06 14:56:55"}],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "1"},
+            )
+        return (
+            [{"id": 2, "cliente_id": 11, "total": 6.0, "ultima_alteracao": "2026-07-17 10:57:39"}],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_pedidos_paginado_seguro(
+        rate_limiter=limiter, max_paginas=20, timeout_total=60
+    )
+    # Exatamente 1 + extras chamadas válidas
+    assert len(instantes) == 2
+    assert out["requisicoes_executadas"] == 2
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    # A chamada extra respeitou o intervalo mínimo completo (medido do início
+    # da requisição anterior, relógio monotônico)
+    assert instantes[1] - instantes[0] >= 5.0
+    # A espera foi calculada ANTES do request (5.0 - 0.3s de duração)
+    assert clk.esperas == [4.7]
+    assert out["intervalo_minimo_aplicado"] == 5.0
+    assert out["menor_intervalo_real"] >= 5.0
+    assert out["throttling_respeitado"] is True
+
+
+def test_pedidos_rate_limiter_429_respeita_retry_after_e_repete_pagina(monkeypatch):
+    """429: Retry-After integral no limiter e a MESMA página é refeita."""
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import (
+        _RateLimiterMercos,
+        _reset_resume_clientes_para_testes,
+        listar_pedidos_paginado_seguro,
+    )
+
+    _reset_resume_clientes_para_testes()
+    clk = _RelogioFake()
+    limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
+    cursores: list[str | None] = []
+
+    def nao_dormir_local(_s):
+        raise AssertionError("Deve usar o rate limiter, não time.sleep local")
+
+    monkeypatch.setattr("services.mercos_homolog_service.time.sleep", nao_dormir_local)
+
+    def fake_get(path, *, params=None, **_kw):
+        clk.t += 0.2
+        cursor = (params or {}).get("alterado_apos")
+        cursores.append(cursor)
+        if len(cursores) == 2:
+            raise MercosApiError("429", status_code=429, retry_after=7.0)
+        if len(cursores) == 1:
+            return (
+                [{"id": 1, "cliente_id": 10, "total": 5.0, "ultima_alteracao": "2026-07-06 14:56:55"}],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "1"},
+            )
+        return (
+            [{"id": 2, "cliente_id": 11, "total": 6.0, "ultima_alteracao": "2026-07-17 10:57:39"}],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_pedidos_paginado_seguro(
+        rate_limiter=limiter, max_paginas=20, timeout_total=60
+    )
+    # A mesma página (mesmo alterado_apos) é refeita após o 429
+    assert len(cursores) == 3
+    assert cursores[1] == cursores[2] == "2026-07-06 14:56:55"
+    # Retry-After integral aguardado antes de refazer
+    assert 7.0 in clk.esperas
+    # Só as 2 respostas válidas contam como requisições executadas
+    assert out["requisicoes_executadas"] == 2
+    assert out["total"] == 2
+    assert out["throttling_respeitado"] is True
+
+
+def test_pedidos_rate_limiter_serializa_chamadas_concorrentes():
+    """Duas chamadas concorrentes nunca ultrapassam o limite (lock compartilhado)."""
+    import threading
+    import time as time_mod
+
+    from services.mercos_homolog_service import _RateLimiterMercos
+
+    limiter = _RateLimiterMercos(0.05)  # intervalo real curto p/ teste rápido
+    instantes: list[float] = []
+
+    def chamada():
+        return "ok"
+
+    def worker():
+        limiter.executar(chamada, instantes)
+
+    threads = [threading.Thread(target=worker) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(instantes) == 3
+    ordenados = sorted(instantes)
+    for a, b in zip(ordenados, ordenados[1:]):
+        assert b - a >= 0.05 - 1e-3
+    del time_mod
+
+
+def test_pedidos_rate_limiter_libera_lock_em_erro():
+    from services.mercos_homolog_service import _RateLimiterMercos
+
+    clk = _RelogioFake()
+    limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
+
+    def boom():
+        raise RuntimeError("falha na chamada")
+
+    with pytest.raises(RuntimeError):
+        limiter.executar(boom)
+    # Lock liberado no finally: nova execução funciona
+    resultado, _ = limiter.executar(lambda: "ok")
+    assert resultado == "ok"
+
+
+def test_pedidos_sincronizacoes_diferentes_compartilham_limiter(monkeypatch):
+    """O controle não é variável local: syncs distintas respeitam o intervalo."""
+    from services.mercos_homolog_service import (
+        _rate_limiter_pedidos,
+        _reset_rate_limiters_para_testes,
+    )
+
+    _reset_rate_limiters_para_testes()
+    l1 = _rate_limiter_pedidos()
+    l2 = _rate_limiter_pedidos()
+    assert l1 is l2
+    clk = _RelogioFake()
+    l1._relogio = clk.agora
+    l1._dormir = clk.dormir
+    instantes: list[float] = []
+    l1.executar(lambda: "sync-1", instantes)
+    # Segunda sincronização logo em seguida espera o intervalo restante
+    l2.executar(lambda: "sync-2", instantes)
+    assert instantes[1] - instantes[0] >= l1.intervalo_minimo
 
 
 def test_pedidos_incremental_envia_cursor_exato(monkeypatch):

@@ -730,6 +730,18 @@ def _linhas_ciclo_pedidos(
         valor = sync.get(chave)
         return valor if valor is not None else "—"
 
+    def _seg(chave: str) -> str:
+        valor = sync.get(chave)
+        if valor is None:
+            return "—"
+        try:
+            return f"{float(valor):.1f}s"
+        except (TypeError, ValueError):
+            return str(valor)
+
+    throttling = sync.get("throttling_respeitado")
+    throttling_label = "—" if throttling is None else ("Sim" if throttling else "Não")
+
     return [
         ("Etapa interna", f"{etapa}/2"),
         ("Tipo da última busca", tipo_label),
@@ -740,6 +752,9 @@ def _linhas_ciclo_pedidos(
         ("Requisições extras informadas pela Mercos", _num("requisicoes_extras")),
         ("Requisições previstas", _num("requisicoes_previstas")),
         ("Requisições executadas", _num("requisicoes_executadas")),
+        ("Intervalo mínimo aplicado", _seg("intervalo_minimo_aplicado")),
+        ("Menor intervalo real entre chamadas", _seg("menor_intervalo_real")),
+        ("Throttling respeitado", throttling_label),
         ("Total retornado em todas as páginas", sync.get("total_lote") or 0),
         ("Total de pedidos", len((estado or {}).get("pedidos") or {})),
         ("Motivo da parada", sync.get("motivo_parada") or "—"),
@@ -3065,6 +3080,9 @@ def acao_pedidos_sincronizar(
             "requisicoes_extras": data.get("requisicoes_extras"),
             "requisicoes_previstas": data.get("requisicoes_previstas"),
             "requisicoes_executadas": data.get("requisicoes_executadas"),
+            "intervalo_minimo_aplicado": data.get("intervalo_minimo_aplicado"),
+            "menor_intervalo_real": data.get("menor_intervalo_real"),
+            "throttling_respeitado": data.get("throttling_respeitado"),
         }
         if tipo_real == "completa":
             catalogo_pedidos.substituir_completo(

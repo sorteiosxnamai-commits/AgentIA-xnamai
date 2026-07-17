@@ -5,6 +5,7 @@ Não altera o agente IA nem CHECKOUT_CREATE_ORDER.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import datetime, timedelta
@@ -480,6 +481,100 @@ class _ExpiringLock:
 
 _SYNC_CLIENTES_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
 
+# Contrato oficial de throttling da Mercos (Apiary, seção "Throttling"): o
+# limite é GLOBAL por empresa e o 429 informa tempo_ate_permitir_novamente=5
+# com limite_de_requisicoes=1 → 1 requisição por janela de 5 segundos.
+# Diagnóstico sandbox 2026-07-17 em /v1/pedidos confirmou: chamada a +1,5s
+# recebeu Retry-After 3 e a +3,5s recebeu Retry-After 1 (próxima permitida
+# ~5s após a requisição anterior).
+PEDIDOS_INTERVALO_MINIMO_SEGUNDOS = 5.0
+
+
+class _RateLimiterMercos:
+    """Rate limiter compartilhado (1 requisição por intervalo mínimo).
+
+    Usa relógio monotônico e mantém o lock durante a espera E a chamada HTTP:
+    chamadas concorrentes ficam serializadas e nunca violam o intervalo,
+    inclusive entre sincronizações diferentes da mesma empresa.
+    """
+
+    def __init__(
+        self,
+        intervalo_minimo: float,
+        *,
+        relogio=None,
+        dormir=None,
+    ):
+        self.intervalo_minimo = float(intervalo_minimo)
+        self._relogio = relogio
+        self._dormir = dormir
+        self._lock = threading.Lock()
+        self._proximo_permitido: float | None = None
+        self._ultimo_inicio: float | None = None
+
+    def _agora(self) -> float:
+        return self._relogio() if self._relogio is not None else time.monotonic()
+
+    def _esperar(self, segundos: float) -> None:
+        if self._dormir is not None:
+            self._dormir(segundos)
+        else:
+            time.sleep(segundos)
+
+    def executar(self, chamada, instantes: list | None = None):
+        """Adquire o lock, aguarda até o próximo horário permitido e chama.
+
+        Registra o instante (monotônico) do início da chamada e agenda o
+        próximo horário permitido ANTES do request. Lock liberado no finally.
+        Retorna (resultado, segundos_esperados).
+        """
+        self._lock.acquire()
+        try:
+            agora = self._agora()
+            espera = 0.0
+            if self._proximo_permitido is not None:
+                espera = max(0.0, self._proximo_permitido - agora)
+            if espera > 0:
+                self._esperar(espera)
+                agora = self._agora()
+            if instantes is not None:
+                instantes.append(agora)
+            self._ultimo_inicio = agora
+            self._proximo_permitido = agora + self.intervalo_minimo
+            resultado = chamada()
+            return resultado, espera
+        finally:
+            self._lock.release()
+
+    def aplicar_retry_after(self, segundos: float | None) -> None:
+        """HTTP 429: o próximo horário permitido passa a ser agora + Retry-After."""
+        try:
+            espera = max(0.0, float(segundos)) if segundos is not None else self.intervalo_minimo
+        except (TypeError, ValueError):
+            espera = self.intervalo_minimo
+        with self._lock:
+            self._proximo_permitido = self._agora() + espera
+
+
+_RATE_LIMITERS_MERCOS: dict[str, _RateLimiterMercos] = {}
+_RATE_LIMITERS_LOCK = threading.Lock()
+
+
+def _rate_limiter_pedidos() -> _RateLimiterMercos:
+    """Rate limiter compartilhado por empresa (CompanyToken) para GET de pedidos."""
+    chave = os.getenv("MERCOS_COMPANY_TOKEN", "").strip() or "default"
+    with _RATE_LIMITERS_LOCK:
+        limiter = _RATE_LIMITERS_MERCOS.get(chave)
+        if limiter is None:
+            limiter = _RateLimiterMercos(PEDIDOS_INTERVALO_MINIMO_SEGUNDOS)
+            _RATE_LIMITERS_MERCOS[chave] = limiter
+        return limiter
+
+
+def _reset_rate_limiters_para_testes() -> None:
+    with _RATE_LIMITERS_LOCK:
+        _RATE_LIMITERS_MERCOS.clear()
+
 
 def _assinatura_pagina_clientes(lote: list) -> str:
     partes: list[str] = []
@@ -551,23 +646,41 @@ def _obter_lote_pagina_clientes(
     params: dict[str, Any],
     timeout: float,
     pagina: int,
+    rate_limiter: "_RateLimiterMercos | None" = None,
+    instantes: list | None = None,
 ) -> tuple[list[dict], float, dict]:
     """GET de uma página com até 3 tentativas e backoff/Retry-After.
 
-    Retorna (lote, segundos_esperados_em_429, headers_da_resposta).
-    Em 429 só repete a chamada atual (nunca reinicia a sincronização).
+    Retorna (lote, segundos_esperados_em_throttle, headers_da_resposta).
+    Em 429 só repete a MESMA página (nunca reinicia a sincronização).
     Em 429 esgotado, propaga MercosApiError com pagina e retry_after.
+
+    Com rate_limiter, o intervalo mínimo é aguardado ANTES de cada request
+    (lock adquirido durante espera+chamada) e o Retry-After de um 429
+    reagenda o próximo horário permitido no limiter compartilhado.
     """
     espera_total = 0.0
     ultimo_retry: float | None = None
     for tentativa in range(CLIENTES_TENTATIVAS_POR_PAGINA):
         try:
-            payload, headers_resp = get_json_com_headers(
-                path,
-                params=params,
-                timeout=timeout,
-                max_retries_429=0,  # throttling tratado aqui
-            )
+            if rate_limiter is not None:
+                (payload, headers_resp), esperado = rate_limiter.executar(
+                    lambda: get_json_com_headers(
+                        path,
+                        params=params,
+                        timeout=timeout,
+                        max_retries_429=0,  # throttling tratado aqui
+                    ),
+                    instantes,
+                )
+                espera_total += esperado
+            else:
+                payload, headers_resp = get_json_com_headers(
+                    path,
+                    params=params,
+                    timeout=timeout,
+                    max_retries_429=0,  # throttling tratado aqui
+                )
             lote = [i for i in _extrair_lista(payload) if isinstance(i, dict)]
             return lote, espera_total, headers_resp
         except MercosApiError as exc:
@@ -576,16 +689,20 @@ def _obter_lote_pagina_clientes(
             if exc.status_code != 429:
                 raise
             ultimo_retry = exc.retry_after
+            espera = _espera_por_429(tentativa, ultimo_retry)
+            if rate_limiter is not None:
+                # Retry-After integral: próximo horário permitido = agora + espera
+                rate_limiter.aplicar_retry_after(espera)
             if tentativa >= CLIENTES_TENTATIVAS_POR_PAGINA - 1:
                 raise MercosApiError(
                     "Mercos retornou 429 (throttling). Aguarde e tente novamente.",
                     status_code=429,
-                    retry_after=_espera_por_429(tentativa, ultimo_retry),
+                    retry_after=espera,
                     pagina=pagina,
                 ) from exc
-            espera = _espera_por_429(tentativa, ultimo_retry)
-            time.sleep(espera)
-            espera_total += espera
+            if rate_limiter is None:
+                time.sleep(espera)
+                espera_total += espera
     raise MercosApiError(
         "Mercos retornou 429 (throttling). Aguarde e tente novamente.",
         status_code=429,
@@ -658,6 +775,7 @@ def _listar_paginado_seguro(
     timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
     params_extra: dict | None = None,
     sessao_id: str | None = None,
+    rate_limiter: "_RateLimiterMercos | None" = None,
 ) -> dict[str, Any]:
     """Paginação segura Mercos com paradas anti-travamento e respeito a 429.
 
@@ -692,6 +810,7 @@ def _listar_paginado_seguro(
     requisicoes_extras: int | None = None
     requisicoes_previstas: int | None = None
     qtde_total_header: int | None = None
+    instantes_chamadas: list[float] = []
     inicio = time.monotonic()
 
     resume = _carregar_resume_clientes(chave_resume) if sessao_id else None
@@ -726,6 +845,8 @@ def _listar_paginado_seguro(
                 params=params,
                 timeout=timeout_resto,
                 pagina=pagina,
+                rate_limiter=rate_limiter,
+                instantes=instantes_chamadas,
             )
             espera_429_total += espera_pag
         except MercosApiError as exc:
@@ -793,7 +914,8 @@ def _listar_paginado_seguro(
                 break
             cursor_atual = novo_cursor
             pagina += 1
-            time.sleep(CLIENTES_INTERVALO_ENTRE_PAGINAS)
+            if rate_limiter is None:
+                time.sleep(CLIENTES_INTERVALO_ENTRE_PAGINAS)
             continue
 
         # Fallback (header ausente): paradas defensivas.
@@ -830,7 +952,8 @@ def _listar_paginado_seguro(
         cursor_atual = novo_cursor
 
         pagina += 1
-        time.sleep(CLIENTES_INTERVALO_ENTRE_PAGINAS)
+        if rate_limiter is None:
+            time.sleep(CLIENTES_INTERVALO_ENTRE_PAGINAS)
 
     _limpar_resume_clientes(chave_resume)
 
@@ -851,6 +974,18 @@ def _listar_paginado_seguro(
         "requisicoes_executadas": paginas_lidas,
         "qtde_total_registros": qtde_total_header,
     }
+    if rate_limiter is not None:
+        menor_intervalo: float | None = None
+        for a, b in zip(instantes_chamadas, instantes_chamadas[1:]):
+            delta = b - a
+            if menor_intervalo is None or delta < menor_intervalo:
+                menor_intervalo = delta
+        out["intervalo_minimo_aplicado"] = rate_limiter.intervalo_minimo
+        out["menor_intervalo_real"] = menor_intervalo
+        out["throttling_respeitado"] = (
+            menor_intervalo is None
+            or menor_intervalo >= rate_limiter.intervalo_minimo - 1e-6
+        )
     if alterado_apos_inicial:
         out["filtros"] = {"alterado_apos": alterado_apos_inicial}
     return out
@@ -1087,6 +1222,7 @@ def listar_pedidos_paginado_seguro(
     timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
     params_extra: dict | None = None,
     sessao_id: str | None = None,
+    rate_limiter: "_RateLimiterMercos | None" = None,
 ) -> dict[str, Any]:
     """Lista pedidos com o mesmo contrato seguro de clientes/usuários.
 
@@ -1095,6 +1231,10 @@ def listar_pedidos_paginado_seguro(
     MEUSPEDIDOS_QTDE_TOTAL_REGISTROS / REQUISICOES_EXTRAS. Cada item traz
     cliente_id, cliente_razao_social, total, status, data_emissao e
     ultima_alteracao (formato "YYYY-MM-DD HH:MM:SS").
+
+    Throttling: o intervalo mínimo é garantido ANTES de cada requisição por
+    um rate limiter compartilhado por empresa (relógio monotônico), inclusive
+    entre a 1ª chamada e cada chamada extra de MEUSPEDIDOS_REQUISICOES_EXTRAS.
     """
     return _listar_paginado_seguro(
         path=_path("pedidos"),
@@ -1106,6 +1246,7 @@ def listar_pedidos_paginado_seguro(
         timeout_total=timeout_total,
         params_extra=params_extra,
         sessao_id=sessao_id,
+        rate_limiter=rate_limiter if rate_limiter is not None else _rate_limiter_pedidos(),
     )
 
 
@@ -1170,6 +1311,9 @@ def sincronizar_pedidos(
             "requisicoes_previstas": data.get("requisicoes_previstas"),
             "requisicoes_executadas": data.get("requisicoes_executadas"),
             "qtde_total_registros": data.get("qtde_total_registros"),
+            "intervalo_minimo_aplicado": data.get("intervalo_minimo_aplicado"),
+            "menor_intervalo_real": data.get("menor_intervalo_real"),
+            "throttling_respeitado": data.get("throttling_respeitado"),
         }
     finally:
         _SYNC_PEDIDOS_LOCK.release()

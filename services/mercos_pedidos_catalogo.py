@@ -42,6 +42,9 @@ def _estado_vazio() -> dict[str, Any]:
             "requisicoes_extras": None,
             "requisicoes_previstas": None,
             "requisicoes_executadas": None,
+            "intervalo_minimo_aplicado": None,
+            "menor_intervalo_real": None,
+            "throttling_respeitado": None,
         },
         "ciclo": _ciclo_vazio(),
     }
@@ -187,6 +190,9 @@ def _aplicar_meta(estado: dict[str, Any], meta: dict[str, Any] | None) -> None:
         "requisicoes_extras",
         "requisicoes_previstas",
         "requisicoes_executadas",
+        "intervalo_minimo_aplicado",
+        "menor_intervalo_real",
+        "throttling_respeitado",
     ):
         if chave in meta:
             sync[chave] = meta[chave]
