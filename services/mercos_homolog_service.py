@@ -1078,6 +1078,103 @@ def sincronizar_usuarios(
         _SYNC_USUARIOS_LOCK.release()
 
 
+def listar_pedidos_paginado_seguro(
+    *,
+    alterado_apos: str | None = None,
+    pagina_inicial: int = 1,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    params_extra: dict | None = None,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Lista pedidos com o mesmo contrato seguro de clientes/usuários.
+
+    Diagnóstico sandbox 2026-07-17: GET /v1/pedidos aceita alterado_apos
+    (cursor keyset, filtro estritamente maior) e retorna os headers
+    MEUSPEDIDOS_QTDE_TOTAL_REGISTROS / REQUISICOES_EXTRAS. Cada item traz
+    cliente_id, cliente_razao_social, total, status, data_emissao e
+    ultima_alteracao (formato "YYYY-MM-DD HH:MM:SS").
+    """
+    return _listar_paginado_seguro(
+        path=_path("pedidos"),
+        resume_ns="pedidos",
+        alterado_apos=alterado_apos,
+        pagina_inicial=pagina_inicial,
+        max_paginas=max_paginas,
+        timeout_request=timeout_request,
+        timeout_total=timeout_total,
+        params_extra=params_extra,
+        sessao_id=sessao_id,
+    )
+
+
+_SYNC_PEDIDOS_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
+
+
+def sincronizar_pedidos(
+    cursor: str | None = None,
+    *,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Uma sincronização Pedido GET com o mesmo padrão seguro de usuários.
+
+    alterado_apos é filtro estritamente maior: envia o cursor EXATO da
+    sincronização anterior (sem sobreposição de 1s). Respeita Retry-After e
+    backoff por página, executa 1 + MEUSPEDIDOS_REQUISICOES_EXTRAS chamadas
+    quando o header existir e libera o lock sempre no finally.
+    """
+    if not _SYNC_PEDIDOS_LOCK.acquire(blocking=False):
+        raise MercosApiError(
+            "Sincronização de pedidos já em andamento. Aguarde a conclusão.",
+            status_code=409,
+        )
+    try:
+        cursor_base = (cursor or "").strip() or None
+        tipo = "incremental" if cursor_base else "completa"
+        # Cursor exato: enviado byte a byte como foi salvo.
+        alterado_apos = cursor_base
+        data = listar_pedidos_paginado_seguro(
+            alterado_apos=alterado_apos,
+            pagina_inicial=1,
+            max_paginas=max_paginas,
+            timeout_request=timeout_request,
+            timeout_total=timeout_total,
+            sessao_id=sessao_id,
+        )
+        itens = deduplicar_por_id_alteracao(data.get("itens") or [])
+        total = len(itens)
+        maior = maior_ultima_alteracao(itens)
+        novo_cursor = maior if maior else cursor_base
+        status = data.get("status") or "concluida"
+        return {
+            "ok": True,
+            "tipo": tipo,
+            "cursor_base": cursor_base,
+            "alterado_apos_enviado": alterado_apos,
+            "cursor_anterior": cursor_base,
+            "novo_cursor": novo_cursor,
+            "total": total,
+            "itens": itens,
+            "path": data.get("path"),
+            "paginas_lidas": data.get("paginas_lidas"),
+            "filtros": data.get("filtros") or {},
+            "status": status,
+            "motivo_parada": data.get("motivo_parada") or MOTIVO_PARADA_FIM,
+            "espera_429_segundos": data.get("espera_429_segundos") or 0,
+            "pagina_atual": data.get("pagina_atual"),
+            "requisicoes_extras": data.get("requisicoes_extras"),
+            "requisicoes_previstas": data.get("requisicoes_previstas"),
+            "requisicoes_executadas": data.get("requisicoes_executadas"),
+            "qtde_total_registros": data.get("qtde_total_registros"),
+        }
+    finally:
+        _SYNC_PEDIDOS_LOCK.release()
+
+
 def listar_segmentos(**kw) -> dict:
     return listar_paginado(_path("segmentos"), **kw)
 
@@ -1436,6 +1533,8 @@ __all__ = [
     "listar_usuarios",
     "listar_usuarios_paginado_seguro",
     "sincronizar_usuarios",
+    "listar_pedidos_paginado_seguro",
+    "sincronizar_pedidos",
     "criar_cliente",
     "alterar_cliente",
     "criar_pedido",

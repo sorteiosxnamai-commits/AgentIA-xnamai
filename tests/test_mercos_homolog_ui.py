@@ -2573,6 +2573,422 @@ def test_usuarios_lock_libera_em_erro(monkeypatch):
     _SYNC_USUARIOS_LOCK.release()
 
 
+def _prep_pedidos(client, monkeypatch):
+    from services import mercos_pedidos_catalogo as catp
+    from services.mercos_homolog_service import _reset_resume_clientes_para_testes
+
+    catp._reset_todos_para_testes()
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    return catp
+
+
+def test_ui_secao_pedidos_buscar_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    secao = html.split('id="sec-pedidos-buscar"')[1].split("</section>")[0]
+    assert 'id="btn-pedidos-reiniciar"' in secao
+    assert 'id="btn-pedidos-sincronizar"' in secao
+    assert 'id="input-pedidos-razao"' in secao
+    assert 'id="btn-pedidos-localizar"' in secao
+    assert "Reiniciar ciclo de sincronização" in secao
+    assert "Localizar pedido pelo cliente" in secao
+    # POST e PUT de pedido preservados na UI
+    assert 'id="sec-pedidos-criar"' in html
+    assert 'id="sec-pedidos-alterar"' in html
+
+
+def test_pedidos_reiniciar_nao_chama_mercos(client, monkeypatch):
+    catp = _prep_pedidos(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called
+    )
+    resp = client.post("/mercos/homologacao-ui/acoes/pedidos-reiniciar")
+    assert resp.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in resp.text
+    assert "0/2" in resp.text
+    assert 'data-ciclo-ativo="1"' in resp.text
+    called.assert_not_called()
+    sessao = client.cookies.get("mercos_pedidos_sessao")
+    assert catp.total(sessao) == 0
+    assert catp.obter_ciclo(sessao)["etapa_interna"] == 0
+
+
+def _fake_pedidos_sandbox(cursores_vistos):
+    """Mock do contrato real de GET /v1/pedidos (diagnóstico 2026-07-17)."""
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/pedidos"
+        params = params or {}
+        assert "pagina" not in params
+        cursor = params.get("alterado_apos")
+        # alterado_apos é filtro estritamente maior: cursor exato, nunca -1s
+        assert cursor != "2026-07-06 14:56:54"
+        assert cursor != "2026-07-17 10:57:38"
+        cursores_vistos.append(cursor)
+        headers = {
+            "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+            "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "3",
+            "MEUSPEDIDOS_REQUISICOES_EXTRAS": "0",
+        }
+        if cursor is None:
+            return (
+                [
+                    {
+                        "id": 2148915,
+                        "cliente_id": 9282664,
+                        "cliente_razao_social": "cliente-antigo",
+                        "total": 79.9,
+                        "status": "1",
+                        "data_emissao": "2026-07-06",
+                        "ultima_alteracao": "2026-07-06 14:56:55",
+                    },
+                    {
+                        "id": 2148916,
+                        "cliente_id": 9282665,
+                        "cliente_razao_social": "outro-cliente",
+                        "total": 120.5,
+                        "status": "1",
+                        "data_emissao": "2026-07-06",
+                        "ultima_alteracao": "2026-07-06 14:56:55",
+                    },
+                ],
+                headers,
+            )
+        if cursor == "2026-07-06 14:56:55":
+            return (
+                [
+                    {
+                        "id": 2150999,
+                        "cliente_id": 9291000,
+                        "cliente_razao_social": "1f9e362a2b3a4365",
+                        "total": 249.9,
+                        "status": "1",
+                        "data_emissao": "2026-07-17",
+                        "ultima_alteracao": "2026-07-17 10:57:39",
+                    },
+                ],
+                headers,
+            )
+        return ([], headers)
+
+    return fake_get
+
+
+def test_pedidos_ciclo_2_etapas_completa_e_incremental(client, monkeypatch):
+    """Etapa 1 completa sem alterado_apos; etapa 2 incremental com cursor exato.
+
+    O pedido do cliente 1f9e362a2b3a4365 chega na incremental e entra no
+    catálogo acumulado sem perder os pedidos anteriores.
+    """
+    catp = _prep_pedidos(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_pedidos_sandbox(cursores),
+    )
+    client.post("/mercos/homologacao-ui/acoes/pedidos-reiniciar")
+    sessao = client.cookies.get("mercos_pedidos_sessao")
+
+    # Etapa 1 — busca completa (exatamente 1 chamada, sem alterado_apos)
+    r1 = client.post("/mercos/homologacao-ui/acoes/pedidos-sincronizar")
+    assert r1.status_code == 200
+    assert cursores == [None]
+    assert "1/2" in r1.text
+    assert 'data-tipo-busca="completa"' in r1.text
+    assert catp.total(sessao) == 2
+    assert catp.obter_ciclo(sessao)["chamadas_completas"] == 1
+
+    # Etapa 2 — incremental com alterado_apos = cursor EXATO da etapa 1
+    r2 = client.post("/mercos/homologacao-ui/acoes/pedidos-sincronizar")
+    assert r2.status_code == 200
+    assert cursores[1] == "2026-07-06 14:56:55"
+    assert "2/2" in r2.text
+    assert 'data-tipo-busca="incremental"' in r2.text
+    assert 'data-cursor-base="2026-07-06 14:56:55"' in r2.text
+    assert 'data-alterado-apos-enviado="2026-07-06 14:56:55"' in r2.text
+    assert "1f9e362a2b3a4365" in r2.text
+    # Catálogo acumulado: mantém anteriores e adiciona o novo
+    assert catp.total(sessao) == 3
+    estado = catp.obter(sessao)
+    assert "2148915" in estado["pedidos"]  # pedido antigo preservado
+    assert "2150999" in estado["pedidos"]  # novo pedido da incremental
+    ciclo = catp.obter_ciclo(sessao)
+    assert ciclo["chamadas_completas"] == 1
+    assert ciclo["chamadas_incrementais"] == 1
+    assert ciclo["etapa_interna"] == 2
+    # Cartão operacional sem JSON cru nem token
+    assert "Requisições previstas" in r2.text
+    assert "Requisições executadas" in r2.text
+    assert "CompanyToken" not in r2.text
+    assert '"cliente_razao_social"' not in r2.text.split("<textarea")[0]
+
+
+def test_pedidos_extras_headers_limita_chamadas(monkeypatch):
+    """extras=1 → exatamente 2 chamadas; sem 3ª esperando lote vazio."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        listar_pedidos_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    chamadas: list[str | None] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/pedidos"
+        chamadas.append((params or {}).get("alterado_apos"))
+        assert len(chamadas) <= 2, "não pode existir 3ª chamada"
+        if len(chamadas) == 1:
+            return (
+                [
+                    {"id": 1, "cliente_id": 10, "total": 5.0, "ultima_alteracao": "2026-07-06 14:56:55"},
+                    {"id": 2, "cliente_id": 11, "total": 6.0, "ultima_alteracao": "2026-07-07 08:00:00"},
+                ],
+                {
+                    "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+                    "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "3",
+                    "MEUSPEDIDOS_REQUISICOES_EXTRAS": "1",
+                },
+            )
+        return (
+            [
+                {"id": 3, "cliente_id": 12, "total": 7.0, "ultima_alteracao": "2026-07-17 10:57:39"},
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_pedidos_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert len(chamadas) == 2
+    assert chamadas[0] is None
+    assert chamadas[1] == "2026-07-07 08:00:00"
+    assert out["total"] == 3
+    assert out["requisicoes_extras"] == 1
+    assert out["requisicoes_previstas"] == 2
+    assert out["requisicoes_executadas"] == 2
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+
+
+def test_pedidos_incremental_envia_cursor_exato(monkeypatch):
+    """alterado_apos = cursor base byte a byte, nunca cursor - 1s."""
+    from services.mercos_homolog_service import sincronizar_pedidos
+
+    capt: dict = {}
+
+    def fake_listar(alterado_apos=None, **_kw):
+        capt["alterado_apos"] = alterado_apos
+        return {"itens": [], "paginas_lidas": 1}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_pedidos_paginado_seguro",
+        fake_listar,
+    )
+    out = sincronizar_pedidos("2026-07-17 10:57:39")
+    assert capt["alterado_apos"] == "2026-07-17 10:57:39"
+    assert out["alterado_apos_enviado"] == out["cursor_base"] == "2026-07-17 10:57:39"
+    assert out["novo_cursor"] == "2026-07-17 10:57:39"
+
+
+def test_pedidos_localizar_nao_faz_requisicao_http(client, monkeypatch):
+    """Localizar usa só o catálogo local (razão completa ou prefixo); cursor e etapa intactos."""
+    catp = _prep_pedidos(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar pedido não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", explode)
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", explode)
+
+    client.post("/mercos/homologacao-ui/acoes/pedidos-reiniciar")
+    sessao = client.cookies.get("mercos_pedidos_sessao")
+    catp.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 2150999,
+                "cliente_id": 9291000,
+                "cliente_razao_social": "1f9e362a2b3a4365",
+                "total": 249.9,
+                "status": "1",
+                "data_emissao": "2026-07-17",
+                "ultima_alteracao": "2026-07-17 10:57:39",
+            }
+        ],
+    )
+    etapa_antes = catp.obter_ciclo(sessao)["etapa_interna"]
+
+    # Por prefixo
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-localizar",
+        data={"razao_social": "1f9e362a"},
+    )
+    assert resp.status_code == 200
+    assert "Pedido localizado" in resp.text
+    assert "1f9e362a2b3a4365" in resp.text
+    assert "Total do pedido" in resp.text
+    assert "249.90" in resp.text
+    # Não altera cursor nem etapa
+    assert resp.cookies.get("mercos_pedidos_cursor") is None
+    assert 'data-cursor-fixo="1"' in resp.text
+    assert catp.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+    # Por razão social completa
+    resp2 = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-localizar",
+        data={"razao_social": "1f9e362a2b3a4365"},
+    )
+    assert "Pedido localizado" in resp2.text
+    assert "249.90" in resp2.text
+
+
+def test_pedidos_localizar_relaciona_cliente_id_com_catalogo_clientes(
+    client, monkeypatch
+):
+    """Pedido sem razão social usa o catálogo local de clientes para relacionar."""
+    from services import mercos_clientes_catalogo as catc
+
+    catp = _prep_pedidos(client, monkeypatch)
+    catc._reset_todos_para_testes()
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar pedido não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", explode)
+
+    # Catálogo local de clientes já sincronizado
+    client.post("/mercos/homologacao-ui/acoes/clientes-reiniciar")
+    sessao_cli = client.cookies.get("mercos_clientes_sessao")
+    catc.upsert_incremental(
+        sessao_cli,
+        [
+            {
+                "id": 9291000,
+                "razao_social": "1f9e362a2b3a4365",
+                "ultima_alteracao": "2026-07-17 09:00:00",
+            }
+        ],
+    )
+
+    client.post("/mercos/homologacao-ui/acoes/pedidos-reiniciar")
+    sessao = client.cookies.get("mercos_pedidos_sessao")
+    catp.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 2150999,
+                "cliente_id": 9291000,
+                "total": 249.9,
+                "status": "1",
+                "data_emissao": "2026-07-17",
+                "ultima_alteracao": "2026-07-17 10:57:39",
+            }
+        ],
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-localizar",
+        data={"razao_social": "1f9e362a2b3a4365"},
+    )
+    assert resp.status_code == 200
+    assert "Pedido localizado" in resp.text
+    assert "1f9e362a2b3a4365" in resp.text
+    assert "249.90" in resp.text
+
+
+def test_pedidos_429_retorna_retry_after_e_libera_lock(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import _SYNC_PEDIDOS_LOCK
+
+    _prep_pedidos(client, monkeypatch)
+
+    def sempre_429(path, *, params=None, **_kw):
+        raise MercosApiError("429", status_code=429, retry_after=7.0)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", sempre_429
+    )
+    client.post("/mercos/homologacao-ui/acoes/pedidos-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/pedidos-sincronizar")
+    assert resp.status_code == 429
+    assert resp.headers.get("Retry-After") == "7"
+    assert "Aguardando limite da Mercos" in resp.text
+    # Lock liberado no finally: nova aquisição funciona
+    assert _SYNC_PEDIDOS_LOCK.acquire(blocking=False) is True
+    _SYNC_PEDIDOS_LOCK.release()
+
+
+def test_pedidos_lock_libera_em_erro(monkeypatch):
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import (
+        _SYNC_PEDIDOS_LOCK,
+        sincronizar_pedidos,
+    )
+
+    _SYNC_PEDIDOS_LOCK.release()
+    # Ocupado → 409 sem chamadas concorrentes
+    assert _SYNC_PEDIDOS_LOCK.acquire(blocking=False)
+    try:
+        with pytest.raises(MercosApiError) as exc:
+            sincronizar_pedidos()
+        assert exc.value.status_code == 409
+    finally:
+        _SYNC_PEDIDOS_LOCK.release()
+
+    # Libera no finally mesmo com erro
+    def boom(**_k):
+        raise MercosApiError("falha", status_code=502)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_pedidos_paginado_seguro", boom
+    )
+    with pytest.raises(MercosApiError):
+        sincronizar_pedidos()
+    assert _SYNC_PEDIDOS_LOCK.acquire(blocking=False) is True
+    _SYNC_PEDIDOS_LOCK.release()
+
+
+def test_pedidos_post_e_put_continuam_funcionando(client, monkeypatch):
+    """As ações de Incluir e Alterar pedido não foram afetadas pelo ciclo GET."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_pedido",
+        lambda body: {"ok": True, "status_code": 201, "id": 555, "dados": {}},
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.alterar_pedido",
+        lambda pid, body: {"ok": True, "status_code": 200, "dados": {"id": pid}},
+    )
+    r1 = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-criar",
+        data={"cliente_id": "9282664", "produto_id": "20386169", "quantidade": "1", "preco": "10.00"},
+    )
+    assert r1.status_code == 200
+    assert "555" in r1.text
+    r2 = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-alterar",
+        data={"pedido_id": "555", "produto_id": "20386169", "preco": "10.00"},
+    )
+    assert r2.status_code == 200
+
+
 def test_acao_tipos_pedido_exige_token(client):
     resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido")
     assert resp.status_code == 403
