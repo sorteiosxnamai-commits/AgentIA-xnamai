@@ -2429,6 +2429,75 @@ def acao_formas_pagamento_criar(
         return _wrap_result(_erro_html(exc))
 
 
+@router.post("/homologacao-ui/acoes/formas-pagamento-alterar", response_class=HTMLResponse)
+def acao_formas_pagamento_alterar(
+    request: Request,
+    token: str = Form(""),
+    forma_id: str = Form(""),
+    nome: str = Form(""),
+    ativo: str = Form(""),
+    excluido: str = Form(""),
+):
+    """PUT /v1/formas_pagamento/{id} — um único PUT por clique, id só na URL.
+
+    Contrato oficial aceita nome (obrigatório) e excluido. Ativo=Sim vira
+    excluido=false; o campo Excluído=Sim (ou o botão "Excluir logicamente")
+    envia excluido=true junto com o nome obrigatório. Sem DELETE.
+    """
+    _auth(request, token)
+    fid = (forma_id or "").strip()
+    nome_limpo = (nome or "").strip()
+    if not fid or not nome_limpo:
+        return _wrap_result(
+            _card(
+                "Campos obrigatórios",
+                [("Ação", "Informe o ID e o nome da forma de pagamento.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    excluido_bool: bool | None = None
+    exc_form = (excluido or "").strip().lower()
+    if exc_form in ("true", "sim"):
+        excluido_bool = True
+    elif exc_form in ("false", "nao", "não"):
+        excluido_bool = False
+    else:
+        ativo_form = (ativo or "").strip().lower()
+        if ativo_form in ("sim", "true"):
+            excluido_bool = False
+        elif ativo_form in ("nao", "não", "false"):
+            excluido_bool = True
+    try:
+        body: dict[str, Any] = {"nome": nome_limpo}
+        if excluido_bool is not None:
+            body["excluido"] = excluido_bool
+        out = homolog.alterar_forma_pagamento(fid, body)
+        status = out.get("status_code") or 200
+        if excluido_bool is None:
+            ativo_label = "—"
+            excluido_label = "Não alterado"
+        else:
+            ativo_label = "Não" if excluido_bool else "Sim"
+            excluido_label = "Sim" if excluido_bool else "Não"
+        card = _card(
+            "Forma de pagamento alterada",
+            [
+                ("Status HTTP", status),
+                ("ID", fid),
+                ("Nome", nome_limpo),
+                ("Ativo", ativo_label),
+                ("Excluído", excluido_label),
+                ("Origem", "Mercos Sandbox"),
+            ],
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="forma_pagamento", entity_id=fid)
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/segmentos", response_class=HTMLResponse)
 def acao_segmentos(request: Request, token: str = Form("")):
     _auth(request, token)

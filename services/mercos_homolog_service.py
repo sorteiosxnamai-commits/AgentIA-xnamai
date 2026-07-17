@@ -70,6 +70,7 @@ def inventario_homologacao() -> dict[str, Any]:
             {"entidade": "Clientes", "metodo": "PUT", "path": _path("clientes") + "/{id}", "status": "pronto"},
             {"entidade": "Condições de Pagamento", "metodo": "GET", "path": _path("condicoes_pagamento"), "status": "pronto"},
             {"entidade": "Formas de Pagamento", "metodo": "POST", "path": _path("formas_pagamento"), "status": "pronto"},
+            {"entidade": "Formas de Pagamento", "metodo": "PUT", "path": _path("formas_pagamento") + "/{id}", "status": "pronto"},
             {"entidade": "Produtos", "metodo": "GET", "path": _path("produtos"), "status": "pronto"},
             {"entidade": "Segmentos de Clientes", "metodo": "GET", "path": _path("segmentos"), "status": "pronto"},
             {"entidade": "Tabelas de Preço", "metodo": "GET", "path": _path("tabelas_preco"), "status": "pronto"},
@@ -1664,6 +1665,26 @@ def criar_forma_pagamento(body: dict) -> dict:
     return post_json(_path("formas_pagamento"), permitido)
 
 
+def alterar_forma_pagamento(forma_id: int | str, body: dict) -> dict:
+    """PUT /v1/formas_pagamento/{id} — id só na URL, nunca no corpo.
+
+    Contrato oficial (Apiary): nome (obrigatório, até 100) e excluido
+    (opcional). Entidade distinta de Condições de Pagamento.
+    """
+    payload = dict(body or {})
+    payload.pop("id", None)
+    nome = str(payload.get("nome") or "").strip()
+    if not nome:
+        raise MercosApiError(
+            "Campo obrigatório ausente para forma de pagamento: nome.",
+            status_code=422,
+        )
+    permitido: dict[str, Any] = {"nome": nome}
+    if payload.get("excluido") is not None:
+        permitido["excluido"] = bool(payload["excluido"])
+    return put_json(f"{_path('formas_pagamento')}/{forma_id}", permitido)
+
+
 def criar_pedido(body: dict) -> dict:
     # Preferência v2 (já usada no projeto)
     return post_json(_path("pedidos_v2"), body)
@@ -1730,6 +1751,7 @@ __all__ = [
     "criar_cliente",
     "alterar_cliente",
     "criar_forma_pagamento",
+    "alterar_forma_pagamento",
     "criar_pedido",
     "alterar_pedido",
     "criar_titulo",

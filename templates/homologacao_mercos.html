@@ -571,6 +571,48 @@
           <div class="resultado" id="res-formas-pagamento-criar"></div>
         </section>
 
+        <!-- 6c -->
+        <section class="panel" id="sec-formas-pagamento-alterar" data-homolog-sec="forma-pagamento-alterar">
+          <h2>Forma de pagamento — Alterar</h2>
+          <p class="hint">Atualiza uma forma de pagamento existente. O ID vai somente na URL; a exclusão é lógica, sem apagar o registro.</p>
+          <div class="toolbar">
+            <label class="field">ID da forma de pagamento
+              <input type="text" id="input-forma-pgto-alt-id" value="90000" />
+            </label>
+            <label class="field">Nome
+              <input type="text" id="input-forma-pgto-alt-nome" maxlength="100" value="ad4feae8a8b643d0" />
+            </label>
+            <label class="field">Ativo
+              <select id="input-forma-pgto-alt-ativo">
+                <option value="">Não alterar</option>
+                <option value="sim" selected>Sim</option>
+                <option value="nao">Não</option>
+              </select>
+            </label>
+            <label class="field">Excluído
+              <select id="input-forma-pgto-alt-excluido">
+                <option value="" selected>Não alterar</option>
+                <option value="true">Sim</option>
+                <option value="false">Não</option>
+              </select>
+            </label>
+            <input type="hidden" id="input-forma-pgto-excluir-flag" value="true" />
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/formas-pagamento-alterar"
+              data-target="res-formas-pagamento-alterar"
+              data-fields="forma_id:input-forma-pgto-alt-id,nome:input-forma-pgto-alt-nome,ativo:input-forma-pgto-alt-ativo,excluido:input-forma-pgto-alt-excluido">
+              Alterar forma de pagamento
+            </button>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/formas-pagamento-alterar"
+              data-target="res-formas-pagamento-alterar"
+              data-fields="forma_id:input-forma-pgto-alt-id,nome:input-forma-pgto-alt-nome,excluido:input-forma-pgto-excluir-flag">
+              Excluir logicamente
+            </button>
+          </div>
+          <div class="resultado" id="res-formas-pagamento-alterar"></div>
+        </section>
+
         <!-- 7 -->
         <section class="panel" id="sec-segmentos" data-homolog-sec="segmentos-buscar">
           <h2>Segmentos de Clientes — Buscar</h2>
