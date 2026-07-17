@@ -1942,9 +1942,11 @@ def acao_clientes_alterar(
     cnpj: str = Form(""),
     email: str = Form(""),
     ativo: str = Form(""),
+    excluido: str = Form(""),
 ):
     """Envia exatamente os valores preenchidos ao PUT — nada é gerado
-    automaticamente; campos vazios não entram no corpo; id só na URL."""
+    automaticamente; campos vazios não entram no corpo; id só na URL.
+    Exclusão lógica: excluido=true via PUT (sem DELETE, nada é apagado)."""
     _auth(request, token)
     cid = (cliente_id or "").strip()
     if not cid:
@@ -1963,6 +1965,7 @@ def acao_clientes_alterar(
     cnpj_val = (cnpj or "").strip()
     email_val = (email or "").strip()
     ativo_val = (ativo or "").strip().lower()
+    excluido_val = (excluido or "").strip().lower()
 
     body: dict[str, Any] = {}
     if tipo_val in ("J", "F"):
@@ -1977,6 +1980,8 @@ def acao_clientes_alterar(
         body["email"] = email_val
     if ativo_val in ("true", "false"):
         body["ativo"] = ativo_val == "true"
+    if excluido_val in ("true", "false"):
+        body["excluido"] = excluido_val == "true"
 
     if not body:
         return _wrap_result(
@@ -1998,25 +2003,32 @@ def acao_clientes_alterar(
             return valor
 
         ativo_final = _retornado_ou_enviado("ativo", body.get("ativo"))
+        excluido_final = _retornado_ou_enviado("excluido", body.get("excluido"))
+        exclusao_logica = body.get("excluido") is True
+        linhas = [
+            ("Status HTTP", out.get("status_code") or 200),
+            ("ID", cid),
+            ("Tipo", _retornado_ou_enviado("tipo", body.get("tipo") or "—")),
+            (
+                "Razão social",
+                _retornado_ou_enviado("razao_social", body.get("razao_social") or "—"),
+            ),
+            (
+                "Nome fantasia",
+                _retornado_ou_enviado("nome_fantasia", body.get("nome_fantasia") or "—"),
+            ),
+            ("CNPJ", _retornado_ou_enviado("cnpj", body.get("cnpj") or "—")),
+            ("E-mail", _retornado_ou_enviado("email", body.get("email") or "—")),
+            ("Ativo", _fmt_bool(ativo_final) if ativo_final is not None else "—"),
+            (
+                "Excluído",
+                _fmt_bool(excluido_final) if excluido_final is not None else "—",
+            ),
+            ("Última alteração", dados.get("ultima_alteracao") or "—"),
+        ]
         card = _card(
-            "Cliente alterado",
-            [
-                ("Status HTTP", out.get("status_code") or 200),
-                ("ID", cid),
-                ("Tipo", _retornado_ou_enviado("tipo", body.get("tipo") or "—")),
-                (
-                    "Razão social",
-                    _retornado_ou_enviado("razao_social", body.get("razao_social") or "—"),
-                ),
-                (
-                    "Nome fantasia",
-                    _retornado_ou_enviado("nome_fantasia", body.get("nome_fantasia") or "—"),
-                ),
-                ("CNPJ", _retornado_ou_enviado("cnpj", body.get("cnpj") or "—")),
-                ("E-mail", _retornado_ou_enviado("email", body.get("email") or "—")),
-                ("Ativo", _fmt_bool(ativo_final) if ativo_final is not None else "—"),
-                ("Última alteração", dados.get("ultima_alteracao") or "—"),
-            ],
+            "Cliente excluído logicamente" if exclusao_logica else "Cliente alterado",
+            linhas,
             status_label=f"Status {out.get('status_code') or 200}",
             css="ok",
         )

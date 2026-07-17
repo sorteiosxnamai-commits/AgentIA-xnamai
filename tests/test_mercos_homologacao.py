@@ -562,6 +562,33 @@ def test_put_clientes_id_so_na_url(client, monkeypatch):
     assert capturado["body"]["cnpj"] == "91645924000109"
 
 
+def test_put_clientes_exclusao_logica(client, monkeypatch):
+    """excluido=true via PUT (sem DELETE); id só na URL."""
+    capturado: dict = {}
+
+    def fake_put(path, body):
+        capturado["path"] = path
+        capturado["body"] = dict(body or {})
+        return {"ok": True, "status_code": 200, "sandbox": True, "dados": {}}
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    resp = client.put(
+        "/mercos/clientes/9290554",
+        json={
+            "tipo": "J",
+            "razao_social": "6a86449570ab4e4c",
+            "nome_fantasia": "606c84cb8015470d",
+            "cnpj": "91645924000109",
+            "excluido": True,
+        },
+    )
+    assert resp.status_code == 200
+    assert capturado["path"] == "/v1/clientes/9290554"
+    assert "id" not in capturado["body"]
+    assert capturado["body"]["excluido"] is True
+    assert capturado["body"]["razao_social"] == "6a86449570ab4e4c"
+
+
 def test_erro_mercos_vira_http_exception(client, monkeypatch):
     def _boom(**_k):
         raise MercosApiError("Mercos HTTP 404: not found", status_code=404)

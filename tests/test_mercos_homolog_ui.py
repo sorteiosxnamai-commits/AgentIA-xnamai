@@ -3076,6 +3076,92 @@ def test_ui_clientes_alterar_validacoes(client, monkeypatch):
     called.assert_not_called()
 
 
+def test_ui_form_cliente_excluir_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    secao = html.split("sec-clientes-alterar")[1].split("</section>")[0]
+    assert 'id="input-cliente-alt-excluido"' in secao
+    assert "Excluir logicamente" in secao
+    # Botão dedicado envia os campos obrigatórios exigidos pela Mercos
+    assert 'id="input-cliente-excluir-flag"' in secao
+    assert 'value="6a86449570ab4e4c"' in secao
+    assert 'value="606c84cb8015470d"' in secao
+    assert 'value="91645924000109"' in secao
+
+
+def test_ui_clientes_excluir_logicamente_payload_completo(client, monkeypatch):
+    """Etapa Cliente PUT 3/3: excluido=true com os obrigatórios, id só na URL."""
+    capturado: dict = {}
+
+    def fake_put(path, body):
+        capturado["path"] = path
+        capturado["body"] = dict(body or {})
+        return {
+            "ok": True,
+            "status_code": 200,
+            "sandbox": True,
+            "dados": {"excluido": True, "ultima_alteracao": "2026-07-17 09:45:00"},
+        }
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-alterar",
+        data={
+            "cliente_id": "9290554",
+            "tipo": "J",
+            "razao_social": "6a86449570ab4e4c",
+            "nome_fantasia": "606c84cb8015470d",
+            "cnpj": "91645924000109",
+            "excluido": "true",
+        },
+    )
+    assert resp.status_code == 200
+    assert capturado["path"] == "/v1/clientes/9290554"
+    assert "id" not in capturado["body"]
+    assert capturado["body"] == {
+        "tipo": "J",
+        "razao_social": "6a86449570ab4e4c",
+        "nome_fantasia": "606c84cb8015470d",
+        "cnpj": "91645924000109",
+        "excluido": True,
+    }
+    html = resp.text
+    assert "Cliente excluído logicamente" in html
+    assert "Status HTTP" in html and "200" in html
+    assert "9290554" in html
+    assert "6a86449570ab4e4c" in html
+    assert "606c84cb8015470d" in html
+    assert "91645924000109" in html
+    assert "<span>Excluído</span><strong>Sim</strong>" in html
+    assert "2026-07-17 09:45:00" in html
+    assert "CompanyToken" not in html
+    assert '"excluido"' not in html  # sem JSON cru
+
+
+def test_ui_clientes_alterar_excluido_nao_alterar_nao_envia(client, monkeypatch):
+    capturado: dict = {}
+
+    def fake_put(path, body):
+        capturado["body"] = dict(body or {})
+        return {"ok": True, "status_code": 200, "sandbox": True, "dados": {}}
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-alterar",
+        data={
+            "cliente_id": "9290554",
+            "nome_fantasia": "Novo Nome",
+            "excluido": "",
+        },
+    )
+    assert resp.status_code == 200
+    assert capturado["body"] == {"nome_fantasia": "Novo Nome"}
+    assert "Cliente alterado" in resp.text
+    assert "Cliente excluído logicamente" not in resp.text
+
+
 def test_ui_clientes_alterar_erro_mercos(client, monkeypatch):
     from services.mercos_api_client import MercosApiError
 

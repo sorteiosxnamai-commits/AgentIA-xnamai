@@ -480,7 +480,7 @@
           <p class="hint">Atualiza o cliente com os valores informados. Campos vazios não são enviados; o ID vai somente na URL.</p>
           <div class="toolbar">
             <label class="field">ID do cliente
-              <input type="text" id="input-cliente-id" placeholder="Ex.: 9290554" />
+              <input type="text" id="input-cliente-id" value="9290554" placeholder="Ex.: 9290554" />
             </label>
             <label class="field">Tipo
               <select id="input-cliente-alt-tipo">
@@ -508,11 +508,29 @@
                 <option value="false">Não</option>
               </select>
             </label>
+            <label class="field">Excluído
+              <select id="input-cliente-alt-excluido">
+                <option value="" selected>Não alterar</option>
+                <option value="true">Sim</option>
+                <option value="false">Não</option>
+              </select>
+            </label>
+            <input type="hidden" id="input-cliente-excluir-tipo" value="J" />
+            <input type="hidden" id="input-cliente-excluir-razao" value="6a86449570ab4e4c" />
+            <input type="hidden" id="input-cliente-excluir-fantasia" value="606c84cb8015470d" />
+            <input type="hidden" id="input-cliente-excluir-cnpj" value="91645924000109" />
+            <input type="hidden" id="input-cliente-excluir-flag" value="true" />
             <button type="button" class="secondary"
               data-action="/mercos/homologacao-ui/acoes/clientes-alterar"
               data-target="res-clientes-alterar"
-              data-fields="cliente_id:input-cliente-id,tipo:input-cliente-alt-tipo,razao_social:input-cliente-alt-razao-social,nome_fantasia:input-cliente-alt-fantasia,cnpj:input-cliente-alt-cnpj,email:input-cliente-alt-email,ativo:input-cliente-alt-ativo">
+              data-fields="cliente_id:input-cliente-id,tipo:input-cliente-alt-tipo,razao_social:input-cliente-alt-razao-social,nome_fantasia:input-cliente-alt-fantasia,cnpj:input-cliente-alt-cnpj,email:input-cliente-alt-email,ativo:input-cliente-alt-ativo,excluido:input-cliente-alt-excluido">
               Alterar cliente
+            </button>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/clientes-alterar"
+              data-target="res-clientes-alterar"
+              data-fields="cliente_id:input-cliente-id,tipo:input-cliente-excluir-tipo,razao_social:input-cliente-excluir-razao,nome_fantasia:input-cliente-excluir-fantasia,cnpj:input-cliente-excluir-cnpj,excluido:input-cliente-excluir-flag">
+              Excluir logicamente
             </button>
           </div>
           <div class="resultado" id="res-clientes-alterar"></div>
