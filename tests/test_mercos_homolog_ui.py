@@ -2229,13 +2229,15 @@ def test_usuarios_reiniciar_nao_chama_mercos(client, monkeypatch):
 
 
 def _fake_usuarios_sandbox(cursores_vistos):
-    """Mock do contrato real: 1ª sem alterado_apos; incrementais com cursor."""
+    """Mock do contrato real: 1ª sem alterado_apos; incrementais com cursor EXATO."""
 
     def fake_get(path, *, params=None, **_kw):
         assert path == "/v1/usuarios"
         params = params or {}
         assert "pagina" not in params
         cursor = params.get("alterado_apos")
+        # A Mercos recusa cursor - 1s: nunca pode chegar um valor "subtraído"
+        assert cursor not in ("2026-07-16 09:51:27", "2026-07-17 09:56:36")
         cursores_vistos.append(cursor)
         headers = {
             "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
@@ -2264,7 +2266,7 @@ def _fake_usuarios_sandbox(cursores_vistos):
                 ],
                 headers,
             )
-        if cursor == "2026-07-16 09:51:27":
+        if cursor == "2026-07-16 09:51:28":
             return (
                 [
                     {
@@ -2315,12 +2317,16 @@ def test_usuarios_ciclo_3_etapas_completa_e_incrementais(client, monkeypatch):
     assert catu.total(sessao) == 2
     assert catu.obter_ciclo(sessao)["chamadas_completas"] == 1
 
-    # Etapa 2 — incremental com alterado_apos = cursor salvo - 1s
+    # Etapa 2 — incremental com alterado_apos = cursor EXATO da etapa 1
     r2 = client.post("/mercos/homologacao-ui/acoes/usuarios-sincronizar")
     assert r2.status_code == 200
-    assert cursores[1] == "2026-07-16 09:51:27"
+    assert cursores[1] == "2026-07-16 09:51:28"
     assert "2/3" in r2.text
     assert 'data-tipo-busca="incremental"' in r2.text
+    # Cartão: Cursor base e alterado_apos enviado exatamente iguais
+    assert 'data-cursor-base="2026-07-16 09:51:28"' in r2.text
+    assert 'data-alterado-apos-enviado="2026-07-16 09:51:28"' in r2.text
+    assert "2026-07-16 09:51:27" not in r2.text
     assert "f919f5f29edd432e100eea2fe5dd4776" in r2.text
     # Catálogo acumulado: mantém anteriores e adiciona novos
     assert catu.total(sessao) == 4
@@ -2328,10 +2334,13 @@ def test_usuarios_ciclo_3_etapas_completa_e_incrementais(client, monkeypatch):
     assert "78809" in estado["usuarios"]  # Arthur preservado
     assert "78929" in estado["usuarios"]  # novo usuário da incremental
 
-    # Etapa 3 — incremental de novo, cursor avançado
+    # Etapa 3 — incremental com o cursor EXATO produzido pela etapa 2
     r3 = client.post("/mercos/homologacao-ui/acoes/usuarios-sincronizar")
     assert r3.status_code == 200
-    assert cursores[2] == "2026-07-17 09:56:36"
+    assert cursores[2] == "2026-07-17 09:56:37"
+    assert 'data-cursor-base="2026-07-17 09:56:37"' in r3.text
+    assert 'data-alterado-apos-enviado="2026-07-17 09:56:37"' in r3.text
+    assert "2026-07-17 09:56:36" not in r3.text
     assert "3/3" in r3.text
     ciclo = catu.obter_ciclo(sessao)
     assert ciclo["chamadas_completas"] == 1
@@ -2478,6 +2487,60 @@ def test_usuarios_429_retorna_retry_after_e_libera_lock(client, monkeypatch):
     # Lock liberado no finally: nova aquisição funciona
     assert _SYNC_USUARIOS_LOCK.acquire(blocking=False) is True
     _SYNC_USUARIOS_LOCK.release()
+
+
+def test_usuarios_incremental_envia_cursor_exato(monkeypatch):
+    """alterado_apos = cursor base byte a byte, nunca cursor - 1s."""
+    from services.mercos_homolog_service import sincronizar_usuarios
+
+    capt: dict = {}
+
+    def fake_listar(alterado_apos=None, **_kw):
+        capt["alterado_apos"] = alterado_apos
+        return {"itens": [], "paginas_lidas": 1}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_usuarios_paginado_seguro",
+        fake_listar,
+    )
+    out = sincronizar_usuarios("2026-07-17 09:56:37")
+    assert capt["alterado_apos"] == "2026-07-17 09:56:37"
+    assert out["cursor_base"] == "2026-07-17 09:56:37"
+    assert out["alterado_apos_enviado"] == "2026-07-17 09:56:37"
+    assert out["alterado_apos_enviado"] == out["cursor_base"]
+    # Cursor preservado quando não vêm registros
+    assert out["novo_cursor"] == "2026-07-17 09:56:37"
+
+
+def test_produtos_e_clientes_mantem_sobreposicao_de_1s(monkeypatch):
+    """A correção é só para usuários: produtos/clientes seguem com overlap."""
+    from services.mercos_homolog_service import (
+        sincronizar_clientes,
+        sincronizar_produtos,
+    )
+
+    capt: dict = {}
+
+    def fake_listar_clientes(alterado_apos=None, **_kw):
+        capt["clientes"] = alterado_apos
+        return {"itens": [], "paginas_lidas": 1}
+
+    def fake_listar_produtos(alterado_apos=None, **_kw):
+        capt["produtos"] = alterado_apos
+        return {"itens": [], "paginas_lidas": 1}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_clientes", fake_listar_clientes
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_produtos", fake_listar_produtos
+    )
+    out_cli = sincronizar_clientes("2026-07-17 09:56:37")
+    out_prod = sincronizar_produtos("2026-07-17 09:56:37")
+    assert capt["clientes"] == "2026-07-17 09:56:36"
+    assert out_cli["alterado_apos_enviado"] == "2026-07-17 09:56:36"
+    assert capt["produtos"] == "2026-07-17 09:56:36"
+    assert out_prod["alterado_apos_enviado"] == "2026-07-17 09:56:36"
 
 
 def test_usuarios_lock_libera_em_erro(monkeypatch):

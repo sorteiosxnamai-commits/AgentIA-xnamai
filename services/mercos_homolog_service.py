@@ -1015,7 +1015,6 @@ def sincronizar_usuarios(
     cursor: str | None = None,
     *,
     max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
-    sobreposicao_segundos: int = 1,
     timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
     timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
     sessao_id: str | None = None,
@@ -1025,6 +1024,11 @@ def sincronizar_usuarios(
     Respeita HTTP 429 por página (Retry-After ou backoff 2/5/10, máx 3 tentativas),
     header MEUSPEDIDOS_REQUISICOES_EXTRAS (1 + extras chamadas, sem chamada final
     desnecessária) e lock com TTL liberado sempre no finally.
+
+    Homologação Usuários GET: alterado_apos é filtro estritamente maior e a
+    Mercos exige o cursor EXATO da sincronização anterior — sem sobreposição de
+    1s, sem arredondar e sem mudar formato/fuso (diferente de produtos/clientes,
+    que mantêm o overlap).
     """
     if not _SYNC_USUARIOS_LOCK.acquire(blocking=False):
         raise MercosApiError(
@@ -1034,12 +1038,8 @@ def sincronizar_usuarios(
     try:
         cursor_base = (cursor or "").strip() or None
         tipo = "incremental" if cursor_base else "completa"
-        if cursor_base:
-            alterado_apos = cursor_com_sobreposicao(
-                cursor_base, segundos=sobreposicao_segundos
-            )
-        else:
-            alterado_apos = None
+        # Cursor exato: enviado byte a byte como foi salvo.
+        alterado_apos = cursor_base
         data = listar_usuarios_paginado_seguro(
             alterado_apos=alterado_apos,
             pagina_inicial=1,
