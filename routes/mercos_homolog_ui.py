@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from services import mercos_homolog_service as homolog
 from services import mercos_clientes_catalogo as catalogo_clientes
 from services import mercos_produtos_catalogo as catalogo_produtos
+from services import mercos_usuarios_catalogo as catalogo_usuarios
 from services.mercos_api_client import MercosApiError
 from services.mercos_service import mercos_ambiente_sandbox, mercos_configurado
 
@@ -37,6 +38,8 @@ _COOKIE_PRODUTOS_CURSOR = "mercos_produtos_cursor"
 _COOKIE_PRODUTOS_SESSAO = "mercos_produtos_sessao"
 _COOKIE_CLIENTES_CURSOR = "mercos_clientes_cursor"
 _COOKIE_CLIENTES_SESSAO = "mercos_clientes_sessao"
+_COOKIE_USUARIOS_CURSOR = "mercos_usuarios_cursor"
+_COOKIE_USUARIOS_SESSAO = "mercos_usuarios_sessao"
 _CURSOR_MAX_AGE = 60 * 60 * 24 * 30
 _SESSAO_MAX_AGE = 60 * 60 * 24 * 30
 
@@ -508,6 +511,143 @@ def _attrs_ciclo_clientes(sessao_id: str) -> dict[str, str]:
         "chamadas-incrementais": str(ciclo.get("chamadas_incrementais") or 0),
         "bloquear-busca-completa": "1" if ciclo.get("ativo") else "0",
     }
+
+
+def _cursor_usuarios(request: Request, cursor_form: str = "") -> str:
+    form = (cursor_form or "").strip()
+    if form:
+        return form
+    raw = (request.cookies.get(_COOKIE_USUARIOS_CURSOR) or "").strip().strip('"')
+    if not raw:
+        return ""
+    try:
+        return unquote(raw)
+    except Exception:
+        return raw
+
+
+def _set_cursor_usuarios_cookie(resp: HTMLResponse, cursor: str | None) -> HTMLResponse:
+    valor = (cursor or "").strip()
+    if valor:
+        resp.set_cookie(
+            key=_COOKIE_USUARIOS_CURSOR,
+            value=quote(valor, safe=""),
+            httponly=False,
+            max_age=_CURSOR_MAX_AGE,
+            samesite="lax",
+        )
+    else:
+        resp.delete_cookie(_COOKIE_USUARIOS_CURSOR)
+    return resp
+
+
+def _obter_ou_criar_sessao_usuarios(request: Request) -> str:
+    existente = (request.cookies.get(_COOKIE_USUARIOS_SESSAO) or "").strip()
+    if existente:
+        return existente
+    return uuid.uuid4().hex
+
+
+def _garantir_sessao_usuarios_cookie(resp: HTMLResponse, sessao_id: str) -> HTMLResponse:
+    resp.set_cookie(
+        key=_COOKIE_USUARIOS_SESSAO,
+        value=sessao_id,
+        httponly=False,
+        max_age=_SESSAO_MAX_AGE,
+        samesite="lax",
+    )
+    return resp
+
+
+def _hidratar_catalogo_usuarios_form(sessao_id: str, catalogo_json: str = "") -> None:
+    catalogo_usuarios.hidratar_se_vazio(sessao_id, catalogo_json or "")
+
+
+def _html_patch_catalogo_usuarios(sessao_id: str) -> str:
+    snap = catalogo_usuarios.snapshot_sessao(sessao_id)
+    blob = html.escape(json.dumps(snap, ensure_ascii=False, separators=(",", ":")))
+    return (
+        f'<textarea class="mercos-usuarios-catalogo-blob" hidden readonly '
+        f'aria-hidden="true">{blob}</textarea>'
+    )
+
+
+def _linhas_ciclo_usuarios(
+    sessao_id: str, estado: dict[str, Any] | None = None
+) -> list[tuple[str, Any]]:
+    estado = estado or catalogo_usuarios.obter(sessao_id)
+    ciclo = catalogo_usuarios.obter_ciclo(sessao_id)
+    sync = (estado or {}).get("ultima_sync") or {}
+    tipo = sync.get("tipo")
+    tipo_label = (
+        "Completa"
+        if tipo == "completa"
+        else ("Incremental" if tipo == "incremental" else (tipo or "—"))
+    )
+    etapa = int(ciclo.get("etapa_interna") or 0)
+
+    def _num(chave: str) -> Any:
+        valor = sync.get(chave)
+        return valor if valor is not None else "—"
+
+    return [
+        ("Etapa interna", f"{etapa}/3"),
+        ("Tipo da última busca", tipo_label),
+        ("Cursor base", sync.get("cursor_base") or "—"),
+        ("alterado_apos enviado", sync.get("alterado_apos_enviado") or "—"),
+        ("Novo cursor", sync.get("novo_cursor") or "—"),
+        ("Total de páginas consultadas", sync.get("paginas_lidas") or "—"),
+        ("Requisições extras informadas pela Mercos", _num("requisicoes_extras")),
+        ("Requisições previstas", _num("requisicoes_previstas")),
+        ("Requisições executadas", _num("requisicoes_executadas")),
+        ("Total retornado em todas as páginas", sync.get("total_lote") or 0),
+        ("Total de usuários", len((estado or {}).get("usuarios") or {})),
+        ("Motivo da parada", sync.get("motivo_parada") or "—"),
+        ("Status da sincronização", sync.get("status_sync") or "—"),
+        ("Chamadas completas no ciclo", ciclo.get("chamadas_completas") or 0),
+        ("Chamadas incrementais no ciclo", ciclo.get("chamadas_incrementais") or 0),
+    ]
+
+
+def _attrs_ciclo_usuarios(sessao_id: str) -> dict[str, str]:
+    ciclo = catalogo_usuarios.obter_ciclo(sessao_id)
+    return {
+        "ciclo-ativo": "1" if ciclo.get("ativo") else "0",
+        "etapa-interna": str(ciclo.get("etapa_interna") or 0),
+        "chamadas-completas": str(ciclo.get("chamadas_completas") or 0),
+        "chamadas-incrementais": str(ciclo.get("chamadas_incrementais") or 0),
+        "bloquear-busca-completa": "1" if ciclo.get("ativo") else "0",
+    }
+
+
+def _ativo_usuario(item: dict) -> str:
+    if "ativo" in item:
+        return _fmt_bool(item.get("ativo"))
+    if "excluido" in item:
+        return "Não" if item.get("excluido") else "Sim"
+    return "—"
+
+
+def _html_tabela_usuarios(itens: list) -> str:
+    rows = []
+    for item in itens or []:
+        rows.append(
+            [
+                _campo(item, "id"),
+                _campo(item, "nome", "name"),
+                _campo(item, "email"),
+                _fmt_bool(_campo(item, "administrador", "admin", default="—")),
+                _ativo_usuario(item) if isinstance(item, dict) else "—",
+                item.get("ultima_alteracao")
+                if isinstance(item, dict)
+                and item.get("ultima_alteracao") not in (None, "")
+                else "—",
+            ]
+        )
+    return _table(
+        ["ID", "Nome", "E-mail", "Administrador", "Ativo", "Última alteração"],
+        rows,
+    )
 
 
 def _html_tabela_clientes(itens: list) -> str:
@@ -2280,24 +2420,363 @@ def acao_tipos_pedido_combinacoes(request: Request, token: str = Form("")):
 
 
 @router.post("/homologacao-ui/acoes/usuarios", response_class=HTMLResponse)
-def acao_usuarios(request: Request, token: str = Form("")):
+def acao_usuarios(
+    request: Request,
+    token: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Busca simples — bloqueada durante o ciclo ativo de homologação."""
     _auth(request, token)
+    sessao = _obter_ou_criar_sessao_usuarios(request)
+    _hidratar_catalogo_usuarios_form(sessao, catalogo_json)
+    if catalogo_usuarios.ciclo_ativo(sessao):
+        resp = _wrap_result(
+            _card(
+                "Busca completa bloqueada durante a homologação",
+                [
+                    (
+                        "Mensagem",
+                        "Use apenas «Sincronizar próxima etapa» durante o ciclo ativo.",
+                    )
+                ]
+                + _linhas_ciclo_usuarios(sessao),
+                status_label="Bloqueado",
+                css="erro",
+            ),
+            extra_attrs={
+                "status-sync": "bloqueado",
+                **_attrs_ciclo_usuarios(sessao),
+            },
+        )
+        return _garantir_sessao_usuarios_cookie(resp, sessao)
     try:
         data = homolog.listar_usuarios(pagina_inicial=1, max_paginas=3)
-        rows = [
-            [
-                _campo(i, "id"),
-                _campo(i, "nome", "name"),
-                _campo(i, "email"),
-                _fmt_bool(_campo(i, "administrador", "admin", "is_admin", default="—")),
-            ]
-            for i in (data.get("itens") or [])
-        ]
-        table = _table(["ID", "Nome", "Email", "Administrador"], rows)
+        table = _html_tabela_usuarios(data.get("itens") or [])
         head = f'<p class="meta">Total: <strong>{_esc(data.get("total", 0))}</strong> · Status: <strong>200</strong></p>'
-        return _wrap_result(head + table)
+        resp = _wrap_result(head + table, extra_attrs=_attrs_ciclo_usuarios(sessao))
+        return _garantir_sessao_usuarios_cookie(resp, sessao)
     except Exception as exc:
-        return _wrap_result(_erro_html(exc))
+        resp = _wrap_result(_erro_html(exc))
+        return _garantir_sessao_usuarios_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/usuarios-reiniciar", response_class=HTMLResponse)
+def acao_usuarios_reiniciar(
+    request: Request,
+    token: str = Form(""),
+):
+    """Apaga cursor e catálogo de usuários, inicia ciclo na etapa 0 — sem chamar a Mercos."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_usuarios(request)
+    catalogo_usuarios.iniciar_ciclo(sessao)
+    homolog._limpar_resumes_da_sessao(sessao)
+    estado = catalogo_usuarios.obter(sessao)
+    mensagem = (
+        '<div class="result-card ok">'
+        "<h4>Ciclo de sincronização reiniciado</h4>"
+        "<p>Cursor e catálogo anteriores apagados. Novo ciclo ativo na etapa 0. "
+        "Use «Sincronizar próxima etapa» para a busca completa.</p>"
+        "</div>"
+    )
+    resumo = _card(
+        "Estado do ciclo",
+        _linhas_ciclo_usuarios(sessao, estado),
+        status_label="Ciclo ativo",
+        css="ok",
+    )
+    resp = _wrap_result(
+        mensagem + resumo + _html_patch_catalogo_usuarios(sessao),
+        extra_attrs={
+            "novo-cursor": "",
+            "cursor-limpo": "1",
+            "catalogo-limpo": "1",
+            "status-sync": "reiniciado",
+            "catalogo-total": "0",
+            **_attrs_ciclo_usuarios(sessao),
+        },
+    )
+    resp = _set_cursor_usuarios_cookie(resp, None)
+    return _garantir_sessao_usuarios_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/usuarios-sincronizar", response_class=HTMLResponse)
+def acao_usuarios_sincronizar(
+    request: Request,
+    token: str = Form(""),
+    cursor: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Única ação que chama a Mercos no ciclo: etapa 0 completa; 1 e 2 incrementais."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_usuarios(request)
+    _hidratar_catalogo_usuarios_form(sessao, catalogo_json)
+    ciclo = catalogo_usuarios.obter_ciclo(sessao)
+    if not ciclo.get("ativo"):
+        catalogo_usuarios.iniciar_ciclo(sessao)
+        ciclo = catalogo_usuarios.obter_ciclo(sessao)
+
+    etapa = int(ciclo.get("etapa_interna") or 0)
+    cursor_form = _cursor_usuarios(request, cursor)
+
+    if etapa == 0:
+        cursor_para_sync = None
+        tipo_esperado = "completa"
+    else:
+        if not cursor_form:
+            resp = _wrap_result(
+                _card(
+                    "Cursor ausente",
+                    [
+                        (
+                            "Mensagem",
+                            "Etapa incremental exige cursor salvo. Reinicie o ciclo se necessário.",
+                        )
+                    ]
+                    + _linhas_ciclo_usuarios(sessao),
+                    status_label="Erro",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "erro", **_attrs_ciclo_usuarios(sessao)},
+            )
+            return _garantir_sessao_usuarios_cookie(resp, sessao)
+        cursor_para_sync = cursor_form
+        tipo_esperado = "incremental"
+
+    try:
+        data = homolog.sincronizar_usuarios(
+            cursor_para_sync, max_paginas=20, sessao_id=sessao
+        )
+        tipo_real = data.get("tipo") or tipo_esperado
+        if etapa >= 1 and (
+            tipo_real == "completa" or not data.get("alterado_apos_enviado")
+        ):
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [
+                        (
+                            "Mensagem",
+                            "A etapa atual exige busca incremental com alterado_apos.",
+                        )
+                    ]
+                    + _linhas_ciclo_usuarios(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo_usuarios(sessao)},
+            )
+            return _garantir_sessao_usuarios_cookie(resp, sessao)
+
+        status_sync = data.get("status") or "concluida"
+        motivo = data.get("motivo_parada") or ""
+        status_label = "Timeout" if status_sync == "timeout" else "Concluída"
+        meta = {
+            "tipo": tipo_real,
+            "cursor_base": data.get("cursor_base"),
+            "alterado_apos_enviado": data.get("alterado_apos_enviado"),
+            "novo_cursor": data.get("novo_cursor"),
+            "total_lote": data.get("total", 0),
+            "paginas_lidas": data.get("paginas_lidas") or 0,
+            "motivo_parada": motivo,
+            "status_sync": status_label,
+            "requisicoes_extras": data.get("requisicoes_extras"),
+            "requisicoes_previstas": data.get("requisicoes_previstas"),
+            "requisicoes_executadas": data.get("requisicoes_executadas"),
+        }
+        if tipo_real == "completa":
+            catalogo_usuarios.substituir_completo(
+                sessao, data.get("itens") or [], meta=meta
+            )
+        else:
+            catalogo_usuarios.upsert_incremental(
+                sessao, data.get("itens") or [], meta=meta
+            )
+        try:
+            catalogo_usuarios.registrar_sync_ciclo(sessao, tipo=tipo_real)
+        except ValueError as exc:
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [("Mensagem", str(exc))] + _linhas_ciclo_usuarios(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo_usuarios(sessao)},
+            )
+            return _garantir_sessao_usuarios_cookie(resp, sessao)
+
+        estado = catalogo_usuarios.obter(sessao)
+        total = data.get("total", 0)
+        paginas = data.get("paginas_lidas") or 0
+        css = "pendente" if status_sync == "timeout" else "ok"
+        resumo = _card(
+            "Sincronização de usuários",
+            [
+                ("Status da sincronização", status_label),
+                ("Motivo da parada", motivo or "—"),
+            ]
+            + _linhas_ciclo_usuarios(sessao, estado),
+            status_label=status_label,
+            css=css,
+        )
+        table = _html_tabela_usuarios(data.get("itens") or [])
+        resp = _wrap_result(
+            resumo + table + _html_patch_catalogo_usuarios(sessao),
+            extra_attrs={
+                "novo-cursor": data.get("novo_cursor") or "",
+                "cursor-anterior": data.get("cursor_anterior") or "",
+                "cursor-base": data.get("cursor_base") or "",
+                "alterado-apos-enviado": data.get("alterado_apos_enviado") or "",
+                "tipo-busca": tipo_real,
+                "total": str(total),
+                "paginas-lidas": str(paginas),
+                "requisicoes-extras": str(data.get("requisicoes_extras") if data.get("requisicoes_extras") is not None else ""),
+                "requisicoes-previstas": str(data.get("requisicoes_previstas") if data.get("requisicoes_previstas") is not None else ""),
+                "requisicoes-executadas": str(data.get("requisicoes_executadas") or 0),
+                "motivo-parada": motivo,
+                "catalogo-total": str(len(estado.get("usuarios") or {})),
+                "catalogo-modo": "replace" if tipo_real == "completa" else "upsert",
+                "status-sync": status_sync,
+                **_attrs_ciclo_usuarios(sessao),
+            },
+        )
+        resp = _set_cursor_usuarios_cookie(resp, data.get("novo_cursor"))
+        return _garantir_sessao_usuarios_cookie(resp, sessao)
+    except MercosApiError as exc:
+        if exc.status_code == 429:
+            segundos = exc.retry_after if exc.retry_after is not None else 10
+            try:
+                segundos = max(0, int(float(segundos)))
+            except (TypeError, ValueError):
+                segundos = 10
+            pagina_atual = exc.pagina if exc.pagina is not None else "—"
+            resp = _wrap_result(
+                _card(
+                    "Aguardando limite da Mercos",
+                    [
+                        ("Mensagem", "Aguardando limite da Mercos"),
+                        ("Segundos restantes", segundos),
+                        ("Página atual", pagina_atual),
+                    ],
+                    status_label="Aguardando",
+                    css="pendente",
+                ),
+                extra_attrs={
+                    "status-sync": "aguardando-429",
+                    "aguardando-mercos": "1",
+                    "segundos-espera": str(segundos),
+                    "pagina-atual": str(pagina_atual),
+                    "http-status": "429",
+                    **_attrs_ciclo_usuarios(sessao),
+                },
+            )
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(segundos)
+            resp.headers["X-Mercos-Pagina"] = str(pagina_atual)
+            return _garantir_sessao_usuarios_cookie(resp, sessao)
+        resp = _wrap_result(
+            _erro_html(exc),
+            extra_attrs={
+                "status-sync": "erro",
+                "http-status": str(exc.status_code or ""),
+                **_attrs_ciclo_usuarios(sessao),
+            },
+        )
+        if exc.status_code in (409, 504):
+            resp.status_code = exc.status_code
+        return _garantir_sessao_usuarios_cookie(resp, sessao)
+    except Exception as exc:
+        resp = _wrap_result(
+            _erro_html(exc),
+            extra_attrs={"status-sync": "erro", **_attrs_ciclo_usuarios(sessao)},
+        )
+        return _garantir_sessao_usuarios_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/usuarios-localizar", response_class=HTMLResponse)
+def acao_usuarios_localizar(
+    request: Request,
+    token: str = Form(""),
+    nome: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Localiza por nome completo ou prefixo no catálogo local. Não chama Mercos nem altera cursor."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_usuarios(request)
+    _hidratar_catalogo_usuarios_form(sessao, catalogo_json)
+    ciclo_antes = catalogo_usuarios.obter_ciclo(sessao)
+    busca = (nome or "").strip()
+    if not busca:
+        return _garantir_sessao_usuarios_cookie(
+            _wrap_result(
+                _card(
+                    "Localizar usuário",
+                    [("Mensagem", "Informe o nome completo ou o prefixo do usuário.")],
+                    status_label="Atenção",
+                    css="erro",
+                )
+            ),
+            sessao,
+        )
+
+    encontrado, no_ultimo_lote, estado = catalogo_usuarios.buscar_por_nome(
+        sessao, busca
+    )
+    if not encontrado:
+        return _garantir_sessao_usuarios_cookie(
+            _wrap_result(
+                _card(
+                    "Usuário não encontrado",
+                    [
+                        ("Nome buscado", busca),
+                        ("Usuários no catálogo local", catalogo_usuarios.total(sessao)),
+                    ]
+                    + _linhas_ciclo_usuarios(sessao, estado),
+                    status_label="Não encontrado",
+                    css="erro",
+                ),
+                extra_attrs={"cursor-fixo": "1", **_attrs_ciclo_usuarios(sessao)},
+            ),
+            sessao,
+        )
+
+    ultima = encontrado.get("ultima_alteracao")
+    if ultima is None or ultima == "":
+        ultima = "—"
+    linhas: list[tuple[str, Any]] = [
+        ("ID", encontrado.get("id")),
+        ("Nome completo", encontrado.get("nome")),
+        ("E-mail", encontrado.get("email") or "—"),
+        ("Administrador", _fmt_bool(encontrado.get("administrador"))),
+        ("Ativo", _ativo_usuario(encontrado)),
+        ("Última alteração", ultima),
+        ("Origem", "Catálogo local sincronizado"),
+    ]
+    linhas.extend(_linhas_ciclo_usuarios(sessao, estado))
+    nota = ""
+    if not no_ultimo_lote:
+        nota = (
+            '<p class="hint">Usuário localizado no catálogo do ERP; '
+            "não veio no último lote incremental.</p>"
+        )
+    card = _card(
+        "Usuário localizado",
+        linhas,
+        status_label="Encontrado",
+        css="ok",
+    )
+    ciclo_depois = catalogo_usuarios.obter_ciclo(sessao)
+    if ciclo_antes.get("etapa_interna") != ciclo_depois.get("etapa_interna"):
+        catalogo_usuarios._salvar_ciclo(sessao, ciclo_antes)
+    resp = _wrap_result(
+        nota + card + _html_patch_catalogo_usuarios(sessao),
+        extra_attrs={
+            "status-sync": "localizado",
+            "cursor-fixo": "1",
+            **_attrs_ciclo_usuarios(sessao),
+        },
+    )
+    return _garantir_sessao_usuarios_cookie(resp, sessao)
 
 
 @router.post("/homologacao-ui/acoes/pedidos-criar", response_class=HTMLResponse)

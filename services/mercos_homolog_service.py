@@ -512,8 +512,9 @@ def _espera_por_429(tentativa: int, retry_after: float | None) -> float:
 def _chave_resume_clientes(
     sessao_id: str | None,
     alterado_apos: str | None,
+    ns: str = "clientes",
 ) -> str:
-    return f"{(sessao_id or '').strip()}|{alterado_apos or ''}"
+    return f"{(sessao_id or '').strip()}|{ns}|{alterado_apos or ''}"
 
 
 def _salvar_resume_clientes(chave: str, estado: dict[str, Any]) -> None:
@@ -603,10 +604,65 @@ def listar_clientes_paginado_seguro(
     params_extra: dict | None = None,
     sessao_id: str | None = None,
 ) -> dict[str, Any]:
-    """Lista clientes com paradas anti-travamento e respeito a HTTP 429.
+    """Lista clientes com paradas anti-travamento e respeito a HTTP 429."""
+    return _listar_paginado_seguro(
+        path=_path("clientes"),
+        resume_ns="clientes",
+        alterado_apos=alterado_apos,
+        pagina_inicial=pagina_inicial,
+        max_paginas=max_paginas,
+        timeout_request=timeout_request,
+        timeout_total=timeout_total,
+        params_extra=params_extra,
+        sessao_id=sessao_id,
+    )
 
-    Contrato real da Mercos (diagnóstico 2026-07-16): o endpoint ignora o
-    parâmetro ``pagina``; a paginação é por cursor ``alterado_apos`` (maior
+
+def listar_usuarios_paginado_seguro(
+    *,
+    alterado_apos: str | None = None,
+    pagina_inicial: int = 1,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    params_extra: dict | None = None,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Lista usuários com o mesmo contrato seguro dos clientes.
+
+    Diagnóstico sandbox 2026-07-17: GET /v1/usuarios aceita alterado_apos
+    (cursor keyset) e retorna MEUSPEDIDOS_LIMITOU_REGISTROS /
+    QTDE_TOTAL_REGISTROS / REQUISICOES_EXTRAS — igual a /v1/clientes.
+    """
+    return _listar_paginado_seguro(
+        path=_path("usuarios"),
+        resume_ns="usuarios",
+        alterado_apos=alterado_apos,
+        pagina_inicial=pagina_inicial,
+        max_paginas=max_paginas,
+        timeout_request=timeout_request,
+        timeout_total=timeout_total,
+        params_extra=params_extra,
+        sessao_id=sessao_id,
+    )
+
+
+def _listar_paginado_seguro(
+    *,
+    path: str,
+    resume_ns: str,
+    alterado_apos: str | None = None,
+    pagina_inicial: int = 1,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    params_extra: dict | None = None,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Paginação segura Mercos com paradas anti-travamento e respeito a 429.
+
+    Contrato real da Mercos (diagnósticos 2026-07-16/17): os endpoints ignoram
+    o parâmetro ``pagina``; a paginação é por cursor ``alterado_apos`` (maior
     ``ultima_alteracao`` do lote anterior, filtro estritamente maior).
 
     A primeira resposta traz MEUSPEDIDOS_REQUISICOES_EXTRAS: quando presente,
@@ -616,7 +672,6 @@ def listar_clientes_paginado_seguro(
     """
     pagina = max(1, int(pagina_inicial or 1))
     limite = max(1, min(int(max_paginas or CLIENTES_MAX_PAGINAS_SYNC), CLIENTES_MAX_PAGINAS_SYNC))
-    path = _path("clientes")
     extras = dict(params_extra or {})
     extras.pop("alterado_apos", None)
     alterado_apos_inicial: str | None = None
@@ -624,7 +679,7 @@ def listar_clientes_paginado_seguro(
         alterado_apos_inicial = str(alterado_apos).strip()
     cursor_atual = alterado_apos_inicial
 
-    chave_resume = _chave_resume_clientes(sessao_id, alterado_apos_inicial)
+    chave_resume = _chave_resume_clientes(sessao_id, alterado_apos_inicial, ns=resume_ns)
     itens_brutos: list = []
     ids_vistos: set[str] = set()
     assinaturas: set[str] = set()
@@ -951,6 +1006,76 @@ def sincronizar_clientes(
         }
     finally:
         _SYNC_CLIENTES_LOCK.release()
+
+
+_SYNC_USUARIOS_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
+
+
+def sincronizar_usuarios(
+    cursor: str | None = None,
+    *,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    sobreposicao_segundos: int = 1,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Uma sincronização Usuários GET com o mesmo padrão seguro de clientes.
+
+    Respeita HTTP 429 por página (Retry-After ou backoff 2/5/10, máx 3 tentativas),
+    header MEUSPEDIDOS_REQUISICOES_EXTRAS (1 + extras chamadas, sem chamada final
+    desnecessária) e lock com TTL liberado sempre no finally.
+    """
+    if not _SYNC_USUARIOS_LOCK.acquire(blocking=False):
+        raise MercosApiError(
+            "Sincronização de usuários já em andamento. Aguarde a conclusão.",
+            status_code=409,
+        )
+    try:
+        cursor_base = (cursor or "").strip() or None
+        tipo = "incremental" if cursor_base else "completa"
+        if cursor_base:
+            alterado_apos = cursor_com_sobreposicao(
+                cursor_base, segundos=sobreposicao_segundos
+            )
+        else:
+            alterado_apos = None
+        data = listar_usuarios_paginado_seguro(
+            alterado_apos=alterado_apos,
+            pagina_inicial=1,
+            max_paginas=max_paginas,
+            timeout_request=timeout_request,
+            timeout_total=timeout_total,
+            sessao_id=sessao_id,
+        )
+        itens = deduplicar_por_id_alteracao(data.get("itens") or [])
+        total = len(itens)
+        maior = maior_ultima_alteracao(itens)
+        novo_cursor = maior if maior else cursor_base
+        status = data.get("status") or "concluida"
+        return {
+            "ok": True,
+            "tipo": tipo,
+            "cursor_base": cursor_base,
+            "alterado_apos_enviado": alterado_apos,
+            "cursor_anterior": cursor_base,
+            "novo_cursor": novo_cursor,
+            "total": total,
+            "itens": itens,
+            "path": data.get("path"),
+            "paginas_lidas": data.get("paginas_lidas"),
+            "filtros": data.get("filtros") or {},
+            "status": status,
+            "motivo_parada": data.get("motivo_parada") or MOTIVO_PARADA_FIM,
+            "espera_429_segundos": data.get("espera_429_segundos") or 0,
+            "pagina_atual": data.get("pagina_atual"),
+            "requisicoes_extras": data.get("requisicoes_extras"),
+            "requisicoes_previstas": data.get("requisicoes_previstas"),
+            "requisicoes_executadas": data.get("requisicoes_executadas"),
+            "qtde_total_registros": data.get("qtde_total_registros"),
+        }
+    finally:
+        _SYNC_USUARIOS_LOCK.release()
 
 
 def listar_segmentos(**kw) -> dict:
@@ -1309,6 +1434,8 @@ __all__ = [
     "COMBINACOES_FILTROS_TIPOS_PEDIDO",
     "caminhos_candidatos_tipos_pedido",
     "listar_usuarios",
+    "listar_usuarios_paginado_seguro",
+    "sincronizar_usuarios",
     "criar_cliente",
     "alterar_cliente",
     "criar_pedido",

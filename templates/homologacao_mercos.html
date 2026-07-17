@@ -624,9 +624,28 @@
         <!-- 11 -->
         <section class="panel" id="sec-usuarios" data-homolog-sec="usuarios-buscar">
           <h2>Usuários — Buscar</h2>
-          <p class="hint">Usuários ativos com perfil de acesso.</p>
+          <p class="hint">Ciclo de homologação em 3 etapas. Use somente «Sincronizar próxima etapa» durante o ciclo ativo. «Buscar usuários» fica bloqueado para não invalidar a evidência.</p>
           <div class="toolbar">
-            <button type="button" data-action="/mercos/homologacao-ui/acoes/usuarios" data-target="res-usuarios">Buscar usuários</button>
+            <button type="button" id="btn-usuarios-reiniciar" class="secondary">
+              Reiniciar ciclo de sincronização
+            </button>
+            <button type="button" id="btn-usuarios-sincronizar">
+              Sincronizar próxima etapa
+            </button>
+            <button type="button" id="btn-usuarios-buscar"
+              data-action="/mercos/homologacao-ui/acoes/usuarios"
+              data-target="res-usuarios">
+              Buscar usuários
+            </button>
+          </div>
+          <p class="hint" id="aviso-busca-usuarios-bloqueada" hidden>Busca completa bloqueada durante a homologação.</p>
+          <div class="toolbar">
+            <label class="field">Localizar usuário pelo nome
+              <input type="text" id="input-usuarios-nome" placeholder="Nome completo ou prefixo (ex.: f919f5f2)" />
+            </label>
+            <button type="button" id="btn-usuarios-localizar" class="secondary">
+              Localizar usuário
+            </button>
           </div>
           <div class="resultado" id="res-usuarios"></div>
         </section>
@@ -749,8 +768,12 @@
       var CLIENTES_CURSOR_KEY = "mercos_clientes_cursor";
       var CLIENTES_CATALOGO_KEY = "mercos_clientes_catalogo";
       var CLIENTES_CICLO_KEY = "mercos_clientes_ciclo_ativo";
+      var USUARIOS_CURSOR_KEY = "mercos_usuarios_cursor";
+      var USUARIOS_CATALOGO_KEY = "mercos_usuarios_catalogo";
+      var USUARIOS_CICLO_KEY = "mercos_usuarios_ciclo_ativo";
       var produtosSyncBusy = false;
       var clientesSyncBusy = false;
+      var usuariosSyncBusy = false;
       var store = {
         cliente: localStorage.getItem("homolog_cliente_id") || "",
         pedido: localStorage.getItem("homolog_pedido_id") || "",
@@ -870,6 +893,51 @@
         if (aviso) aviso.hidden = !ativo;
       }
 
+      function getUsuariosCursor() {
+        return localStorage.getItem(USUARIOS_CURSOR_KEY) || "";
+      }
+
+      function setUsuariosCursor(valor) {
+        if (valor) {
+          localStorage.setItem(USUARIOS_CURSOR_KEY, valor);
+        } else {
+          localStorage.removeItem(USUARIOS_CURSOR_KEY);
+        }
+      }
+
+      function getUsuariosCatalogoJson() {
+        return localStorage.getItem(USUARIOS_CATALOGO_KEY) || "";
+      }
+
+      function isCicloUsuariosAtivoLocal() {
+        try {
+          var raw = localStorage.getItem(USUARIOS_CATALOGO_KEY);
+          if (raw) {
+            var snap = JSON.parse(raw);
+            if (snap && snap.ciclo && snap.ciclo.ativo) return true;
+          }
+        } catch (e) {}
+        return localStorage.getItem(USUARIOS_CICLO_KEY) === "1";
+      }
+
+      function setCicloUsuariosAtivoLocal(ativo) {
+        if (ativo) localStorage.setItem(USUARIOS_CICLO_KEY, "1");
+        else localStorage.removeItem(USUARIOS_CICLO_KEY);
+        atualizarBuscaUsuariosBloqueada();
+      }
+
+      function atualizarBuscaUsuariosBloqueada() {
+        var btn = document.getElementById("btn-usuarios-buscar");
+        var aviso = document.getElementById("aviso-busca-usuarios-bloqueada");
+        var ativo = isCicloUsuariosAtivoLocal();
+        if (btn) {
+          btn.disabled = !!ativo;
+          btn.hidden = !!ativo;
+          btn.setAttribute("aria-disabled", ativo ? "true" : "false");
+        }
+        if (aviso) aviso.hidden = !ativo;
+      }
+
       function setCatalogoFromBlob(target) {
         var blob = target.querySelector(".mercos-catalogo-blob");
         if (!blob) return;
@@ -958,6 +1026,65 @@
         atualizarBuscaClientesBloqueada();
       }
 
+      function setUsuariosCatalogoFromBlob(target) {
+        var blob = target.querySelector(".mercos-usuarios-catalogo-blob");
+        if (!blob) return;
+        var texto = (blob.value || blob.textContent || "").trim();
+        if (!texto) return;
+        try {
+          var snap = JSON.parse(texto);
+          localStorage.setItem(USUARIOS_CATALOGO_KEY, texto);
+          if (snap && snap.ciclo) {
+            setCicloUsuariosAtivoLocal(!!snap.ciclo.ativo);
+          }
+        } catch (e) { /* ignora blob inválido */ }
+        blob.parentNode && blob.parentNode.removeChild(blob);
+      }
+
+      function applyCicloUsuariosFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-catalogo-limpo") === "1") {
+          localStorage.setItem(
+            USUARIOS_CATALOGO_KEY,
+            JSON.stringify({
+              usuarios: {},
+              ids_ultimo_lote: [],
+              ultima_sync: {},
+              ciclo: {
+                ativo: true,
+                etapa_interna: 0,
+                chamadas_completas: 0,
+                chamadas_incrementais: 0
+              },
+              total: 0
+            })
+          );
+        }
+        if (wrap.hasAttribute("data-ciclo-ativo")) {
+          setCicloUsuariosAtivoLocal(wrap.getAttribute("data-ciclo-ativo") === "1");
+        }
+        if (wrap.getAttribute("data-bloquear-busca-completa") === "1") {
+          setCicloUsuariosAtivoLocal(true);
+        }
+        atualizarBuscaUsuariosBloqueada();
+      }
+
+      function applyUsuariosCursorFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-cursor-fixo") === "1") {
+          return;
+        }
+        if (wrap.getAttribute("data-cursor-limpo") === "1") {
+          setUsuariosCursor("");
+          return;
+        }
+        if (wrap.hasAttribute("data-novo-cursor")) {
+          setUsuariosCursor(wrap.getAttribute("data-novo-cursor") || "");
+        }
+      }
+
       function sleep(ms) {
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
       }
@@ -994,12 +1121,13 @@
 
       async function postAcao(url, fields, target, btn, opts) {
         opts = opts || {};
+        var entSync = opts.entidade === "clientes" || opts.entidade === "usuarios";
         var fd = new FormData();
         Object.keys(fields || {}).forEach(function (k) {
           fd.append(k, fields[k] == null ? "" : String(fields[k]));
         });
         if (btn) btn.disabled = true;
-        if (opts.entidade === "clientes" && opts.syncThrottle) {
+        if (entSync && opts.syncThrottle) {
           target.innerHTML =
             '<p class="loading">Aguardando limite da Mercos…<br>' +
             '<span class="hint">Página atual: em andamento no servidor</span></p>';
@@ -1014,7 +1142,7 @@
             body: fd,
             credentials: "same-origin"
           };
-          if (opts.entidade === "clientes" && opts.timeoutMs) {
+          if (entSync && opts.timeoutMs) {
             controller = typeof AbortController !== "undefined" ? new AbortController() : null;
             if (controller) {
               fetchOpts.signal = controller.signal;
@@ -1025,8 +1153,8 @@
           }
           var resp = await fetch(url, fetchOpts);
 
-          // Clientes sync: countdown explícito em 429, depois retoma (resume no servidor)
-          if (resp.status === 429 && opts.entidade === "clientes" && opts.syncThrottle) {
+          // Sync clientes/usuários: countdown explícito em 429, depois retoma (resume no servidor)
+          if (resp.status === 429 && entSync && opts.syncThrottle) {
             var ra = parseFloat(resp.headers.get("Retry-After") || "10");
             if (!isFinite(ra) || ra < 0) ra = 10;
             var paginaHdr = resp.headers.get("X-Mercos-Pagina") || "—";
@@ -1043,7 +1171,7 @@
               '<p class="loading">Aguardando limite da Mercos… retomando página ' +
               paginaHdr + "…</p>";
             resp = await fetch(url, fetchOpts);
-          } else if (resp.status === 429 && !(opts.entidade === "clientes" && opts.semRetry)) {
+          } else if (resp.status === 429 && !(entSync && opts.semRetry)) {
             var ra2 = parseFloat(resp.headers.get("Retry-After") || "10");
             if (!isFinite(ra2) || ra2 < 0) ra2 = 10;
             target.innerHTML = '<p class="loading">Limite da Mercos atingido. Aguardando ' + ra2 + 's…</p>';
@@ -1068,6 +1196,10 @@
             applyClientesCursorFromResult(target);
             setClientesCatalogoFromBlob(target);
             applyCicloClientesFromResult(target);
+          } else if (opts.entidade === "usuarios") {
+            applyUsuariosCursorFromResult(target);
+            setUsuariosCatalogoFromBlob(target);
+            applyCicloUsuariosFromResult(target);
           } else {
             applyCursorFromResult(target);
             setCatalogoFromBlob(target);
@@ -1090,6 +1222,7 @@
           if (btn) btn.disabled = false;
           atualizarBuscaBloqueada();
           atualizarBuscaClientesBloqueada();
+          atualizarBuscaUsuariosBloqueada();
         }
       }
 
@@ -1101,6 +1234,7 @@
 
       atualizarBuscaBloqueada();
       atualizarBuscaClientesBloqueada();
+      atualizarBuscaUsuariosBloqueada();
 
       if (btnReiniciar && resProdutos) {
         btnReiniciar.addEventListener("click", async function () {
@@ -1298,6 +1432,82 @@
         });
       }
 
+      var btnUsuReiniciar = document.getElementById("btn-usuarios-reiniciar");
+      var btnUsuSincronizar = document.getElementById("btn-usuarios-sincronizar");
+      var btnUsuLocalizar = document.getElementById("btn-usuarios-localizar");
+      var resUsuarios = document.getElementById("res-usuarios");
+
+      if (btnUsuReiniciar && resUsuarios) {
+        btnUsuReiniciar.addEventListener("click", async function () {
+          if (usuariosSyncBusy) return;
+          usuariosSyncBusy = true;
+          setUsuariosCursor("");
+          localStorage.removeItem(USUARIOS_CATALOGO_KEY);
+          setCicloUsuariosAtivoLocal(true);
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/usuarios-reiniciar",
+              {},
+              resUsuarios,
+              btnUsuReiniciar,
+              { entidade: "usuarios", semRetry: true, timeoutMs: 65000 }
+            );
+          } finally {
+            usuariosSyncBusy = false;
+            btnUsuReiniciar.disabled = false;
+            if (btnUsuSincronizar) btnUsuSincronizar.disabled = false;
+            atualizarBuscaUsuariosBloqueada();
+          }
+        });
+      }
+
+      if (btnUsuSincronizar && resUsuarios) {
+        btnUsuSincronizar.addEventListener("click", async function () {
+          if (usuariosSyncBusy) return;
+          usuariosSyncBusy = true;
+          btnUsuSincronizar.disabled = true;
+          if (btnUsuReiniciar) btnUsuReiniciar.disabled = true;
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/usuarios-sincronizar",
+              {
+                cursor: getUsuariosCursor(),
+                catalogo_json: getUsuariosCatalogoJson()
+              },
+              resUsuarios,
+              btnUsuSincronizar,
+              { entidade: "usuarios", syncThrottle: true, timeoutMs: 180000 }
+            );
+          } finally {
+            usuariosSyncBusy = false;
+            btnUsuSincronizar.disabled = false;
+            if (btnUsuReiniciar) btnUsuReiniciar.disabled = false;
+            atualizarBuscaUsuariosBloqueada();
+          }
+        });
+      }
+
+      if (btnUsuLocalizar && resUsuarios) {
+        btnUsuLocalizar.addEventListener("click", async function () {
+          if (usuariosSyncBusy) return;
+          var nomeEl = document.getElementById("input-usuarios-nome");
+          var cursorAntes = getUsuariosCursor();
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/usuarios-localizar",
+            {
+              nome: nomeEl ? nomeEl.value : "",
+              catalogo_json: getUsuariosCatalogoJson()
+            },
+            resUsuarios,
+            btnUsuLocalizar,
+            { entidade: "usuarios", semRetry: true, timeoutMs: 30000 }
+          );
+          if (getUsuariosCursor() !== cursorAntes) {
+            setUsuariosCursor(cursorAntes);
+          }
+        });
+      }
+
       document.querySelectorAll("button[data-action]").forEach(function (btn) {
         btn.addEventListener("click", async function () {
           if (btn.id === "btn-produtos-buscar" && isCicloAtivoLocal()) {
@@ -1311,6 +1521,14 @@
           if (btn.id === "btn-clientes-buscar" && isCicloClientesAtivoLocal()) {
             if (resClientes) {
               resClientes.innerHTML =
+                '<div class="result-card erro"><h4>Busca completa bloqueada durante a homologação</h4>' +
+                "<p>Use apenas «Sincronizar próxima etapa» durante o ciclo ativo.</p></div>";
+            }
+            return;
+          }
+          if (btn.id === "btn-usuarios-buscar" && isCicloUsuariosAtivoLocal()) {
+            if (resUsuarios) {
+              resUsuarios.innerHTML =
                 '<div class="result-card erro"><h4>Busca completa bloqueada durante a homologação</h4>' +
                 "<p>Use apenas «Sincronizar próxima etapa» durante o ciclo ativo.</p></div>";
             }
@@ -1339,10 +1557,16 @@
           if (btn.id === "btn-clientes-buscar") {
             fieldMap.catalogo_json = getClientesCatalogoJson();
           }
+          if (btn.id === "btn-usuarios-buscar") {
+            fieldMap.catalogo_json = getUsuariosCatalogoJson();
+          }
 
           var opts = {};
           if (btn.id === "btn-clientes-buscar" || (url && url.indexOf("clientes") >= 0 && targetId === "res-clientes-buscar")) {
             opts.entidade = "clientes";
+          }
+          if (btn.id === "btn-usuarios-buscar") {
+            opts.entidade = "usuarios";
           }
 
           btn.disabled = true;

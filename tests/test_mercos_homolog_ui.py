@@ -2182,6 +2182,334 @@ def test_clientes_lock_libera_em_erro_e_expira(monkeypatch):
     _SYNC_CLIENTES_LOCK.release()
 
 
+def _prep_usuarios(client, monkeypatch):
+    from services import mercos_usuarios_catalogo as catu
+    from services.mercos_homolog_service import _reset_resume_clientes_para_testes
+
+    catu._reset_todos_para_testes()
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    return catu
+
+
+def test_ui_secao_usuarios_ciclo_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    secao = html.split('id="sec-usuarios"')[1].split("</section>")[0]
+    assert 'id="btn-usuarios-reiniciar"' in secao
+    assert 'id="btn-usuarios-sincronizar"' in secao
+    assert 'id="btn-usuarios-buscar"' in secao
+    assert 'id="input-usuarios-nome"' in secao
+    assert 'id="btn-usuarios-localizar"' in secao
+    assert "Reiniciar ciclo de sincronização" in secao
+
+
+def test_usuarios_reiniciar_nao_chama_mercos(client, monkeypatch):
+    catu = _prep_usuarios(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called
+    )
+    resp = client.post("/mercos/homologacao-ui/acoes/usuarios-reiniciar")
+    assert resp.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in resp.text
+    assert "0/3" in resp.text
+    assert 'data-ciclo-ativo="1"' in resp.text
+    called.assert_not_called()
+    sessao = client.cookies.get("mercos_usuarios_sessao")
+    assert catu.total(sessao) == 0
+    assert catu.obter_ciclo(sessao)["etapa_interna"] == 0
+
+
+def _fake_usuarios_sandbox(cursores_vistos):
+    """Mock do contrato real: 1ª sem alterado_apos; incrementais com cursor."""
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/usuarios"
+        params = params or {}
+        assert "pagina" not in params
+        cursor = params.get("alterado_apos")
+        cursores_vistos.append(cursor)
+        headers = {
+            "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+            "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "4",
+            "MEUSPEDIDOS_REQUISICOES_EXTRAS": "0",
+        }
+        if cursor is None:
+            return (
+                [
+                    {
+                        "id": 78809,
+                        "nome": "Arthur",
+                        "email": "a@x.com",
+                        "administrador": True,
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-06 10:16:53",
+                    },
+                    {
+                        "id": 78928,
+                        "nome": "085215c21d364f7bc1a38deb76704d64",
+                        "email": "b@x.com",
+                        "administrador": False,
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-16 09:51:28",
+                    },
+                ],
+                headers,
+            )
+        if cursor == "2026-07-16 09:51:27":
+            return (
+                [
+                    {
+                        "id": 78927,
+                        "nome": "e6d9612bbf3a480e",
+                        "email": "c@x.com",
+                        "administrador": False,
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-17 09:51:25",
+                    },
+                    {
+                        "id": 78929,
+                        "nome": "f919f5f29edd432e100eea2fe5dd4776",
+                        "email": "d@x.com",
+                        "administrador": True,
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-17 09:56:37",
+                    },
+                ],
+                headers,
+            )
+        return ([], headers)
+
+    return fake_get
+
+
+def test_usuarios_ciclo_3_etapas_completa_e_incrementais(client, monkeypatch):
+    """Etapa 1 completa sem alterado_apos; etapas 2 e 3 incrementais com cursor.
+
+    O usuário f919f5f2… (novo) aparece na incremental e entra no catálogo
+    acumulado sem perder os anteriores.
+    """
+    catu = _prep_usuarios(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_usuarios_sandbox(cursores),
+    )
+    client.post("/mercos/homologacao-ui/acoes/usuarios-reiniciar")
+    sessao = client.cookies.get("mercos_usuarios_sessao")
+
+    # Etapa 1 — busca completa (exatamente 1 chamada, sem alterado_apos)
+    r1 = client.post("/mercos/homologacao-ui/acoes/usuarios-sincronizar")
+    assert r1.status_code == 200
+    assert cursores == [None]
+    assert "1/3" in r1.text
+    assert 'data-tipo-busca="completa"' in r1.text
+    assert catu.total(sessao) == 2
+    assert catu.obter_ciclo(sessao)["chamadas_completas"] == 1
+
+    # Etapa 2 — incremental com alterado_apos = cursor salvo - 1s
+    r2 = client.post("/mercos/homologacao-ui/acoes/usuarios-sincronizar")
+    assert r2.status_code == 200
+    assert cursores[1] == "2026-07-16 09:51:27"
+    assert "2/3" in r2.text
+    assert 'data-tipo-busca="incremental"' in r2.text
+    assert "f919f5f29edd432e100eea2fe5dd4776" in r2.text
+    # Catálogo acumulado: mantém anteriores e adiciona novos
+    assert catu.total(sessao) == 4
+    estado = catu.obter(sessao)
+    assert "78809" in estado["usuarios"]  # Arthur preservado
+    assert "78929" in estado["usuarios"]  # novo usuário da incremental
+
+    # Etapa 3 — incremental de novo, cursor avançado
+    r3 = client.post("/mercos/homologacao-ui/acoes/usuarios-sincronizar")
+    assert r3.status_code == 200
+    assert cursores[2] == "2026-07-17 09:56:36"
+    assert "3/3" in r3.text
+    ciclo = catu.obter_ciclo(sessao)
+    assert ciclo["chamadas_completas"] == 1
+    assert ciclo["chamadas_incrementais"] == 2
+    assert ciclo["etapa_interna"] == 3
+    # Cursor preservado quando a incremental não retorna registros
+    assert catu.total(sessao) == 4
+    # Cartão operacional sem JSON cru nem token
+    assert "Requisições previstas" in r3.text
+    assert "Requisições executadas" in r3.text
+    assert "CompanyToken" not in r3.text
+
+
+def test_usuarios_extras_headers_limita_chamadas(monkeypatch):
+    """extras=1 → exatamente 2 chamadas; sem 3ª esperando lote vazio."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        listar_usuarios_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    chamadas: list[str | None] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/usuarios"
+        chamadas.append((params or {}).get("alterado_apos"))
+        assert len(chamadas) <= 2, "não pode existir 3ª chamada"
+        if len(chamadas) == 1:
+            return (
+                [
+                    {"id": 1, "nome": "U1", "ultima_alteracao": "2026-07-16 09:00:00"},
+                    {"id": 2, "nome": "U2", "ultima_alteracao": "2026-07-16 09:51:28"},
+                ],
+                {
+                    "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+                    "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "4",
+                    "MEUSPEDIDOS_REQUISICOES_EXTRAS": "1",
+                },
+            )
+        return (
+            [
+                {"id": 3, "nome": "U3", "ultima_alteracao": "2026-07-17 09:51:25"},
+                {"id": 4, "nome": "f919f5f29edd432e100eea2fe5dd4776", "ultima_alteracao": "2026-07-17 09:56:37"},
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_usuarios_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert len(chamadas) == 2
+    assert chamadas[0] is None
+    assert chamadas[1] == "2026-07-16 09:51:28"
+    assert out["total"] == 4
+    assert out["requisicoes_extras"] == 1
+    assert out["requisicoes_previstas"] == 2
+    assert out["requisicoes_executadas"] == 2
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+
+
+def test_usuarios_localizar_nao_faz_requisicao_http(client, monkeypatch):
+    """Localizar usa só o catálogo local (nome completo ou prefixo); cursor intacto."""
+    catu = _prep_usuarios(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar usuário não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", explode)
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", explode)
+
+    client.post("/mercos/homologacao-ui/acoes/usuarios-reiniciar")
+    sessao = client.cookies.get("mercos_usuarios_sessao")
+    catu.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 78929,
+                "nome": "f919f5f29edd432e100eea2fe5dd4776",
+                "email": "d@x.com",
+                "administrador": True,
+                "excluido": False,
+                "ultima_alteracao": "2026-07-17 09:56:37",
+            }
+        ],
+    )
+    etapa_antes = catu.obter_ciclo(sessao)["etapa_interna"]
+
+    # Por prefixo (como a Mercos pede: nome começa com f919f5f2)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/usuarios-localizar",
+        data={"nome": "f919f5f2"},
+    )
+    assert resp.status_code == 200
+    assert "Usuário localizado" in resp.text
+    assert "f919f5f29edd432e100eea2fe5dd4776" in resp.text
+    assert "Administrador" in resp.text
+    # Não altera cursor nem etapa
+    assert resp.cookies.get("mercos_usuarios_cursor") is None
+    assert 'data-cursor-fixo="1"' in resp.text
+    assert catu.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+    # Por nome completo
+    resp2 = client.post(
+        "/mercos/homologacao-ui/acoes/usuarios-localizar",
+        data={"nome": "f919f5f29edd432e100eea2fe5dd4776"},
+    )
+    assert "Usuário localizado" in resp2.text
+
+
+def test_usuarios_buscar_bloqueada_durante_ciclo(client, monkeypatch):
+    _prep_usuarios(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.listar_usuarios", called)
+    client.post("/mercos/homologacao-ui/acoes/usuarios-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/usuarios")
+    assert resp.status_code == 200
+    assert "Busca completa bloqueada durante a homologação" in resp.text
+    called.assert_not_called()
+
+
+def test_usuarios_429_retorna_retry_after_e_libera_lock(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import _SYNC_USUARIOS_LOCK
+
+    _prep_usuarios(client, monkeypatch)
+
+    def sempre_429(path, *, params=None, **_kw):
+        raise MercosApiError("429", status_code=429, retry_after=12.0)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", sempre_429
+    )
+    client.post("/mercos/homologacao-ui/acoes/usuarios-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/usuarios-sincronizar")
+    assert resp.status_code == 429
+    assert resp.headers.get("Retry-After") == "12"
+    assert "Aguardando limite da Mercos" in resp.text
+    # Lock liberado no finally: nova aquisição funciona
+    assert _SYNC_USUARIOS_LOCK.acquire(blocking=False) is True
+    _SYNC_USUARIOS_LOCK.release()
+
+
+def test_usuarios_lock_libera_em_erro(monkeypatch):
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import (
+        _SYNC_USUARIOS_LOCK,
+        sincronizar_usuarios,
+    )
+
+    _SYNC_USUARIOS_LOCK.release()
+    # Ocupado → 409 sem chamadas concorrentes
+    assert _SYNC_USUARIOS_LOCK.acquire(blocking=False)
+    try:
+        with pytest.raises(MercosApiError) as exc:
+            sincronizar_usuarios()
+        assert exc.value.status_code == 409
+    finally:
+        _SYNC_USUARIOS_LOCK.release()
+
+    # Libera no finally mesmo com erro
+    def boom(**_k):
+        raise MercosApiError("falha", status_code=502)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_usuarios_paginado_seguro", boom
+    )
+    with pytest.raises(MercosApiError):
+        sincronizar_usuarios()
+    assert _SYNC_USUARIOS_LOCK.acquire(blocking=False) is True
+    _SYNC_USUARIOS_LOCK.release()
+
+
 def test_acao_tipos_pedido_exige_token(client):
     resp = client.post("/mercos/homologacao-ui/acoes/tipos-pedido")
     assert resp.status_code == 403
