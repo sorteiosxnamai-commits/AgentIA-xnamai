@@ -522,32 +522,53 @@ class _RateLimiterMercos:
             time.sleep(segundos)
 
     def executar(self, chamada, instantes: list | None = None):
-        """Adquire o lock, aguarda até o próximo horário permitido e chama.
+        """Adquire o lock, espera o restante do intervalo e só então chama.
 
-        Registra o instante (monotônico) do início da chamada e agenda o
-        próximo horário permitido ANTES do request. Lock liberado no finally.
+        Fluxo (lock mantido da espera até o fim da resposta):
+        1. lê o instante monotônico do último INÍCIO real de requisição;
+        2. restante = intervalo_minimo - (agora - ultimo_inicio); um 429
+           anterior (Retry-After) só pode ADIAR esse alvo, nunca antecipar;
+        3. aguarda todo o restante, reconferindo o relógio após dormir
+           (sleep pode acordar antes do previsto);
+        4. registra agora como novo ultimo_inicio — depois da espera e
+           imediatamente antes do envio HTTP;
+        5. executa a chamada HTTP ainda com o lock.
         Retorna (resultado, segundos_esperados).
         """
         self._lock.acquire()
         try:
             agora = self._agora()
-            espera = 0.0
+            alvo = agora
+            if self._ultimo_inicio is not None:
+                alvo = max(alvo, self._ultimo_inicio + self.intervalo_minimo)
             if self._proximo_permitido is not None:
-                espera = max(0.0, self._proximo_permitido - agora)
-            if espera > 0:
-                self._esperar(espera)
-                agora = self._agora()
+                alvo = max(alvo, self._proximo_permitido)
+            espera_total = 0.0
+            # Reconfere o monotônico após cada sono; teto de voltas evita
+            # loop infinito caso o sleep seja neutralizado (ex.: testes).
+            for _ in range(8):
+                restante = alvo - self._agora()
+                if restante <= 0:
+                    break
+                self._esperar(restante)
+                espera_total += restante
+            agora = self._agora()
             if instantes is not None:
                 instantes.append(agora)
             self._ultimo_inicio = agora
-            self._proximo_permitido = agora + self.intervalo_minimo
+            self._proximo_permitido = None
             resultado = chamada()
-            return resultado, espera
+            return resultado, espera_total
         finally:
             self._lock.release()
 
     def aplicar_retry_after(self, segundos: float | None) -> None:
-        """HTTP 429: o próximo horário permitido passa a ser agora + Retry-After."""
+        """HTTP 429: adia o próximo envio para agora + Retry-After.
+
+        O Retry-After nunca ANTECIPA o próximo envio: o piso de
+        intervalo_minimo contado do último início real continua valendo
+        (aplicado via max() em executar).
+        """
         try:
             espera = max(0.0, float(segundos)) if segundos is not None else self.intervalo_minimo
         except (TypeError, ValueError):
@@ -982,9 +1003,12 @@ def _listar_paginado_seguro(
                 menor_intervalo = delta
         out["intervalo_minimo_aplicado"] = rate_limiter.intervalo_minimo
         out["menor_intervalo_real"] = menor_intervalo
+        # "Sim" somente se TODOS os intervalos reais (medidos entre os inícios
+        # das requisições HTTP) forem >= intervalo mínimo — sem tolerância
+        # para baixo.
         out["throttling_respeitado"] = (
             menor_intervalo is None
-            or menor_intervalo >= rate_limiter.intervalo_minimo - 1e-6
+            or menor_intervalo >= rate_limiter.intervalo_minimo
         )
     if alterado_apos_inicial:
         out["filtros"] = {"alterado_apos": alterado_apos_inicial}

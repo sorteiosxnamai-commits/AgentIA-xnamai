@@ -2907,6 +2907,108 @@ def test_pedidos_rate_limiter_429_respeita_retry_after_e_repete_pagina(monkeypat
     assert out["throttling_respeitado"] is True
 
 
+def test_pedidos_fluxo_completo_intervalo_real_entre_paginas(monkeypatch):
+    """Integração (fluxo completo, 2 páginas): >= 5s reais entre os envios HTTP.
+
+    Reproduz o cenário reprovado (requisição de 1.3s de duração): os
+    timestamps são registrados imediatamente antes do mock HTTP e a diferença
+    deve ser >= 5.0 — com 1.3s este teste falha. Também garante que ambas as
+    páginas passam pelo MESMO limiter e que nenhuma chamada ocorre fora dele.
+    """
+    from services import mercos_homolog_service as svc
+
+    svc._reset_resume_clientes_para_testes()
+    svc._reset_rate_limiters_para_testes()
+    monkeypatch.setenv("MERCOS_COMPANY_TOKEN", "empresa-teste")
+    limiter = svc._rate_limiter_pedidos()
+    clk = _RelogioFake()
+    limiter._relogio = clk.agora
+    limiter._dormir = clk.dormir
+
+    marcas_pre_http: list[float] = []
+    lock_preso_durante_http: list[bool] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/pedidos"
+        # Timestamp monotônico imediatamente antes do envio HTTP
+        marcas_pre_http.append(clk.agora())
+        # Nenhuma chamada fora do limiter: o lock global deve estar preso
+        lock_preso_durante_http.append(limiter._lock.locked())
+        clk.t += 1.3  # duração real observada em produção
+        if len(marcas_pre_http) == 1:
+            return (
+                [{"id": 1, "cliente_id": 10, "total": 5.0, "ultima_alteracao": "2026-07-06 14:56:55"}],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "1"},
+            )
+        return (
+            [{"id": 2, "cliente_id": 11, "total": 6.0, "ultima_alteracao": "2026-07-17 10:57:39"}],
+            {},
+        )
+
+    monkeypatch.setattr(svc, "get_json_com_headers", fake_get)
+    out = svc.sincronizar_pedidos()
+
+    # Exatamente 1 + extras chamadas, todas dentro do limiter
+    assert len(marcas_pre_http) == 2
+    assert all(lock_preso_durante_http)
+    # Intervalo real entre os INÍCIOS das requisições >= 5.0 (nunca 1.3)
+    assert marcas_pre_http[1] - marcas_pre_http[0] >= 5.0
+    assert out["intervalo_minimo_aplicado"] == 5.0
+    assert out["menor_intervalo_real"] >= 5.0
+    assert out["throttling_respeitado"] is True
+    # Única instância compartilhada por CompanyToken em todo o processo
+    assert svc._rate_limiter_pedidos() is limiter
+    assert len(svc._RATE_LIMITERS_MERCOS) == 1
+
+
+def test_pedidos_retry_apos_429_respeita_piso_de_5s(monkeypatch):
+    """Regressão do bug de produção: Retry-After curto (1s) não fura o piso.
+
+    A Mercos respondeu 429 com Retry-After 1 e a retentativa saía 1.3s após a
+    tentativa anterior. O piso de 5s contado do último início real deve
+    prevalecer sobre um Retry-After menor.
+    """
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import (
+        _RateLimiterMercos,
+        _reset_resume_clientes_para_testes,
+        listar_pedidos_paginado_seguro,
+    )
+
+    _reset_resume_clientes_para_testes()
+    clk = _RelogioFake()
+    limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
+    marcas: list[float] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        marcas.append(clk.agora())
+        clk.t += 0.3
+        if len(marcas) == 2:
+            raise MercosApiError("429", status_code=429, retry_after=1.0)
+        if len(marcas) == 1:
+            return (
+                [{"id": 1, "cliente_id": 10, "total": 5.0, "ultima_alteracao": "2026-07-06 14:56:55"}],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "1"},
+            )
+        return (
+            [{"id": 2, "cliente_id": 11, "total": 6.0, "ultima_alteracao": "2026-07-17 10:57:39"}],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_pedidos_paginado_seguro(
+        rate_limiter=limiter, max_paginas=20, timeout_total=60
+    )
+    assert len(marcas) == 3
+    # TODOS os intervalos reais >= 5.0, inclusive a retentativa pós-429
+    for antes, depois in zip(marcas, marcas[1:]):
+        assert depois - antes >= 5.0
+    assert out["menor_intervalo_real"] >= 5.0
+    assert out["throttling_respeitado"] is True
+
+
 def test_pedidos_rate_limiter_serializa_chamadas_concorrentes():
     """Duas chamadas concorrentes nunca ultrapassam o limite (lock compartilhado)."""
     import threading
