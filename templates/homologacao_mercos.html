@@ -477,12 +477,43 @@
         <!-- 5 -->
         <section class="panel" id="sec-clientes-alterar" data-homolog-sec="cliente-alterar">
           <h2>Cliente — Alterar</h2>
-          <p class="hint">Atualiza nome fantasia e observação do cliente.</p>
+          <p class="hint">Atualiza o cliente com os valores informados. Campos vazios não são enviados; o ID vai somente na URL.</p>
           <div class="toolbar">
-            <label class="field">Código do cliente
-              <input type="text" id="input-cliente-id" placeholder="Ex.: 9289641" />
+            <label class="field">ID do cliente
+              <input type="text" id="input-cliente-id" placeholder="Ex.: 9290554" />
             </label>
-            <button type="button" class="secondary" data-action="/mercos/homologacao-ui/acoes/clientes-alterar" data-target="res-clientes-alterar" data-fields="cliente_id:input-cliente-id">Alterar cliente</button>
+            <label class="field">Tipo
+              <select id="input-cliente-alt-tipo">
+                <option value="" selected>Não alterar</option>
+                <option value="J">J — Pessoa jurídica</option>
+                <option value="F">F — Pessoa física</option>
+              </select>
+            </label>
+            <label class="field">Razão social
+              <input type="text" id="input-cliente-alt-razao-social" placeholder="Razão social" />
+            </label>
+            <label class="field">Nome fantasia
+              <input type="text" id="input-cliente-alt-fantasia" placeholder="Nome fantasia" />
+            </label>
+            <label class="field">CNPJ/CPF
+              <input type="text" id="input-cliente-alt-cnpj" placeholder="Somente números" />
+            </label>
+            <label class="field">E-mail (opcional)
+              <input type="text" id="input-cliente-alt-email" placeholder="email@exemplo.com" />
+            </label>
+            <label class="field">Ativo
+              <select id="input-cliente-alt-ativo">
+                <option value="" selected>Não alterar</option>
+                <option value="true">Sim</option>
+                <option value="false">Não</option>
+              </select>
+            </label>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/clientes-alterar"
+              data-target="res-clientes-alterar"
+              data-fields="cliente_id:input-cliente-id,tipo:input-cliente-alt-tipo,razao_social:input-cliente-alt-razao-social,nome_fantasia:input-cliente-alt-fantasia,cnpj:input-cliente-alt-cnpj,email:input-cliente-alt-email,ativo:input-cliente-alt-ativo">
+              Alterar cliente
+            </button>
           </div>
           <div class="resultado" id="res-clientes-alterar"></div>
         </section>

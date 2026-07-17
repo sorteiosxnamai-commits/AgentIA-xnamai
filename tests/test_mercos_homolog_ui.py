@@ -2957,6 +2957,142 @@ def test_ui_produto_imagem_add_nao_altera_ciclo(client, monkeypatch):
     assert catp.obter_ciclo(sessao)["ativo"] == ativo_antes
 
 
+def test_ui_form_cliente_alterar_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    assert "Cliente — Alterar" in html
+    assert 'id="input-cliente-id"' in html
+    assert 'id="input-cliente-alt-tipo"' in html
+    assert 'id="input-cliente-alt-razao-social"' in html
+    assert 'id="input-cliente-alt-fantasia"' in html
+    assert 'id="input-cliente-alt-cnpj"' in html
+    assert 'id="input-cliente-alt-email"' in html
+    assert 'id="input-cliente-alt-ativo"' in html
+    # Ativo com opção "Não alterar"
+    secao = html.split("sec-clientes-alterar")[1].split("</section>")[0]
+    assert "Não alterar" in secao
+
+
+def test_ui_clientes_alterar_envia_valores_da_homologacao(client, monkeypatch):
+    """Etapa Cliente PUT 2/3: ID 9290554 com os valores exatos exigidos."""
+    capturado: dict = {}
+
+    def fake_put(path, body):
+        capturado["path"] = path
+        capturado["body"] = dict(body or {})
+        return {
+            "ok": True,
+            "status_code": 200,
+            "sandbox": True,
+            "dados": {
+                "tipo": "J",
+                "razao_social": "6a86449570ab4e4c",
+                "nome_fantasia": "606c84cb8015470d",
+                "cnpj": "91645924000109",
+                "ultima_alteracao": "2026-07-17 09:00:00",
+            },
+        }
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-alterar",
+        data={
+            "cliente_id": "9290554",
+            "tipo": "J",
+            "razao_social": "6a86449570ab4e4c",
+            "nome_fantasia": "606c84cb8015470d",
+            "cnpj": "91645924000109",
+            "email": "",
+            "ativo": "",
+        },
+    )
+    assert resp.status_code == 200
+    # ID só na URL, nunca no corpo
+    assert capturado["path"] == "/v1/clientes/9290554"
+    assert "id" not in capturado["body"]
+    # Corpo exatamente com os valores preenchidos, sem geração automática
+    assert capturado["body"] == {
+        "tipo": "J",
+        "razao_social": "6a86449570ab4e4c",
+        "nome_fantasia": "606c84cb8015470d",
+        "cnpj": "91645924000109",
+    }
+    html = resp.text
+    assert "Cliente alterado" in html
+    assert "Status HTTP" in html and "200" in html
+    assert "9290554" in html
+    assert "6a86449570ab4e4c" in html
+    assert "606c84cb8015470d" in html
+    assert "91645924000109" in html
+    assert "Última alteração" in html
+    assert "2026-07-17 09:00:00" in html
+    assert "Homolog Alterado" not in html  # nada gerado automaticamente
+    assert "CompanyToken" not in html
+    assert '"razao_social"' not in html  # sem JSON cru
+
+
+def test_ui_clientes_alterar_campos_vazios_nao_enviados(client, monkeypatch):
+    capturado: dict = {}
+
+    def fake_put(path, body):
+        capturado["body"] = dict(body or {})
+        return {"ok": True, "status_code": 200, "sandbox": True, "dados": {}}
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-alterar",
+        data={
+            "cliente_id": "9290554",
+            "tipo": "",
+            "razao_social": "",
+            "nome_fantasia": "Novo Nome",
+            "cnpj": "",
+            "email": "",
+            "ativo": "true",
+        },
+    )
+    assert resp.status_code == 200
+    assert capturado["body"] == {"nome_fantasia": "Novo Nome", "ativo": True}
+
+
+def test_ui_clientes_alterar_validacoes(client, monkeypatch):
+    called = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", called)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    # Sem ID
+    r1 = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-alterar",
+        data={"razao_social": "X"},
+    )
+    assert "Cliente não informado" in r1.text
+    # Com ID mas sem nenhum campo
+    r2 = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-alterar",
+        data={"cliente_id": "9290554"},
+    )
+    assert "Nenhum campo para alterar" in r2.text
+    called.assert_not_called()
+
+
+def test_ui_clientes_alterar_erro_mercos(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+
+    def fake_put(path, body):
+        raise MercosApiError("Dados inválidos", status_code=412)
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put)
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-alterar",
+        data={"cliente_id": "9290554", "razao_social": "6a86449570ab4e4c"},
+    )
+    assert resp.status_code == 200
+    assert "Falha na operação" in resp.text
+    assert "412" in resp.text
+
+
 def test_ui_form_cliente_incluir_presente(client):
     resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
     html = resp.text

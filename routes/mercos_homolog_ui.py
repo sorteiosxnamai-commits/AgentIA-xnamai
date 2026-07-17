@@ -1936,32 +1936,86 @@ def acao_clientes_alterar(
     request: Request,
     token: str = Form(""),
     cliente_id: str = Form(""),
+    tipo: str = Form(""),
+    razao_social: str = Form(""),
+    nome_fantasia: str = Form(""),
+    cnpj: str = Form(""),
+    email: str = Form(""),
+    ativo: str = Form(""),
 ):
+    """Envia exatamente os valores preenchidos ao PUT — nada é gerado
+    automaticamente; campos vazios não entram no corpo; id só na URL."""
     _auth(request, token)
     cid = (cliente_id or "").strip()
     if not cid:
         return _wrap_result(
             _card(
                 "Cliente não informado",
-                [("Ação", "Informe o ID do cliente ou crie um cliente antes.")],
+                [("Ação", "Informe o ID do cliente que será alterado.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+
+    tipo_val = (tipo or "").strip().upper()
+    razao_val = (razao_social or "").strip()
+    fantasia_val = (nome_fantasia or "").strip()
+    cnpj_val = (cnpj or "").strip()
+    email_val = (email or "").strip()
+    ativo_val = (ativo or "").strip().lower()
+
+    body: dict[str, Any] = {}
+    if tipo_val in ("J", "F"):
+        body["tipo"] = tipo_val
+    if razao_val:
+        body["razao_social"] = razao_val
+    if fantasia_val:
+        body["nome_fantasia"] = fantasia_val
+    if cnpj_val:
+        body["cnpj"] = cnpj_val  # enviado exatamente como digitado, sem formatação
+    if email_val:
+        body["email"] = email_val
+    if ativo_val in ("true", "false"):
+        body["ativo"] = ativo_val == "true"
+
+    if not body:
+        return _wrap_result(
+            _card(
+                "Nenhum campo para alterar",
+                [("Ação", "Preencha ao menos um campo além do ID.")],
                 status_label="Pendente",
                 css="pendente",
             )
         )
     try:
-        stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        body = {
-            "nome_fantasia": f"Homolog Alterado {stamp}",
-            "observacao": f"Alteração homologação visual Xnamai em {_agora_br()}",
-        }
         out = homolog.alterar_cliente(cid, body)
+        dados = out.get("dados") or {}
+
+        def _retornado_ou_enviado(chave: str, enviado: Any) -> Any:
+            valor = dados.get(chave)
+            if valor in (None, ""):
+                return enviado
+            return valor
+
+        ativo_final = _retornado_ou_enviado("ativo", body.get("ativo"))
         card = _card(
             "Cliente alterado",
             [
-                ("Status", out.get("status_code") or 200),
-                ("ID alterado", cid),
-                ("Nome fantasia", body["nome_fantasia"]),
-                ("Observação", body["observacao"]),
+                ("Status HTTP", out.get("status_code") or 200),
+                ("ID", cid),
+                ("Tipo", _retornado_ou_enviado("tipo", body.get("tipo") or "—")),
+                (
+                    "Razão social",
+                    _retornado_ou_enviado("razao_social", body.get("razao_social") or "—"),
+                ),
+                (
+                    "Nome fantasia",
+                    _retornado_ou_enviado("nome_fantasia", body.get("nome_fantasia") or "—"),
+                ),
+                ("CNPJ", _retornado_ou_enviado("cnpj", body.get("cnpj") or "—")),
+                ("E-mail", _retornado_ou_enviado("email", body.get("email") or "—")),
+                ("Ativo", _fmt_bool(ativo_final) if ativo_final is not None else "—"),
+                ("Última alteração", dados.get("ultima_alteracao") or "—"),
             ],
             status_label=f"Status {out.get('status_code') or 200}",
             css="ok",

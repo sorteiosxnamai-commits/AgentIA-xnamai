@@ -1244,9 +1244,9 @@ def criar_cliente(body: dict) -> dict:
 
 
 def alterar_cliente(cliente_id: int | str, body: dict) -> dict:
+    """PUT /v1/clientes/{id} — id só na URL, nunca no corpo."""
     payload = dict(body or {})
-    if "id" not in payload:
-        payload["id"] = int(cliente_id) if str(cliente_id).isdigit() else cliente_id
+    payload.pop("id", None)
     return put_json(f"{_path('clientes')}/{cliente_id}", payload)
 
 
