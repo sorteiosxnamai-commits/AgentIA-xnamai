@@ -213,6 +213,7 @@
       <a href="#sec-categorias">Categoria</a>
       <a href="#sec-clientes-buscar">Clientes</a>
       <a href="#sec-condicoes">Condições</a>
+      <a href="#sec-formas-pagamento-criar">Formas de pagamento</a>
       <a href="#sec-segmentos">Segmentos</a>
       <a href="#sec-tabelas">Tabelas de preço</a>
       <a href="#sec-tipos">Tipo de pedido</a>
@@ -544,6 +545,30 @@
             <button type="button" data-action="/mercos/homologacao-ui/acoes/condicoes" data-target="res-condicoes">Buscar condições</button>
           </div>
           <div class="resultado" id="res-condicoes"></div>
+        </section>
+
+        <!-- 6b -->
+        <section class="panel" id="sec-formas-pagamento-criar" data-homolog-sec="forma-pagamento-incluir">
+          <h2>Forma de pagamento — Incluir</h2>
+          <p class="hint">Cadastra uma forma de pagamento (ex.: Boleto, Pix). Entidade própria, diferente das condições de pagamento.</p>
+          <div class="toolbar">
+            <label class="field">Nome
+              <input type="text" id="input-forma-pgto-nome" value="cca8fdd8c4a24557" />
+            </label>
+            <label class="field">Ativo
+              <select id="input-forma-pgto-ativo">
+                <option value="sim" selected>Sim</option>
+                <option value="nao">Não</option>
+              </select>
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/formas-pagamento-criar"
+              data-target="res-formas-pagamento-criar"
+              data-fields="nome:input-forma-pgto-nome,ativo:input-forma-pgto-ativo">
+              Incluir forma de pagamento
+            </button>
+          </div>
+          <div class="resultado" id="res-formas-pagamento-criar"></div>
         </section>
 
         <!-- 7 -->

@@ -2381,6 +2381,54 @@ def acao_condicoes(request: Request, token: str = Form("")):
         return _wrap_result(_erro_html(exc))
 
 
+@router.post("/homologacao-ui/acoes/formas-pagamento-criar", response_class=HTMLResponse)
+def acao_formas_pagamento_criar(
+    request: Request,
+    token: str = Form(""),
+    nome: str = Form(""),
+    ativo: str = Form("sim"),
+):
+    """POST /v1/formas_pagamento — um único envio à Mercos por clique.
+
+    Entidade Formas de Pagamento (não confundir com Condições de Pagamento).
+    Contrato oficial aceita nome (obrigatório) e excluido (opcional): Ativo=Sim
+    vira excluido=false.
+    """
+    _auth(request, token)
+    nome_limpo = (nome or "").strip()
+    if not nome_limpo:
+        return _wrap_result(
+            _card(
+                "Campos obrigatórios",
+                [("Ação", "Informe o nome da forma de pagamento.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    ativo_bool = (ativo or "sim").strip().lower() != "nao"
+    try:
+        out = homolog.criar_forma_pagamento(
+            {"nome": nome_limpo, "excluido": not ativo_bool}
+        )
+        status = out.get("status_code") or 201
+        fid = out.get("id") or (out.get("dados") or {}).get("id") or "—"
+        card = _card(
+            "Forma de pagamento criada",
+            [
+                ("Status HTTP", status),
+                ("ID criado", fid),
+                ("Nome", nome_limpo),
+                ("Ativo", "Sim" if ativo_bool else "Não"),
+                ("Origem", "Mercos Sandbox"),
+            ],
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="forma_pagamento", entity_id=str(fid or ""))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/segmentos", response_class=HTMLResponse)
 def acao_segmentos(request: Request, token: str = Form("")):
     _auth(request, token)

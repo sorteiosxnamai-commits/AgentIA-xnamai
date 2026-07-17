@@ -27,6 +27,8 @@ PATHS = {
     "categorias": "/v1/categorias",
     "clientes": "/v1/clientes",
     "condicoes_pagamento": "/v1/condicoes_pagamento",
+    # Doc oficial Mercos (Apiary): entidade própria, distinta de condições
+    "formas_pagamento": "/v1/formas_pagamento",
     "produtos": "/v1/produtos",
     "segmentos": "/v1/segmentos",
     "tabelas_preco": "/v1/tabelas_preco",
@@ -67,6 +69,7 @@ def inventario_homologacao() -> dict[str, Any]:
             {"entidade": "Clientes", "metodo": "POST", "path": _path("clientes"), "status": "pronto"},
             {"entidade": "Clientes", "metodo": "PUT", "path": _path("clientes") + "/{id}", "status": "pronto"},
             {"entidade": "Condições de Pagamento", "metodo": "GET", "path": _path("condicoes_pagamento"), "status": "pronto"},
+            {"entidade": "Formas de Pagamento", "metodo": "POST", "path": _path("formas_pagamento"), "status": "pronto"},
             {"entidade": "Produtos", "metodo": "GET", "path": _path("produtos"), "status": "pronto"},
             {"entidade": "Segmentos de Clientes", "metodo": "GET", "path": _path("segmentos"), "status": "pronto"},
             {"entidade": "Tabelas de Preço", "metodo": "GET", "path": _path("tabelas_preco"), "status": "pronto"},
@@ -1640,6 +1643,27 @@ def alterar_cliente(cliente_id: int | str, body: dict) -> dict:
     return put_json(f"{_path('clientes')}/{cliente_id}", payload)
 
 
+def criar_forma_pagamento(body: dict) -> dict:
+    """POST /v1/formas_pagamento — nome (obrigatório) e excluido (opcional).
+
+    Entidade distinta de Condições de Pagamento; não reutiliza
+    /v1/condicoes_pagamento. Contrato oficial (Apiary): 201 sem corpo, ID
+    criado devolvido no header MeusPedidosID (capturado por post_json).
+    """
+    payload = dict(body or {})
+    payload.pop("id", None)
+    nome = str(payload.get("nome") or "").strip()
+    if not nome:
+        raise MercosApiError(
+            "Campo obrigatório ausente para forma de pagamento: nome.",
+            status_code=422,
+        )
+    permitido = {"nome": nome}
+    if "excluido" in payload:
+        permitido["excluido"] = bool(payload["excluido"])
+    return post_json(_path("formas_pagamento"), permitido)
+
+
 def criar_pedido(body: dict) -> dict:
     # Preferência v2 (já usada no projeto)
     return post_json(_path("pedidos_v2"), body)
@@ -1705,6 +1729,7 @@ __all__ = [
     "sincronizar_pedidos",
     "criar_cliente",
     "alterar_cliente",
+    "criar_forma_pagamento",
     "criar_pedido",
     "alterar_pedido",
     "criar_titulo",
