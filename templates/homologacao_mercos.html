@@ -1766,34 +1766,68 @@
         });
       }
 
+      function normalizarSemAcentos(texto) {
+        var t = String(texto || "");
+        if (t.normalize) {
+          t = t.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        }
+        return t.toLowerCase();
+      }
+
       if (btnPedidoCondicoes && selectPedidoCondicao) {
-        btnPedidoCondicoes.addEventListener("click", async function () {
+        btnPedidoCondicoes.addEventListener("click", async function (ev) {
+          // Só lê condições: nunca envia o pedido nem altera cliente/itens.
+          if (ev && ev.preventDefault) ev.preventDefault();
           btnPedidoCondicoes.disabled = true;
           selectPedidoCondicao.innerHTML = '<option value="">Carregando…</option>';
+          var falhaHtml =
+            '<div class="result-card erro"><h4>Falha ao carregar condições</h4>' +
+            "<p>Não foi possível consultar as condições de pagamento na Mercos. " +
+            "Tente novamente em alguns segundos.</p></div>";
           try {
             var resp = await fetch("/mercos/homologacao-ui/acoes/condicoes-opcoes", {
               method: "POST",
-              body: new FormData(),
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: "token=",
               credentials: "same-origin"
             });
             var html = await resp.text();
-            if (resp.ok && html && html.indexOf("<option") >= 0) {
+            if (resp.ok && html && html.indexOf("<option") >= 0 && html.indexOf("result-card") < 0) {
               selectPedidoCondicao.innerHTML = html;
-              var opcoes = selectPedidoCondicao.querySelectorAll("option[data-nome]");
-              for (var i = 0; i < opcoes.length; i++) {
-                var nome = (opcoes[i].getAttribute("data-nome") || "").toLowerCase();
-                if (nome.indexOf("vista") >= 0) {
-                  selectPedidoCondicao.value = opcoes[i].value;
-                  break;
+              // Garantia extra no cliente: seleciona a condição "à vista"
+              // (sem acentos/maiúsculas) caso o servidor não tenha marcado.
+              var jaSelecionada = selectPedidoCondicao.value !== "";
+              if (!jaSelecionada) {
+                var opcoes = selectPedidoCondicao.querySelectorAll("option[data-nome]");
+                for (var i = 0; i < opcoes.length; i++) {
+                  var nome = normalizarSemAcentos(opcoes[i].getAttribute("data-nome"));
+                  if (nome.indexOf("vista") >= 0) {
+                    selectPedidoCondicao.value = opcoes[i].value;
+                    jaSelecionada = true;
+                    break;
+                  }
+                }
+              }
+              if (resPedidosCriar) {
+                if (selectPedidoCondicao.querySelector("option[data-vista-ausente]")) {
+                  resPedidosCriar.innerHTML =
+                    '<div class="result-card pendente"><h4>Condições carregadas</h4>' +
+                    "<p>Condição de pagamento à vista não encontrada.</p>" +
+                    "<p>O pedido será enviado com a condição «À vista» pelo nome, " +
+                    "sem precisar do ID.</p></div>";
+                } else {
+                  resPedidosCriar.innerHTML = "";
                 }
               }
             } else {
               selectPedidoCondicao.innerHTML =
-                '<option value="">Não foi possível carregar. Tente novamente.</option>';
+                '<option value="">Clique em «Carregar condições»…</option>';
+              if (resPedidosCriar) resPedidosCriar.innerHTML = falhaHtml;
             }
           } catch (err) {
             selectPedidoCondicao.innerHTML =
-              '<option value="">Não foi possível carregar. Tente novamente.</option>';
+              '<option value="">Clique em «Carregar condições»…</option>';
+            if (resPedidosCriar) resPedidosCriar.innerHTML = falhaHtml;
           } finally {
             btnPedidoCondicoes.disabled = false;
           }

@@ -3281,16 +3281,28 @@ def acao_pedidos_localizar(
     return _garantir_sessao_pedidos_cookie(resp, sessao)
 
 
+def _sem_acentos_minusculo(texto: str) -> str:
+    import unicodedata
+
+    norm = unicodedata.normalize("NFD", texto or "")
+    return "".join(c for c in norm if unicodedata.category(c) != "Mn").lower()
+
+
 @router.post("/homologacao-ui/acoes/condicoes-opcoes", response_class=HTMLResponse)
 def acao_condicoes_opcoes(request: Request, token: str = Form("")):
     """Opções (nome + ID) para o seletor de condição de pagamento do Pedido POST.
 
-    Reutiliza o catálogo GET /v1/condicoes_pagamento já homologado.
+    Reutiliza o catálogo GET /v1/condicoes_pagamento já homologado. Lista só
+    condições ativas; a condição cujo nome contém "vista" (sem acentos) já vem
+    marcada como selecionada. Se não houver condição à vista ativa, devolve o
+    marcador data-vista-ausente para a UI avisar — o pedido pode ser enviado
+    com a condição "a vista" pelo nome (mesmo contrato do restante do projeto).
     """
     _auth(request, token)
     try:
         data = homolog.listar_condicoes_pagamento(pagina_inicial=1, max_paginas=3)
-        opcoes = ['<option value="">Selecione a condição…</option>']
+        opcoes: list[str] = []
+        vista_encontrada = False
         for item in data.get("itens") or []:
             if not isinstance(item, dict) or item.get("excluido"):
                 continue
@@ -3298,11 +3310,27 @@ def acao_condicoes_opcoes(request: Request, token: str = Form("")):
             nome = str(item.get("nome") or "").strip()
             if cid in (None, "") or not nome:
                 continue
+            selecionada = ""
+            if not vista_encontrada and "vista" in _sem_acentos_minusculo(nome):
+                selecionada = " selected"
+                vista_encontrada = True
             opcoes.append(
-                f'<option value="{_esc(cid)}" data-nome="{_esc(nome)}">'
+                f'<option value="{_esc(cid)}" data-nome="{_esc(nome)}"{selecionada}>'
                 f"{_esc(nome)} (ID {_esc(cid)})</option>"
             )
-        return HTMLResponse("".join(opcoes))
+        if not opcoes:
+            return HTMLResponse(
+                '<option value="" data-vista-ausente="1">'
+                "Nenhuma condição ativa — será usada À vista pelo nome</option>"
+            )
+        if vista_encontrada:
+            placeholder = '<option value="">Selecione a condição…</option>'
+        else:
+            placeholder = (
+                '<option value="" data-vista-ausente="1" selected>'
+                "À vista não encontrada — será usada pelo nome</option>"
+            )
+        return HTMLResponse(placeholder + "".join(opcoes))
     except Exception as exc:
         return _wrap_result(_erro_html(exc))
 
@@ -3399,6 +3427,10 @@ def acao_pedidos_criar(
         if (condicao_pagamento_id or "").strip():
             cid_pag = condicao_pagamento_id.strip()
             body["condicao_pagamento_id"] = int(cid_pag) if cid_pag.isdigit() else cid_pag
+        else:
+            # Sandbox sem condição ativa "À vista" no catálogo: o /v2/pedidos
+            # aceita a condição pelo nome (mesmo contrato já usado no projeto).
+            body["condicao_pagamento"] = "a vista"
 
         out = homolog.criar_pedido(body)
         pid = out.get("id") or (out.get("dados") or {}).get("id")
@@ -3410,6 +3442,8 @@ def acao_pedidos_criar(
         if (condicao_pagamento_id or "").strip():
             sufixo = f"(ID {condicao_pagamento_id.strip()})"
             condicao_label = f"{condicao_label} {sufixo}".strip() if condicao_label else sufixo
+        elif not condicao_label:
+            condicao_label = "À vista (pelo nome)"
         linhas: list[tuple[str, Any]] = [
             ("Status HTTP", out.get("status_code") or 201),
             ("ID do pedido", pid),

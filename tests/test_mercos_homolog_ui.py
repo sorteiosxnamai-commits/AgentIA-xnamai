@@ -3312,6 +3312,8 @@ def test_condicoes_opcoes_lista_nome_e_id(client, monkeypatch):
         "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
     )
     client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    criar = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.criar_pedido", criar)
     monkeypatch.setattr(
         "services.mercos_homolog_service.listar_condicoes_pagamento",
         lambda **_k: {
@@ -3329,6 +3331,108 @@ def test_condicoes_opcoes_lista_nome_e_id(client, monkeypatch):
     assert "À vista (ID 3)" in resp.text
     assert "30 dias (ID 4)" in resp.text
     assert "Antiga" not in resp.text  # excluída não aparece
+    # Carregar condições nunca envia o pedido
+    criar.assert_not_called()
+
+
+def test_condicoes_opcoes_seleciona_a_vista_sem_acentos(client, monkeypatch):
+    """A condição com "vista" no nome (sem acento/maiúsculas) já vem selecionada."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_condicoes_pagamento",
+        lambda **_k: {
+            "ok": True,
+            "total": 2,
+            "itens": [
+                {"id": 4, "nome": "30 dias", "excluido": False},
+                {"id": 7, "nome": "A VISTA", "excluido": False},
+            ],
+        },
+    )
+    resp = client.post("/mercos/homologacao-ui/acoes/condicoes-opcoes")
+    assert resp.status_code == 200
+    assert 'value="7" data-nome="A VISTA" selected' in resp.text
+    assert "data-vista-ausente" not in resp.text
+
+
+def test_condicoes_opcoes_sem_a_vista_avisa(client, monkeypatch):
+    """Sem condição à vista ativa, marca data-vista-ausente para a UI avisar."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_condicoes_pagamento",
+        lambda **_k: {
+            "ok": True,
+            "total": 2,
+            "itens": [
+                # Cenário real do sandbox: todas as condições excluídas
+                {"id": 264893, "nome": "Pix", "excluido": True},
+                {"id": 264886, "nome": "Pix parcelado em até 9 vezes", "excluido": True},
+            ],
+        },
+    )
+    resp = client.post("/mercos/homologacao-ui/acoes/condicoes-opcoes")
+    assert resp.status_code == 200
+    assert "data-vista-ausente" in resp.text
+    assert "Pix" not in resp.text  # excluídas não aparecem
+
+
+def test_condicoes_opcoes_falha_mostra_cartao_de_erro(client, monkeypatch):
+    """Falha na Mercos aparece como cartão amigável, não silenciosamente."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    def boom(**_k):
+        raise MercosApiError("indisponível", status_code=502)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_condicoes_pagamento", boom
+    )
+    resp = client.post("/mercos/homologacao-ui/acoes/condicoes-opcoes")
+    assert resp.status_code == 200
+    assert "result-card" in resp.text
+    assert "Falha na operação" in resp.text
+
+
+def test_pedido_post_sem_condicao_id_usa_a_vista_pelo_nome(client, monkeypatch):
+    """Sem ID de condição selecionado, o pedido vai com condicao_pagamento "a vista"."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[dict] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_pedido",
+        lambda body: chamadas.append(body)
+        or {"ok": True, "status_code": 201, "id": 779, "dados": {}},
+    )
+    itens_json = (
+        '[{"produto_id": "20400740", "quantidade": "4", "preco": "78.95"},'
+        ' {"produto_id": "20400741", "quantidade": "2", "preco": "67.65"}]'
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-criar",
+        data={"cliente_id": "9290584", "itens_json": itens_json},
+    )
+    assert resp.status_code == 200
+    assert len(chamadas) == 1
+    body = chamadas[0]
+    assert body["condicao_pagamento"] == "a vista"
+    assert "condicao_pagamento_id" not in body
+    assert len(body["itens"]) == 2
+    assert "À vista (pelo nome)" in resp.text
 
 
 def test_pedido_post_dois_itens_em_um_unico_post(client, monkeypatch):
