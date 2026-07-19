@@ -6151,3 +6151,377 @@ def test_demais_homologacoes_intactas_apos_tipos_pedido(client, monkeypatch):
         assert resp.status_code == 200, rota
         assert "Ciclo de sincronização reiniciado" in resp.text
 
+
+# ---------------------------------------------------------------------------
+# Pagamento GET — ciclo de homologação em 2 etapas (Mercos Pay)
+# ---------------------------------------------------------------------------
+
+
+def _prep_pagamentos(client, monkeypatch):
+    from services import mercos_pagamentos_catalogo as catg
+    from services.mercos_homolog_service import _reset_resume_clientes_para_testes
+
+    catg._reset_todos_para_testes()
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    return catg
+
+
+def test_ui_secao_pagamentos_buscar_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    secao = html.split('id="sec-pagamentos-buscar"')[1].split("</section>")[0]
+    assert 'id="btn-pagamentos-reiniciar"' in secao
+    assert 'id="btn-pagamentos-sincronizar"' in secao
+    assert 'id="input-pagamentos-id"' in secao
+    assert 'id="btn-pagamentos-localizar"' in secao
+    assert "Reiniciar ciclo de sincronização" in secao
+    assert "Localizar pagamento pelo ID" in secao
+    assert "Pagamentos — Buscar" in secao
+    # Demais seções intactas
+    assert 'id="sec-condicoes"' in html
+    assert 'id="sec-formas-pagamento-criar"' in html
+    assert 'id="sec-titulos-criar"' in html or "Título" in html
+
+
+def test_pagamentos_reiniciar_nao_chama_mercos(client, monkeypatch):
+    catg = _prep_pagamentos(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called
+    )
+    resp = client.post("/mercos/homologacao-ui/acoes/pagamentos-reiniciar")
+    assert resp.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in resp.text
+    assert "0/2" in resp.text
+    assert 'data-ciclo-ativo="1"' in resp.text
+    called.assert_not_called()
+    sessao = client.cookies.get("mercos_pagamentos_sessao")
+    assert catg.total(sessao) == 0
+    assert catg.obter_ciclo(sessao)["etapa_interna"] == 0
+
+
+def _fake_pagamentos_sandbox(cursores_vistos):
+    """Contrato real: completa sem alterado_apos; incremental com cursor exato."""
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/pagamentos"
+        params = params or {}
+        assert "pagina" not in params
+        cursor = params.get("alterado_apos")
+        cursores_vistos.append(cursor)
+        headers = {
+            "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+            "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "2",
+            "MEUSPEDIDOS_REQUISICOES_EXTRAS": "0",
+        }
+        if cursor is None:
+            return (
+                [
+                    {
+                        "id": 7716,
+                        "valor": 156.0,
+                        "pedido_id": 2150165,
+                        "cliente_id": 9290646,
+                        "data_criacao": "2026-07-18 16:10:50",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-18 16:10:50",
+                        "token": "segredo-nao-deve-aparecer",
+                    },
+                    {
+                        "id": 7700,
+                        "valor": 10.5,
+                        "pedido_id": 2150001,
+                        "cliente_id": 9290001,
+                        "data_criacao": "2026-07-17 10:00:00",
+                        "excluido": True,
+                        "ultima_alteracao": "2026-07-17 11:00:00",
+                    },
+                ],
+                headers,
+            )
+        if cursor == "2026-07-18 16:10:50":
+            return (
+                [
+                    {
+                        "id": 7800,
+                        "valor": 99.9,
+                        "pedido_id": 2150999,
+                        "cliente_id": 9290999,
+                        "data_criacao": "2026-07-19 09:00:00",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-19 09:00:00",
+                    }
+                ],
+                headers,
+            )
+        return ([], headers)
+
+    return fake_get
+
+
+def test_pagamentos_ciclo_2_etapas_completa_e_incremental(client, monkeypatch):
+    """Etapa 1 completa traz o ID 7716; etapa 2 incremental com cursor exato."""
+    catg = _prep_pagamentos(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_pagamentos_sandbox(cursores),
+    )
+    client.post("/mercos/homologacao-ui/acoes/pagamentos-reiniciar")
+    sessao = client.cookies.get("mercos_pagamentos_sessao")
+
+    r1 = client.post("/mercos/homologacao-ui/acoes/pagamentos-sincronizar")
+    assert r1.status_code == 200
+    assert cursores == [None]
+    assert "1/2" in r1.text
+    assert 'data-tipo-busca="completa"' in r1.text
+    assert "7716" in r1.text
+    assert "156.00" in r1.text or "156" in r1.text
+    assert catg.total(sessao) == 2
+    assert catg.obter(sessao)["pagamentos"]["7700"]["excluido"] is True
+    assert catg.obter_ciclo(sessao)["chamadas_completas"] == 1
+    # Token de link de pagamento nunca aparece na UI
+    assert "segredo-nao-deve-aparecer" not in r1.text
+    assert "CompanyToken" not in r1.text
+
+    r2 = client.post("/mercos/homologacao-ui/acoes/pagamentos-sincronizar")
+    assert r2.status_code == 200
+    assert cursores[1] == "2026-07-18 16:10:50"
+    assert "2/2" in r2.text
+    assert 'data-tipo-busca="incremental"' in r2.text
+    assert 'data-cursor-base="2026-07-18 16:10:50"' in r2.text
+    assert 'data-alterado-apos-enviado="2026-07-18 16:10:50"' in r2.text
+    assert "2026-07-18 16:10:49" not in r2.text
+    assert catg.total(sessao) == 3
+    estado = catg.obter(sessao)
+    assert "7716" in estado["pagamentos"]
+    assert "7800" in estado["pagamentos"]
+    ciclo = catg.obter_ciclo(sessao)
+    assert ciclo["chamadas_completas"] == 1
+    assert ciclo["chamadas_incrementais"] == 1
+    assert ciclo["etapa_interna"] == 2
+    assert "Requisições previstas" in r2.text
+    assert "Requisições executadas" in r2.text
+
+
+def test_pagamentos_extras_headers_limita_chamadas(monkeypatch):
+    """extras=1 → exatamente 2 chamadas; sem 3ª esperando lote vazio."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        listar_pagamentos_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    chamadas: list[str | None] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/pagamentos"
+        chamadas.append((params or {}).get("alterado_apos"))
+        assert len(chamadas) <= 2, "não pode existir 3ª chamada"
+        if len(chamadas) == 1:
+            return (
+                [
+                    {
+                        "id": 7716,
+                        "valor": 156.0,
+                        "ultima_alteracao": "2026-07-18 16:10:50",
+                    },
+                    {
+                        "id": 7700,
+                        "valor": 10.5,
+                        "ultima_alteracao": "2026-07-17 11:00:00",
+                    },
+                ],
+                {
+                    "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+                    "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "3",
+                    "MEUSPEDIDOS_REQUISICOES_EXTRAS": "1",
+                },
+            )
+        return (
+            [
+                {
+                    "id": 7800,
+                    "valor": 99.9,
+                    "ultima_alteracao": "2026-07-19 09:00:00",
+                }
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_pagamentos_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert len(chamadas) == 2
+    assert chamadas[0] is None
+    assert chamadas[1] == "2026-07-18 16:10:50"
+    assert out["total"] == 3
+    assert out["requisicoes_extras"] == 1
+    assert out["requisicoes_previstas"] == 2
+    assert out["requisicoes_executadas"] == 2
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    ids = [i.get("id") for i in out["itens"]]
+    assert 7716 in ids
+
+
+def test_pagamentos_localizar_id_7716_sem_http(client, monkeypatch):
+    """Localiza o ID 7716 só no catálogo local; não chama Mercos nem altera cursor."""
+    catg = _prep_pagamentos(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar pagamento não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", explode)
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", explode)
+
+    client.post("/mercos/homologacao-ui/acoes/pagamentos-reiniciar")
+    sessao = client.cookies.get("mercos_pagamentos_sessao")
+    catg.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 7716,
+                "valor": 156.0,
+                "pedido_id": 2150165,
+                "cliente_id": 9290646,
+                "data_criacao": "2026-07-18 16:10:50",
+                "excluido": False,
+                "ultima_alteracao": "2026-07-18 16:10:50",
+            }
+        ],
+    )
+    etapa_antes = catg.obter_ciclo(sessao)["etapa_interna"]
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pagamentos-localizar",
+        data={"pagamento_id": "7716"},
+    )
+    assert resp.status_code == 200
+    assert "Pagamento localizado" in resp.text
+    assert "7716" in resp.text
+    assert "156.00" in resp.text
+    assert "Pedido 2150165" in resp.text
+    assert "Cliente 9290646" in resp.text
+    assert 'data-cursor-intacto="1"' in resp.text
+    assert resp.cookies.get("mercos_pagamentos_cursor") is None
+    assert catg.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+
+def test_pagamentos_incremental_envia_cursor_exato(monkeypatch):
+    from services.mercos_homolog_service import sincronizar_pagamentos
+
+    capt: dict = {}
+
+    def fake_listar(alterado_apos=None, **_kw):
+        capt["alterado_apos"] = alterado_apos
+        return {"itens": [], "paginas_lidas": 1}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_pagamentos_paginado_seguro",
+        fake_listar,
+    )
+    out = sincronizar_pagamentos("2026-07-18 16:10:50")
+    assert capt["alterado_apos"] == "2026-07-18 16:10:50"
+    assert out["cursor_base"] == "2026-07-18 16:10:50"
+    assert out["alterado_apos_enviado"] == "2026-07-18 16:10:50"
+    assert out["tipo"] == "incremental"
+
+
+def test_pagamentos_429_retorna_retry_after_e_libera_lock(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import _SYNC_PAGAMENTOS_LOCK
+
+    _prep_pagamentos(client, monkeypatch)
+
+    def sempre_429(path, *, params=None, **_kw):
+        raise MercosApiError("429", status_code=429, retry_after=12.0)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", sempre_429
+    )
+    client.post("/mercos/homologacao-ui/acoes/pagamentos-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/pagamentos-sincronizar")
+    assert resp.status_code == 429
+    assert resp.headers.get("Retry-After") == "12"
+    assert "Aguardando limite da Mercos" in resp.text
+    assert _SYNC_PAGAMENTOS_LOCK.acquire(blocking=False) is True
+    _SYNC_PAGAMENTOS_LOCK.release()
+
+
+def test_pagamentos_sincronizar_bloqueia_concorrencia(client, monkeypatch):
+    from services.mercos_homolog_service import _SYNC_PAGAMENTOS_LOCK
+
+    _prep_pagamentos(client, monkeypatch)
+    assert _SYNC_PAGAMENTOS_LOCK.acquire(blocking=False) is True
+    try:
+        client.post("/mercos/homologacao-ui/acoes/pagamentos-reiniciar")
+        resp = client.post("/mercos/homologacao-ui/acoes/pagamentos-sincronizar")
+        assert resp.status_code == 409
+        assert "já em andamento" in resp.text
+    finally:
+        _SYNC_PAGAMENTOS_LOCK.release()
+
+
+def test_demais_fluxos_intactos_apos_pagamentos(client, monkeypatch):
+    """Condições, formas, faturamento, títulos e demais ciclos permanecem intactos."""
+    _prep_pagamentos(client, monkeypatch)
+    client.post("/mercos/homologacao-ui/acoes/pagamentos-reiniciar")
+
+    # Condições GET intacto
+    listar = MagicMock(
+        return_value={"ok": True, "itens": [{"id": 1, "nome": "À vista"}], "total": 1}
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_condicoes_pagamento", listar
+    )
+    r_cond = client.post("/mercos/homologacao-ui/acoes/condicoes")
+    assert r_cond.status_code == 200
+    listar.assert_called()
+
+    # Formas POST intacto
+    criar_forma = MagicMock(return_value={"id": 9, "nome": "Pix"})
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.homolog.criar_forma_pagamento", criar_forma
+    )
+    r_forma = client.post(
+        "/mercos/homologacao-ui/acoes/formas-pagamento-criar",
+        data={"nome": "Pix", "ativo": "sim"},
+    )
+    assert r_forma.status_code == 200
+    criar_forma.assert_called()
+
+    # Ciclos GET de outras entidades
+    for rota in (
+        "/mercos/homologacao-ui/acoes/produtos-reiniciar",
+        "/mercos/homologacao-ui/acoes/clientes-reiniciar",
+        "/mercos/homologacao-ui/acoes/usuarios-reiniciar",
+        "/mercos/homologacao-ui/acoes/pedidos-reiniciar",
+        "/mercos/homologacao-ui/acoes/tipos-pedido-reiniciar",
+    ):
+        resp = client.post(rota)
+        assert resp.status_code == 200, rota
+        assert "Ciclo de sincronização reiniciado" in resp.text
+
+    # Rotas de faturamento e títulos continuam registradas (sem 404)
+    for rota in (
+        "/mercos/homologacao-ui/acoes/pedidos-faturar",
+        "/mercos/homologacao-ui/acoes/faturamento-alterar",
+        "/mercos/homologacao-ui/acoes/titulos-criar",
+    ):
+        resp = client.post(rota, data={})
+        assert resp.status_code != 404, rota
+

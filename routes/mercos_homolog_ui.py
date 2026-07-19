@@ -26,6 +26,7 @@ from services import mercos_produtos_catalogo as catalogo_produtos
 from services import mercos_usuarios_catalogo as catalogo_usuarios
 from services import mercos_pedidos_catalogo as catalogo_pedidos
 from services import mercos_tipos_pedido_catalogo as catalogo_tipos_pedido
+from services import mercos_pagamentos_catalogo as catalogo_pagamentos
 from services.mercos_api_client import MercosApiError
 from services.mercos_service import mercos_ambiente_sandbox, mercos_configurado
 
@@ -46,6 +47,8 @@ _COOKIE_PEDIDOS_CURSOR = "mercos_pedidos_cursor"
 _COOKIE_PEDIDOS_SESSAO = "mercos_pedidos_sessao"
 _COOKIE_TIPOS_CURSOR = "mercos_tipos_pedido_cursor"
 _COOKIE_TIPOS_SESSAO = "mercos_tipos_pedido_sessao"
+_COOKIE_PAGAMENTOS_CURSOR = "mercos_pagamentos_cursor"
+_COOKIE_PAGAMENTOS_SESSAO = "mercos_pagamentos_sessao"
 _CURSOR_MAX_AGE = 60 * 60 * 24 * 30
 _SESSAO_MAX_AGE = 60 * 60 * 24 * 30
 
@@ -900,6 +903,158 @@ def _attrs_ciclo_pedidos(sessao_id: str) -> dict[str, str]:
         "chamadas-incrementais": str(ciclo.get("chamadas_incrementais") or 0),
         "bloquear-busca-completa": "1" if ciclo.get("ativo") else "0",
     }
+
+
+def _cursor_pagamentos(request: Request, cursor_form: str = "") -> str:
+    form = (cursor_form or "").strip()
+    if form:
+        return form
+    raw = (request.cookies.get(_COOKIE_PAGAMENTOS_CURSOR) or "").strip().strip('"')
+    if not raw:
+        return ""
+    try:
+        return unquote(raw)
+    except Exception:
+        return raw
+
+
+def _set_cursor_pagamentos_cookie(resp: HTMLResponse, cursor: str | None) -> HTMLResponse:
+    valor = (cursor or "").strip()
+    if valor:
+        resp.set_cookie(
+            key=_COOKIE_PAGAMENTOS_CURSOR,
+            value=quote(valor, safe=""),
+            httponly=False,
+            max_age=_CURSOR_MAX_AGE,
+            samesite="lax",
+        )
+    else:
+        resp.delete_cookie(_COOKIE_PAGAMENTOS_CURSOR)
+    return resp
+
+
+def _obter_ou_criar_sessao_pagamentos(request: Request) -> str:
+    existente = (request.cookies.get(_COOKIE_PAGAMENTOS_SESSAO) or "").strip()
+    if existente:
+        return existente
+    return uuid.uuid4().hex
+
+
+def _garantir_sessao_pagamentos_cookie(resp: HTMLResponse, sessao_id: str) -> HTMLResponse:
+    resp.set_cookie(
+        key=_COOKIE_PAGAMENTOS_SESSAO,
+        value=sessao_id,
+        httponly=False,
+        max_age=_SESSAO_MAX_AGE,
+        samesite="lax",
+    )
+    return resp
+
+
+def _hidratar_catalogo_pagamentos_form(sessao_id: str, catalogo_json: str = "") -> None:
+    catalogo_pagamentos.hidratar_se_vazio(sessao_id, catalogo_json or "")
+
+
+def _html_patch_catalogo_pagamentos(sessao_id: str) -> str:
+    snap = catalogo_pagamentos.snapshot_sessao(sessao_id)
+    blob = html.escape(json.dumps(snap, ensure_ascii=False, separators=(",", ":")))
+    return (
+        f'<textarea class="mercos-pagamentos-catalogo-blob" hidden readonly '
+        f'aria-hidden="true">{blob}</textarea>'
+    )
+
+
+def _linhas_ciclo_pagamentos(
+    sessao_id: str, estado: dict[str, Any] | None = None
+) -> list[tuple[str, Any]]:
+    estado = estado or catalogo_pagamentos.obter(sessao_id)
+    ciclo = catalogo_pagamentos.obter_ciclo(sessao_id)
+    sync = (estado or {}).get("ultima_sync") or {}
+    tipo = sync.get("tipo")
+    tipo_label = (
+        "Completa"
+        if tipo == "completa"
+        else ("Incremental" if tipo == "incremental" else (tipo or "—"))
+    )
+    etapa = int(ciclo.get("etapa_interna") or 0)
+
+    def _num(chave: str) -> Any:
+        valor = sync.get(chave)
+        return valor if valor is not None else "—"
+
+    return [
+        ("Etapa interna", f"{etapa}/2"),
+        ("Tipo da última busca", tipo_label),
+        ("Cursor base", sync.get("cursor_base") or "—"),
+        ("alterado_apos enviado", sync.get("alterado_apos_enviado") or "—"),
+        ("Novo cursor", sync.get("novo_cursor") or "—"),
+        ("Total de páginas consultadas", sync.get("paginas_lidas") or "—"),
+        ("Requisições extras informadas pela Mercos", _num("requisicoes_extras")),
+        ("Requisições previstas", _num("requisicoes_previstas")),
+        ("Requisições executadas", _num("requisicoes_executadas")),
+        ("Total retornado em todas as páginas", sync.get("total_lote") or 0),
+        ("Total no catálogo", len((estado or {}).get("pagamentos") or {})),
+        ("Motivo da parada", sync.get("motivo_parada") or "—"),
+        ("Status da sincronização", sync.get("status_sync") or "—"),
+        ("Chamadas completas no ciclo", ciclo.get("chamadas_completas") or 0),
+        ("Chamadas incrementais no ciclo", ciclo.get("chamadas_incrementais") or 0),
+    ]
+
+
+def _attrs_ciclo_pagamentos(sessao_id: str) -> dict[str, str]:
+    ciclo = catalogo_pagamentos.obter_ciclo(sessao_id)
+    return {
+        "ciclo-ativo": "1" if ciclo.get("ativo") else "0",
+        "etapa-interna": str(ciclo.get("etapa_interna") or 0),
+        "chamadas-completas": str(ciclo.get("chamadas_completas") or 0),
+        "chamadas-incrementais": str(ciclo.get("chamadas_incrementais") or 0),
+        "bloquear-busca-completa": "1" if ciclo.get("ativo") else "0",
+    }
+
+
+def _fmt_valor_pagamento(valor: Any) -> str:
+    if valor in (None, ""):
+        return "—"
+    try:
+        return f"{float(valor):.2f}"
+    except (TypeError, ValueError):
+        return str(valor)
+
+
+def _relacionado_pagamento(item: dict) -> str:
+    partes: list[str] = []
+    if item.get("pedido_id") not in (None, ""):
+        partes.append(f"Pedido {item.get('pedido_id')}")
+    if item.get("titulo_id") not in (None, ""):
+        partes.append(f"Título {item.get('titulo_id')}")
+    if item.get("cliente_id") not in (None, ""):
+        partes.append(f"Cliente {item.get('cliente_id')}")
+    return " · ".join(partes) if partes else "—"
+
+
+def _html_tabela_pagamentos(itens: list) -> str:
+    rows = []
+    for item in itens or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            [
+                _campo(item, "id"),
+                _fmt_valor_pagamento(item.get("valor")),
+                _relacionado_pagamento(item),
+                item.get("data_criacao")
+                if item.get("data_criacao") not in (None, "")
+                else "—",
+                _fmt_bool(item.get("excluido", False)),
+                item.get("ultima_alteracao")
+                if item.get("ultima_alteracao") not in (None, "")
+                else "—",
+            ]
+        )
+    return _table(
+        ["ID", "Valor", "Relacionado", "Data", "Excluído", "Última alteração"],
+        rows,
+    )
 
 
 def _fmt_total_pedido(valor: Any) -> str:
@@ -3873,6 +4028,338 @@ def acao_pedidos_localizar(
         },
     )
     return _garantir_sessao_pedidos_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/pagamentos-reiniciar", response_class=HTMLResponse)
+def acao_pagamentos_reiniciar(
+    request: Request,
+    token: str = Form(""),
+):
+    """Apaga cursor/catálogo de pagamentos, ciclo volta a 0/2 — sem chamar a Mercos."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_pagamentos(request)
+    catalogo_pagamentos.iniciar_ciclo(sessao)
+    homolog._limpar_resumes_da_sessao(sessao)
+    estado = catalogo_pagamentos.obter(sessao)
+    mensagem = (
+        '<div class="result-card ok">'
+        "<h4>Ciclo de sincronização reiniciado</h4>"
+        "<p>Cursor e catálogo anteriores apagados. Novo ciclo ativo na etapa 0/2. "
+        "Use «Sincronizar próxima etapa» para a busca completa.</p>"
+        "</div>"
+    )
+    resumo = _card(
+        "Estado do ciclo",
+        _linhas_ciclo_pagamentos(sessao, estado),
+        status_label="Ciclo ativo",
+        css="ok",
+    )
+    resp = _wrap_result(
+        mensagem + resumo + _html_patch_catalogo_pagamentos(sessao),
+        extra_attrs={
+            "novo-cursor": "",
+            "cursor-limpo": "1",
+            "catalogo-limpo": "1",
+            "status-sync": "reiniciado",
+            "catalogo-total": "0",
+            **_attrs_ciclo_pagamentos(sessao),
+        },
+    )
+    resp = _set_cursor_pagamentos_cookie(resp, None)
+    return _garantir_sessao_pagamentos_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/pagamentos-sincronizar", response_class=HTMLResponse)
+def acao_pagamentos_sincronizar(
+    request: Request,
+    token: str = Form(""),
+    cursor: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Única ação que chama a Mercos no ciclo: etapa 0 completa; etapa 1 incremental."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_pagamentos(request)
+    _hidratar_catalogo_pagamentos_form(sessao, catalogo_json)
+    ciclo = catalogo_pagamentos.obter_ciclo(sessao)
+    if not ciclo.get("ativo"):
+        catalogo_pagamentos.iniciar_ciclo(sessao)
+        ciclo = catalogo_pagamentos.obter_ciclo(sessao)
+
+    etapa = int(ciclo.get("etapa_interna") or 0)
+    cursor_form = _cursor_pagamentos(request, cursor)
+
+    if etapa == 0:
+        cursor_para_sync = None
+        tipo_esperado = "completa"
+    else:
+        if not cursor_form:
+            resp = _wrap_result(
+                _card(
+                    "Cursor ausente",
+                    [
+                        (
+                            "Mensagem",
+                            "Etapa incremental exige cursor salvo. Reinicie o ciclo se necessário.",
+                        )
+                    ]
+                    + _linhas_ciclo_pagamentos(sessao),
+                    status_label="Erro",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "erro", **_attrs_ciclo_pagamentos(sessao)},
+            )
+            return _garantir_sessao_pagamentos_cookie(resp, sessao)
+        cursor_para_sync = cursor_form
+        tipo_esperado = "incremental"
+
+    try:
+        data = homolog.sincronizar_pagamentos(
+            cursor_para_sync, max_paginas=20, sessao_id=sessao
+        )
+        tipo_real = data.get("tipo") or tipo_esperado
+        if etapa >= 1 and (
+            tipo_real == "completa" or not data.get("alterado_apos_enviado")
+        ):
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [
+                        (
+                            "Mensagem",
+                            "A etapa atual exige busca incremental com alterado_apos.",
+                        )
+                    ]
+                    + _linhas_ciclo_pagamentos(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo_pagamentos(sessao)},
+            )
+            return _garantir_sessao_pagamentos_cookie(resp, sessao)
+
+        status_sync = data.get("status") or "concluida"
+        motivo = data.get("motivo_parada") or ""
+        status_label = "Timeout" if status_sync == "timeout" else "Concluída"
+        meta = {
+            "tipo": tipo_real,
+            "cursor_base": data.get("cursor_base"),
+            "alterado_apos_enviado": data.get("alterado_apos_enviado"),
+            "novo_cursor": data.get("novo_cursor"),
+            "total_lote": data.get("total", 0),
+            "paginas_lidas": data.get("paginas_lidas") or 0,
+            "motivo_parada": motivo,
+            "status_sync": status_label,
+            "requisicoes_extras": data.get("requisicoes_extras"),
+            "requisicoes_previstas": data.get("requisicoes_previstas"),
+            "requisicoes_executadas": data.get("requisicoes_executadas"),
+        }
+        if tipo_real == "completa":
+            catalogo_pagamentos.substituir_completo(
+                sessao, data.get("itens") or [], meta=meta
+            )
+        else:
+            catalogo_pagamentos.upsert_incremental(
+                sessao, data.get("itens") or [], meta=meta
+            )
+        try:
+            catalogo_pagamentos.registrar_sync_ciclo(sessao, tipo=tipo_real)
+        except ValueError as exc:
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [("Mensagem", str(exc))] + _linhas_ciclo_pagamentos(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo_pagamentos(sessao)},
+            )
+            return _garantir_sessao_pagamentos_cookie(resp, sessao)
+
+        estado = catalogo_pagamentos.obter(sessao)
+        total = data.get("total", 0)
+        paginas = data.get("paginas_lidas") or 0
+        css = "pendente" if status_sync == "timeout" else "ok"
+        resumo = _card(
+            "Sincronização de pagamentos",
+            [
+                ("Status da sincronização", status_label),
+                ("Motivo da parada", motivo or "—"),
+            ]
+            + _linhas_ciclo_pagamentos(sessao, estado),
+            status_label=status_label,
+            css=css,
+        )
+        table = _html_tabela_pagamentos(data.get("itens") or [])
+        resp = _wrap_result(
+            resumo + table + _html_patch_catalogo_pagamentos(sessao),
+            extra_attrs={
+                "novo-cursor": data.get("novo_cursor") or "",
+                "cursor-anterior": data.get("cursor_anterior") or "",
+                "cursor-base": data.get("cursor_base") or "",
+                "alterado-apos-enviado": data.get("alterado_apos_enviado") or "",
+                "tipo-busca": tipo_real,
+                "total": str(total),
+                "paginas-lidas": str(paginas),
+                "requisicoes-extras": str(
+                    data.get("requisicoes_extras")
+                    if data.get("requisicoes_extras") is not None
+                    else ""
+                ),
+                "requisicoes-previstas": str(
+                    data.get("requisicoes_previstas")
+                    if data.get("requisicoes_previstas") is not None
+                    else ""
+                ),
+                "requisicoes-executadas": str(data.get("requisicoes_executadas") or 0),
+                "motivo-parada": motivo,
+                "catalogo-total": str(len(estado.get("pagamentos") or {})),
+                "catalogo-modo": "replace" if tipo_real == "completa" else "upsert",
+                "status-sync": status_sync,
+                **_attrs_ciclo_pagamentos(sessao),
+            },
+        )
+        resp = _set_cursor_pagamentos_cookie(resp, data.get("novo_cursor"))
+        return _garantir_sessao_pagamentos_cookie(resp, sessao)
+    except MercosApiError as exc:
+        if exc.status_code == 429:
+            segundos = exc.retry_after if exc.retry_after is not None else 10
+            try:
+                segundos = max(0, int(float(segundos)))
+            except (TypeError, ValueError):
+                segundos = 10
+            pagina_atual = exc.pagina if exc.pagina is not None else "—"
+            resp = _wrap_result(
+                _card(
+                    "Aguardando limite da Mercos",
+                    [
+                        ("Mensagem", "Aguardando limite da Mercos"),
+                        ("Segundos restantes", segundos),
+                        ("Página atual", pagina_atual),
+                    ],
+                    status_label="Aguardando",
+                    css="pendente",
+                ),
+                extra_attrs={
+                    "status-sync": "aguardando-429",
+                    "aguardando-mercos": "1",
+                    "segundos-espera": str(segundos),
+                    "pagina-atual": str(pagina_atual),
+                    "http-status": "429",
+                    **_attrs_ciclo_pagamentos(sessao),
+                },
+            )
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(segundos)
+            resp.headers["X-Mercos-Pagina"] = str(pagina_atual)
+            return _garantir_sessao_pagamentos_cookie(resp, sessao)
+        resp = _wrap_result(
+            _erro_html(exc),
+            extra_attrs={
+                "status-sync": "erro",
+                "http-status": str(exc.status_code or ""),
+                **_attrs_ciclo_pagamentos(sessao),
+            },
+        )
+        if exc.status_code in (409, 504):
+            resp.status_code = exc.status_code
+        return _garantir_sessao_pagamentos_cookie(resp, sessao)
+    except Exception as exc:
+        resp = _wrap_result(
+            _erro_html(exc),
+            extra_attrs={"status-sync": "erro", **_attrs_ciclo_pagamentos(sessao)},
+        )
+        return _garantir_sessao_pagamentos_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/pagamentos-localizar", response_class=HTMLResponse)
+def acao_pagamentos_localizar(
+    request: Request,
+    token: str = Form(""),
+    pagamento_id: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Localiza pagamento pelo ID no catálogo local. Não chama Mercos nem altera cursor."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_pagamentos(request)
+    _hidratar_catalogo_pagamentos_form(sessao, catalogo_json)
+    ciclo_antes = catalogo_pagamentos.obter_ciclo(sessao)
+    busca = (pagamento_id or "").strip()
+    if not busca:
+        return _garantir_sessao_pagamentos_cookie(
+            _wrap_result(
+                _card(
+                    "Localizar pagamento",
+                    [("Mensagem", "Informe o ID do pagamento.")],
+                    status_label="Atenção",
+                    css="erro",
+                )
+            ),
+            sessao,
+        )
+
+    encontrado, no_ultimo_lote, estado = catalogo_pagamentos.buscar_por_id(sessao, busca)
+    if not encontrado:
+        return _garantir_sessao_pagamentos_cookie(
+            _wrap_result(
+                _card(
+                    "Pagamento não encontrado",
+                    [
+                        ("ID buscado", busca),
+                        (
+                            "Pagamentos no catálogo local",
+                            catalogo_pagamentos.total(sessao),
+                        ),
+                    ]
+                    + _linhas_ciclo_pagamentos(sessao, estado),
+                    status_label="Não encontrado",
+                    css="erro",
+                ),
+                extra_attrs={"cursor-fixo": "1", **_attrs_ciclo_pagamentos(sessao)},
+            ),
+            sessao,
+        )
+
+    ultima = encontrado.get("ultima_alteracao")
+    if ultima is None or ultima == "":
+        ultima = "—"
+    data_pag = encontrado.get("data_criacao")
+    if data_pag in (None, ""):
+        data_pag = "—"
+    linhas: list[tuple[str, Any]] = [
+        ("ID", encontrado.get("id")),
+        ("Valor do pagamento", _fmt_valor_pagamento(encontrado.get("valor"))),
+        ("Pedido, título ou cliente relacionado", _relacionado_pagamento(encontrado)),
+        ("Data", data_pag),
+        ("Excluído", _fmt_bool(encontrado.get("excluido", False))),
+        ("Última alteração", ultima),
+        ("Origem", "Catálogo local sincronizado"),
+    ]
+    linhas.extend(_linhas_ciclo_pagamentos(sessao, estado))
+    nota = ""
+    if not no_ultimo_lote:
+        nota = (
+            '<p class="hint">Pagamento localizado no catálogo do ERP; '
+            "não veio no último lote incremental.</p>"
+        )
+    card = _card(
+        "Pagamento localizado",
+        linhas,
+        status_label="Encontrado",
+        css="ok",
+    )
+    ciclo_depois = catalogo_pagamentos.obter_ciclo(sessao)
+    if ciclo_antes.get("etapa_interna") != ciclo_depois.get("etapa_interna"):
+        catalogo_pagamentos._salvar_ciclo(sessao, ciclo_antes)
+    resp = _wrap_result(
+        nota + card + _html_patch_catalogo_pagamentos(sessao),
+        extra_attrs={
+            "status-sync": "localizado",
+            "cursor-intacto": "1",
+            "pagamento-valor": _fmt_valor_pagamento(encontrado.get("valor")),
+            **_attrs_ciclo_pagamentos(sessao),
+        },
+    )
+    return _garantir_sessao_pagamentos_cookie(resp, sessao)
 
 
 def _sem_acentos_minusculo(texto: str) -> str:

@@ -219,6 +219,7 @@
       <a href="#sec-tipos">Tipo de pedido</a>
       <a href="#sec-usuarios">Usuários</a>
       <a href="#sec-pedidos-buscar">Pedidos</a>
+      <a href="#sec-pagamentos-buscar">Pagamentos</a>
       <a href="#sec-titulos-criar">Títulos</a>
     </aside>
 
@@ -757,6 +758,29 @@
           <div class="resultado" id="res-pedidos-buscar"></div>
         </section>
 
+        <!-- 12a -->
+        <section class="panel" id="sec-pagamentos-buscar" data-homolog-sec="pagamentos-buscar">
+          <h2>Pagamentos — Buscar</h2>
+          <p class="hint">Ciclo de homologação em 2 etapas (Mercos Pay): 1/2 busca completa e 2/2 incremental com alterado_apos. Entidade distinta de Condições, Formas, Faturamento e Títulos. Use «Localizar pagamento pelo ID» para informar o valor solicitado pela Mercos.</p>
+          <div class="toolbar">
+            <button type="button" id="btn-pagamentos-reiniciar" class="secondary">
+              Reiniciar ciclo de sincronização
+            </button>
+            <button type="button" id="btn-pagamentos-sincronizar">
+              Sincronizar próxima etapa
+            </button>
+          </div>
+          <div class="toolbar">
+            <label class="field">Localizar pagamento pelo ID
+              <input type="text" id="input-pagamentos-id" placeholder="Ex.: 7716" value="7716" />
+            </label>
+            <button type="button" id="btn-pagamentos-localizar" class="secondary">
+              Localizar pagamento
+            </button>
+          </div>
+          <div class="resultado" id="res-pagamentos-buscar"></div>
+        </section>
+
         <!-- 12b -->
         <section class="panel" id="sec-pedidos-criar" data-homolog-sec="pedido-incluir">
           <h2>Pedido — Incluir</h2>
@@ -993,11 +1017,15 @@
       var TIPOS_CURSOR_KEY = "mercos_tipos_pedido_cursor";
       var TIPOS_CATALOGO_KEY = "mercos_tipos_pedido_catalogo";
       var TIPOS_CICLO_KEY = "mercos_tipos_pedido_ciclo_ativo";
+      var PAGAMENTOS_CURSOR_KEY = "mercos_pagamentos_cursor";
+      var PAGAMENTOS_CATALOGO_KEY = "mercos_pagamentos_catalogo";
+      var PAGAMENTOS_CICLO_KEY = "mercos_pagamentos_ciclo_ativo";
       var produtosSyncBusy = false;
       var clientesSyncBusy = false;
       var usuariosSyncBusy = false;
       var pedidosSyncBusy = false;
       var tiposSyncBusy = false;
+      var pagamentosSyncBusy = false;
       var store = {
         cliente: localStorage.getItem("homolog_cliente_id") || "",
         pedido: localStorage.getItem("homolog_pedido_id") || "",
@@ -1225,6 +1253,27 @@
         });
         var aviso = document.getElementById("aviso-busca-tipos-bloqueada");
         if (aviso) aviso.hidden = !ativo;
+      }
+
+      function getPagamentosCursor() {
+        return localStorage.getItem(PAGAMENTOS_CURSOR_KEY) || "";
+      }
+
+      function setPagamentosCursor(valor) {
+        if (valor) {
+          localStorage.setItem(PAGAMENTOS_CURSOR_KEY, valor);
+        } else {
+          localStorage.removeItem(PAGAMENTOS_CURSOR_KEY);
+        }
+      }
+
+      function getPagamentosCatalogoJson() {
+        return localStorage.getItem(PAGAMENTOS_CATALOGO_KEY) || "";
+      }
+
+      function setCicloPagamentosAtivoLocal(ativo) {
+        if (ativo) localStorage.setItem(PAGAMENTOS_CICLO_KEY, "1");
+        else localStorage.removeItem(PAGAMENTOS_CICLO_KEY);
       }
 
       function setCatalogoFromBlob(target) {
@@ -1458,6 +1507,61 @@
         }
       }
 
+      function setPagamentosCatalogoFromBlob(target) {
+        var blob = target.querySelector(".mercos-pagamentos-catalogo-blob");
+        if (!blob) return;
+        var texto = (blob.value || blob.textContent || "").trim();
+        if (!texto) return;
+        try {
+          var snap = JSON.parse(texto);
+          localStorage.setItem(PAGAMENTOS_CATALOGO_KEY, texto);
+          if (snap && snap.ciclo) {
+            setCicloPagamentosAtivoLocal(!!snap.ciclo.ativo);
+          }
+        } catch (e) { /* ignora blob inválido */ }
+        blob.parentNode && blob.parentNode.removeChild(blob);
+      }
+
+      function applyCicloPagamentosFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-catalogo-limpo") === "1") {
+          localStorage.setItem(
+            PAGAMENTOS_CATALOGO_KEY,
+            JSON.stringify({
+              pagamentos: {},
+              ids_ultimo_lote: [],
+              ultima_sync: {},
+              ciclo: {
+                ativo: true,
+                etapa_interna: 0,
+                chamadas_completas: 0,
+                chamadas_incrementais: 0
+              },
+              total: 0
+            })
+          );
+        }
+        if (wrap.hasAttribute("data-ciclo-ativo")) {
+          setCicloPagamentosAtivoLocal(wrap.getAttribute("data-ciclo-ativo") === "1");
+        }
+      }
+
+      function applyPagamentosCursorFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-cursor-intacto") === "1") {
+          return;
+        }
+        if (wrap.getAttribute("data-cursor-limpo") === "1") {
+          setPagamentosCursor("");
+          return;
+        }
+        if (wrap.hasAttribute("data-novo-cursor")) {
+          setPagamentosCursor(wrap.getAttribute("data-novo-cursor") || "");
+        }
+      }
+
       function applyPedidosCursorFromResult(target) {
         var wrap = target.querySelector(".acao-resultado");
         if (!wrap) return;
@@ -1524,7 +1628,7 @@
 
       async function postAcao(url, fields, target, btn, opts) {
         opts = opts || {};
-        var entSync = opts.entidade === "clientes" || opts.entidade === "usuarios" || opts.entidade === "pedidos" || opts.entidade === "tipos";
+        var entSync = opts.entidade === "clientes" || opts.entidade === "usuarios" || opts.entidade === "pedidos" || opts.entidade === "tipos" || opts.entidade === "pagamentos";
         var fd = new FormData();
         Object.keys(fields || {}).forEach(function (k) {
           fd.append(k, fields[k] == null ? "" : String(fields[k]));
@@ -1619,6 +1723,10 @@
             applyTiposCursorFromResult(target);
             setTiposCatalogoFromBlob(target);
             applyCicloTiposFromResult(target);
+          } else if (opts.entidade === "pagamentos") {
+            applyPagamentosCursorFromResult(target);
+            setPagamentosCatalogoFromBlob(target);
+            applyCicloPagamentosFromResult(target);
           } else {
             applyCursorFromResult(target);
             setCatalogoFromBlob(target);
@@ -2075,6 +2183,80 @@
           );
           if (getTiposCursor() !== cursorAntes) {
             setTiposCursor(cursorAntes);
+          }
+        });
+      }
+
+      var btnPagReiniciar = document.getElementById("btn-pagamentos-reiniciar");
+      var btnPagSincronizar = document.getElementById("btn-pagamentos-sincronizar");
+      var btnPagLocalizar = document.getElementById("btn-pagamentos-localizar");
+      var resPagamentos = document.getElementById("res-pagamentos-buscar");
+
+      if (btnPagReiniciar && resPagamentos) {
+        btnPagReiniciar.addEventListener("click", async function () {
+          if (pagamentosSyncBusy) return;
+          pagamentosSyncBusy = true;
+          setPagamentosCursor("");
+          localStorage.removeItem(PAGAMENTOS_CATALOGO_KEY);
+          setCicloPagamentosAtivoLocal(true);
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/pagamentos-reiniciar",
+              {},
+              resPagamentos,
+              btnPagReiniciar,
+              { entidade: "pagamentos", semRetry: true, timeoutMs: 65000 }
+            );
+          } finally {
+            pagamentosSyncBusy = false;
+            btnPagReiniciar.disabled = false;
+            if (btnPagSincronizar) btnPagSincronizar.disabled = false;
+          }
+        });
+      }
+
+      if (btnPagSincronizar && resPagamentos) {
+        btnPagSincronizar.addEventListener("click", async function () {
+          if (pagamentosSyncBusy) return;
+          pagamentosSyncBusy = true;
+          btnPagSincronizar.disabled = true;
+          if (btnPagReiniciar) btnPagReiniciar.disabled = true;
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/pagamentos-sincronizar",
+              {
+                cursor: getPagamentosCursor(),
+                catalogo_json: getPagamentosCatalogoJson()
+              },
+              resPagamentos,
+              btnPagSincronizar,
+              { entidade: "pagamentos", syncThrottle: true, timeoutMs: 180000 }
+            );
+          } finally {
+            pagamentosSyncBusy = false;
+            btnPagSincronizar.disabled = false;
+            if (btnPagReiniciar) btnPagReiniciar.disabled = false;
+          }
+        });
+      }
+
+      if (btnPagLocalizar && resPagamentos) {
+        btnPagLocalizar.addEventListener("click", async function () {
+          if (pagamentosSyncBusy) return;
+          var idEl = document.getElementById("input-pagamentos-id");
+          var cursorAntes = getPagamentosCursor();
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/pagamentos-localizar",
+            {
+              pagamento_id: idEl ? idEl.value : "",
+              catalogo_json: getPagamentosCatalogoJson()
+            },
+            resPagamentos,
+            btnPagLocalizar,
+            { entidade: "pagamentos", semRetry: true, timeoutMs: 30000 }
+          );
+          if (getPagamentosCursor() !== cursorAntes) {
+            setPagamentosCursor(cursorAntes);
           }
         });
       }
