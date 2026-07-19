@@ -76,6 +76,7 @@ def inventario_homologacao() -> dict[str, Any]:
             {"entidade": "Clientes", "metodo": "POST", "path": _path("clientes"), "status": "pronto"},
             {"entidade": "Clientes", "metodo": "PUT", "path": _path("clientes") + "/{id}", "status": "pronto"},
             {"entidade": "Condições de Pagamento", "metodo": "GET", "path": _path("condicoes_pagamento"), "status": "pronto"},
+            {"entidade": "Condições de Pagamento", "metodo": "POST", "path": _path("condicoes_pagamento"), "status": "pronto"},
             {"entidade": "Formas de Pagamento", "metodo": "POST", "path": _path("formas_pagamento"), "status": "pronto"},
             {"entidade": "Formas de Pagamento", "metodo": "PUT", "path": _path("formas_pagamento") + "/{id}", "status": "pronto"},
             {"entidade": "Pagamentos", "metodo": "GET", "path": _path("pagamentos"), "status": "pronto"},
@@ -1954,6 +1955,52 @@ def alterar_cliente(cliente_id: int | str, body: dict) -> dict:
     return put_json(f"{_path('clientes')}/{cliente_id}", payload)
 
 
+def criar_condicao_pagamento(body: dict) -> dict:
+    """POST /v1/condicoes_pagamento — um único envio à Mercos.
+
+    Contrato oficial (Apiary): nome (obrigatório, String:100); opcionais
+    valor_minimo (Double), disponivel_b2b (Boolean),
+    considerar_limite_credito (Boolean), excluido (Boolean). Sucesso 201;
+    validação 412. ID criado no header MeusPedidosID (capturado por
+    post_json). Entidade distinta de Formas de Pagamento / Pagamentos /
+    Faturamento. Não altera o ciclo GET.
+    """
+    payload = dict(body or {})
+    payload.pop("id", None)
+    nome = str(payload.get("nome") or "").strip()
+    if not nome:
+        raise MercosApiError(
+            "Campo obrigatório ausente para condição de pagamento: nome.",
+            status_code=422,
+        )
+    if len(nome) > 100:
+        raise MercosApiError(
+            "Nome da condição de pagamento excede 100 caracteres.",
+            status_code=422,
+        )
+    permitido: dict[str, Any] = {"nome": nome}
+    if "valor_minimo" in payload and payload.get("valor_minimo") not in (None, ""):
+        try:
+            permitido["valor_minimo"] = float(payload["valor_minimo"])
+        except (TypeError, ValueError) as exc:
+            raise MercosApiError(
+                "valor_minimo inválido para condição de pagamento.",
+                status_code=422,
+            ) from exc
+    if "disponivel_b2b" in payload and payload.get("disponivel_b2b") is not None:
+        permitido["disponivel_b2b"] = bool(payload["disponivel_b2b"])
+    if (
+        "considerar_limite_credito" in payload
+        and payload.get("considerar_limite_credito") is not None
+    ):
+        permitido["considerar_limite_credito"] = bool(
+            payload["considerar_limite_credito"]
+        )
+    if "excluido" in payload and payload.get("excluido") is not None:
+        permitido["excluido"] = bool(payload["excluido"])
+    return post_json(_path("condicoes_pagamento"), permitido)
+
+
 def criar_forma_pagamento(body: dict) -> dict:
     """POST /v1/formas_pagamento — nome (obrigatório) e excluido (opcional).
 
@@ -2126,6 +2173,7 @@ __all__ = [
     "listar_condicoes_pagamento",
     "listar_condicoes_pagamento_paginado_seguro",
     "sincronizar_condicoes_pagamento",
+    "criar_condicao_pagamento",
     "listar_produtos",
     "maior_ultima_alteracao",
     "cursor_com_sobreposicao",

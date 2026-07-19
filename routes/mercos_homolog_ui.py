@@ -2807,6 +2807,84 @@ def acao_condicoes(request: Request, token: str = Form("")):
         return _wrap_result(_erro_html(exc))
 
 
+@router.post("/homologacao-ui/acoes/condicoes-criar", response_class=HTMLResponse)
+def acao_condicoes_criar(
+    request: Request,
+    token: str = Form(""),
+    nome: str = Form(""),
+    valor_minimo: str = Form(""),
+    disponivel_b2b: str = Form(""),
+    considerar_limite_credito: str = Form(""),
+    ativo: str = Form("sim"),
+):
+    """POST /v1/condicoes_pagamento — um único envio à Mercos por clique.
+
+    Entidade Condição de Pagamento (não confundir com Forma de Pagamento,
+    Pagamento ou Faturamento). Contrato oficial: nome obrigatório; opcionais
+    valor_minimo, disponivel_b2b, considerar_limite_credito, excluido.
+    Ativo=Sim vira excluido=false. Não altera o ciclo GET.
+    """
+    _auth(request, token)
+    nome_limpo = (nome or "").strip()
+    if not nome_limpo:
+        return _wrap_result(
+            _card(
+                "Campos obrigatórios",
+                [("Ação", "Informe o nome da condição de pagamento.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    ativo_bool = (ativo or "sim").strip().lower() != "nao"
+    body: dict[str, Any] = {"nome": nome_limpo, "excluido": not ativo_bool}
+
+    vm = (valor_minimo or "").strip()
+    if vm:
+        body["valor_minimo"] = vm
+
+    b2b = (disponivel_b2b or "").strip().lower()
+    if b2b in ("sim", "true", "1"):
+        body["disponivel_b2b"] = True
+    elif b2b in ("nao", "não", "false", "0"):
+        body["disponivel_b2b"] = False
+
+    limite = (considerar_limite_credito or "").strip().lower()
+    if limite in ("sim", "true", "1"):
+        body["considerar_limite_credito"] = True
+    elif limite in ("nao", "não", "false", "0"):
+        body["considerar_limite_credito"] = False
+
+    try:
+        out = homolog.criar_condicao_pagamento(body)
+        status = out.get("status_code") or 201
+        cid = out.get("id") or (out.get("dados") or {}).get("id") or "—"
+        linhas: list[tuple[str, Any]] = [
+            ("Status HTTP", status),
+            ("ID criado", cid),
+            ("Nome", nome_limpo),
+        ]
+        if "valor_minimo" in body:
+            linhas.append(("Valor mínimo", _fmt_valor_minimo(body["valor_minimo"])))
+        if "disponivel_b2b" in body:
+            linhas.append(("Disponível B2B", _fmt_bool(body["disponivel_b2b"])))
+        if "considerar_limite_credito" in body:
+            linhas.append(
+                ("Considerar limite de crédito", _fmt_bool(body["considerar_limite_credito"]))
+            )
+        linhas.append(("Ativo", "Sim" if ativo_bool else "Não"))
+        linhas.append(("Excluído", _fmt_bool(not ativo_bool)))
+        linhas.append(("Origem", "Mercos Sandbox"))
+        card = _card(
+            "Condição de pagamento criada",
+            linhas,
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="condicao_pagamento", entity_id=str(cid or ""))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/formas-pagamento-criar", response_class=HTMLResponse)
 def acao_formas_pagamento_criar(
     request: Request,

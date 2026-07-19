@@ -213,6 +213,7 @@
       <a href="#sec-categorias">Categoria</a>
       <a href="#sec-clientes-buscar">Clientes</a>
       <a href="#sec-condicoes">Condições</a>
+      <a href="#sec-condicoes-criar">Condição — Incluir</a>
       <a href="#sec-formas-pagamento-criar">Formas de pagamento</a>
       <a href="#sec-segmentos">Segmentos</a>
       <a href="#sec-tabelas">Tabelas de preço</a>
@@ -563,6 +564,45 @@
             <button type="button" class="condicoes-busca-manual" data-action="/mercos/homologacao-ui/acoes/condicoes" data-target="res-condicoes">Buscar condições</button>
           </div>
           <div class="resultado" id="res-condicoes"></div>
+        </section>
+
+        <section class="panel" id="sec-condicoes-criar" data-homolog-sec="condicao-pagamento-incluir">
+          <h2>Condição de pagamento — Incluir</h2>
+          <p class="hint">Cadastra uma condição de pagamento (ex.: À vista, 30/60/90). Entidade própria, diferente de Formas de Pagamento, Pagamentos e Faturamento. Um clique envia um único POST.</p>
+          <div class="toolbar">
+            <label class="field">Nome
+              <input type="text" id="input-condicao-nome" maxlength="100" value="29135d66c2ec4f49" />
+            </label>
+            <label class="field">Valor mínimo
+              <input type="text" id="input-condicao-valor-minimo" placeholder="Opcional" value="" />
+            </label>
+            <label class="field">Disponível B2B
+              <select id="input-condicao-b2b">
+                <option value="sim" selected>Sim</option>
+                <option value="nao">Não</option>
+              </select>
+            </label>
+            <label class="field">Considerar limite de crédito
+              <select id="input-condicao-limite">
+                <option value="" selected>Não informar</option>
+                <option value="sim">Sim</option>
+                <option value="nao">Não</option>
+              </select>
+            </label>
+            <label class="field">Ativo
+              <select id="input-condicao-ativo">
+                <option value="sim" selected>Sim</option>
+                <option value="nao">Não</option>
+              </select>
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/condicoes-criar"
+              data-target="res-condicoes-criar"
+              data-fields="nome:input-condicao-nome,valor_minimo:input-condicao-valor-minimo,disponivel_b2b:input-condicao-b2b,considerar_limite_credito:input-condicao-limite,ativo:input-condicao-ativo">
+              Incluir condição de pagamento
+            </button>
+          </div>
+          <div class="resultado" id="res-condicoes-criar"></div>
         </section>
 
         <!-- 6b -->
