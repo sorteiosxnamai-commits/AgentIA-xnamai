@@ -214,6 +214,7 @@
       <a href="#sec-clientes-buscar">Clientes</a>
       <a href="#sec-condicoes">Condições</a>
       <a href="#sec-condicoes-criar">Condição — Incluir</a>
+      <a href="#sec-condicoes-alterar">Condição — Alterar</a>
       <a href="#sec-formas-pagamento-criar">Formas de pagamento</a>
       <a href="#sec-segmentos">Segmentos</a>
       <a href="#sec-tabelas">Tabelas de preço</a>
@@ -603,6 +604,63 @@
             </button>
           </div>
           <div class="resultado" id="res-condicoes-criar"></div>
+        </section>
+
+        <section class="panel" id="sec-condicoes-alterar" data-homolog-sec="condicao-pagamento-alterar">
+          <h2>Condição de pagamento — Alterar</h2>
+          <p class="hint">Atualiza a condição ID 265148. O ID vai somente na URL; a exclusão é lógica (sem DELETE).</p>
+          <div class="toolbar">
+            <label class="field">ID
+              <input type="text" id="input-condicao-alt-id" value="265148" />
+            </label>
+            <label class="field">Nome
+              <input type="text" id="input-condicao-alt-nome" maxlength="100" value="c7a9fdd429ca4080" />
+            </label>
+            <label class="field">Valor mínimo
+              <input type="text" id="input-condicao-alt-valor-minimo" placeholder="Opcional" value="" />
+            </label>
+            <label class="field">Disponível B2B
+              <select id="input-condicao-alt-b2b">
+                <option value="sim" selected>Sim</option>
+                <option value="nao">Não</option>
+              </select>
+            </label>
+            <label class="field">Considerar limite de crédito
+              <select id="input-condicao-alt-limite">
+                <option value="" selected>Não informar</option>
+                <option value="sim">Sim</option>
+                <option value="nao">Não</option>
+              </select>
+            </label>
+            <label class="field">Ativo
+              <select id="input-condicao-alt-ativo">
+                <option value="">Não alterar</option>
+                <option value="sim" selected>Sim</option>
+                <option value="nao">Não</option>
+              </select>
+            </label>
+            <label class="field">Excluído
+              <select id="input-condicao-alt-excluido">
+                <option value="" selected>Não alterar</option>
+                <option value="true">Sim</option>
+                <option value="false">Não</option>
+              </select>
+            </label>
+            <input type="hidden" id="input-condicao-excluir-flag" value="true" />
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/condicoes-alterar"
+              data-target="res-condicoes-alterar"
+              data-fields="condicao_id:input-condicao-alt-id,nome:input-condicao-alt-nome,valor_minimo:input-condicao-alt-valor-minimo,disponivel_b2b:input-condicao-alt-b2b,considerar_limite_credito:input-condicao-alt-limite,ativo:input-condicao-alt-ativo,excluido:input-condicao-alt-excluido">
+              Alterar condição de pagamento
+            </button>
+            <button type="button" class="secondary"
+              data-action="/mercos/homologacao-ui/acoes/condicoes-alterar"
+              data-target="res-condicoes-alterar"
+              data-fields="condicao_id:input-condicao-alt-id,nome:input-condicao-alt-nome,disponivel_b2b:input-condicao-alt-b2b,excluido:input-condicao-excluir-flag">
+              Excluir logicamente
+            </button>
+          </div>
+          <div class="resultado" id="res-condicoes-alterar"></div>
         </section>
 
         <!-- 6b -->

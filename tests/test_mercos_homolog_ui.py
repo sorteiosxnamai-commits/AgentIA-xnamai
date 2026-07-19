@@ -7304,3 +7304,273 @@ def test_formas_pagamento_intactas_apos_condicoes_post(client, monkeypatch):
     assert chamadas[0][0] == "/v1/formas_pagamento"
     assert chamadas[0][1] == {"nome": "cca8fdd8c4a24557", "excluido": False}
 
+
+# ---------------------------------------------------------------------------
+# Condição de Pagamento PUT — alterar / exclusão lógica (etapas 2/3 e 3/3)
+# ---------------------------------------------------------------------------
+
+
+def test_ui_secao_condicao_pagamento_alterar_presente(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    secao = html.split('id="sec-condicoes-alterar"')[1].split("</section>")[0]
+    assert "Condição de pagamento — Alterar" in secao
+    assert 'value="265148"' in secao
+    assert 'value="c7a9fdd429ca4080"' in secao
+    assert 'value="265149"' not in secao
+    assert "Excluir logicamente" in secao
+    assert "Alterar condição de pagamento" in secao
+    # GET e POST preservados
+    assert 'id="btn-condicoes-sincronizar"' in html
+    assert 'id="sec-condicoes-criar"' in html
+
+
+def test_botao_condicoes_alterar_usa_url_registrada(client, monkeypatch):
+    import re
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    m = re.search(r'data-action="([^"]*condicoes-alterar[^"]*)"', html)
+    assert m, "botão de alterar condição sem data-action na UI"
+    url = m.group(1)
+    assert url == "/mercos/homologacao-ui/acoes/condicoes-alterar"
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.put_json",
+        lambda path, body: {"ok": True, "status_code": 201, "dados": {}},
+    )
+    resp = client.post(
+        url,
+        data={
+            "condicao_id": "265148",
+            "nome": "c7a9fdd429ca4080",
+            "disponivel_b2b": "sim",
+            "ativo": "sim",
+        },
+    )
+    assert resp.status_code != 404
+    assert resp.status_code == 200
+    assert "Status 201" in resp.text
+    assert "265148" in resp.text
+
+
+def test_condicoes_put_endpoint_id_na_url_e_payload(client, monkeypatch):
+    """Um único PUT em /v1/condicoes_pagamento/{id}; id fora do corpo."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+
+    def fake_put_json(path, body):
+        chamadas.append((path, dict(body)))
+        return {"ok": True, "status_code": 201, "dados": {}}
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", fake_put_json)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/condicoes-alterar",
+        data={
+            "condicao_id": "265148",
+            "nome": "c7a9fdd429ca4080",
+            "valor_minimo": "",
+            "disponivel_b2b": "sim",
+            "considerar_limite_credito": "",
+            "ativo": "sim",
+            "excluido": "",
+        },
+    )
+    assert resp.status_code == 200
+    assert len(chamadas) == 1
+    path, body = chamadas[0]
+    assert path == "/v1/condicoes_pagamento/265148"
+    assert path != "/v1/formas_pagamento/265148"
+    assert "id" not in body
+    assert body["nome"] == "c7a9fdd429ca4080"
+    assert body["excluido"] is False
+    assert body["disponivel_b2b"] is True
+    assert "valor_minimo" not in body
+    assert "considerar_limite_credito" not in body
+
+    html = resp.text
+    assert "Status 201" in html
+    assert "265148" in html
+    assert "c7a9fdd429ca4080" in html
+    assert "Disponível B2B" in html
+    assert "Ativo" in html and "Sim" in html
+    assert "Excluído" in html and "Não" in html
+    assert "Mercos Sandbox" in html
+    assert '"nome"' not in html
+    assert "segredo-ui-homolog" not in html
+    assert "265149" not in html
+
+
+def test_condicoes_put_exclusao_logica(client, monkeypatch):
+    """Excluir logicamente: excluido=true com nome obrigatório, sem DELETE."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.put_json",
+        lambda path, body: chamadas.append((path, dict(body)))
+        or {"ok": True, "status_code": 201, "dados": {}},
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/condicoes-alterar",
+        data={
+            "condicao_id": "265148",
+            "nome": "c7a9fdd429ca4080",
+            "disponivel_b2b": "sim",
+            "excluido": "true",
+        },
+    )
+    assert resp.status_code == 200
+    assert len(chamadas) == 1
+    path, body = chamadas[0]
+    assert path == "/v1/condicoes_pagamento/265148"
+    assert body["nome"] == "c7a9fdd429ca4080"
+    assert body["excluido"] is True
+    assert "Excluído" in resp.text and "Sim" in resp.text
+
+
+def test_condicoes_put_excluido_prevalece_sobre_ativo(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.put_json",
+        lambda path, body: chamadas.append((path, dict(body)))
+        or {"ok": True, "status_code": 201, "dados": {}},
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/condicoes-alterar",
+        data={
+            "condicao_id": "265148",
+            "nome": "c7a9fdd429ca4080",
+            "ativo": "sim",
+            "excluido": "true",
+        },
+    )
+    assert resp.status_code == 200
+    assert chamadas[0][1]["excluido"] is True
+
+
+def test_condicoes_put_sem_id_ou_nome_nao_chama_mercos(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    put = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", put)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/condicoes-alterar",
+        data={"condicao_id": "", "nome": "c7a9fdd429ca4080"},
+    )
+    assert resp.status_code == 200
+    assert "Campos obrigatórios" in resp.text
+    put.assert_not_called()
+
+    resp2 = client.post(
+        "/mercos/homologacao-ui/acoes/condicoes-alterar",
+        data={"condicao_id": "265148", "nome": "  "},
+    )
+    assert "Campos obrigatórios" in resp2.text
+    put.assert_not_called()
+
+
+def test_condicoes_put_erro_412_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    def boom(path, body):
+        raise MercosApiError("Dados inválidos", status_code=412)
+
+    monkeypatch.setattr("services.mercos_homolog_service.put_json", boom)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/condicoes-alterar",
+        data={
+            "condicao_id": "265148",
+            "nome": "c7a9fdd429ca4080",
+            "ativo": "sim",
+        },
+    )
+    assert resp.status_code == 200
+    assert "Falha na operação" in resp.text
+    assert "412" in resp.text
+    assert '{"mensagem"' not in resp.text
+
+
+def test_condicoes_get_e_post_intactos_apos_put(client, monkeypatch):
+    """GET (ciclo) e POST continuam funcionando após o PUT."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.put_json",
+        lambda path, body: {"ok": True, "status_code": 201, "dados": {}},
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 201, "id": 99, "dados": {}},
+    )
+    r_put = client.post(
+        "/mercos/homologacao-ui/acoes/condicoes-alterar",
+        data={
+            "condicao_id": "265148",
+            "nome": "c7a9fdd429ca4080",
+            "disponivel_b2b": "sim",
+            "ativo": "sim",
+        },
+    )
+    assert r_put.status_code == 200
+
+    r_post = client.post(
+        "/mercos/homologacao-ui/acoes/condicoes-criar",
+        data={"nome": "29135d66c2ec4f49", "ativo": "sim", "disponivel_b2b": "sim"},
+    )
+    assert r_post.status_code == 200
+    assert "Condição de pagamento criada" in r_post.text
+
+    r_reini = client.post("/mercos/homologacao-ui/acoes/condicoes-reiniciar")
+    assert r_reini.status_code == 200
+    assert "0/3" in r_reini.text
+
+
+def test_formas_pagamento_intactas_apos_condicoes_put(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.put_json",
+        lambda path, body: chamadas.append((path, dict(body)))
+        or {"ok": True, "status_code": 200, "dados": {}},
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/formas-pagamento-alterar",
+        data={"forma_id": "90000", "nome": "ad4feae8a8b643d0", "ativo": "sim"},
+    )
+    assert resp.status_code == 200
+    assert chamadas[0][0] == "/v1/formas_pagamento/90000"
+

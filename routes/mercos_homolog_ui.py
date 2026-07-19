@@ -2885,6 +2885,111 @@ def acao_condicoes_criar(
         return _wrap_result(_erro_html(exc))
 
 
+@router.post("/homologacao-ui/acoes/condicoes-alterar", response_class=HTMLResponse)
+def acao_condicoes_alterar(
+    request: Request,
+    token: str = Form(""),
+    condicao_id: str = Form(""),
+    nome: str = Form(""),
+    valor_minimo: str = Form(""),
+    disponivel_b2b: str = Form(""),
+    considerar_limite_credito: str = Form(""),
+    ativo: str = Form(""),
+    excluido: str = Form(""),
+):
+    """PUT /v1/condicoes_pagamento/{id} — um único PUT por clique, id só na URL.
+
+    Contrato oficial: nome obrigatório; opcionais valor_minimo, disponivel_b2b,
+    considerar_limite_credito, excluido. Ativo=Sim vira excluido=false; o
+    campo Excluído=Sim (ou o botão «Excluir logicamente») envia excluido=true
+    junto com o nome. Sem DELETE. Não altera GET/POST.
+    """
+    _auth(request, token)
+    cid = (condicao_id or "").strip()
+    nome_limpo = (nome or "").strip()
+    if not cid or not nome_limpo:
+        return _wrap_result(
+            _card(
+                "Campos obrigatórios",
+                [("Ação", "Informe o ID e o nome da condição de pagamento.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+
+    excluido_bool: bool | None = None
+    exc_form = (excluido or "").strip().lower()
+    if exc_form in ("true", "sim"):
+        excluido_bool = True
+    elif exc_form in ("false", "nao", "não"):
+        excluido_bool = False
+    else:
+        ativo_form = (ativo or "").strip().lower()
+        if ativo_form in ("sim", "true"):
+            excluido_bool = False
+        elif ativo_form in ("nao", "não", "false"):
+            excluido_bool = True
+
+    body: dict[str, Any] = {"nome": nome_limpo}
+    if excluido_bool is not None:
+        body["excluido"] = excluido_bool
+
+    vm = (valor_minimo or "").strip()
+    if vm:
+        body["valor_minimo"] = vm
+
+    b2b = (disponivel_b2b or "").strip().lower()
+    if b2b in ("sim", "true", "1"):
+        body["disponivel_b2b"] = True
+    elif b2b in ("nao", "não", "false", "0"):
+        body["disponivel_b2b"] = False
+
+    limite = (considerar_limite_credito or "").strip().lower()
+    if limite in ("sim", "true", "1"):
+        body["considerar_limite_credito"] = True
+    elif limite in ("nao", "não", "false", "0"):
+        body["considerar_limite_credito"] = False
+
+    try:
+        out = homolog.alterar_condicao_pagamento(cid, body)
+        status = out.get("status_code") or 201
+        if excluido_bool is None:
+            ativo_label = "—"
+            excluido_label = "Não alterado"
+        else:
+            ativo_label = "Não" if excluido_bool else "Sim"
+            excluido_label = "Sim" if excluido_bool else "Não"
+        linhas: list[tuple[str, Any]] = [
+            ("Status HTTP", status),
+            ("ID", cid),
+            ("Nome", nome_limpo),
+        ]
+        if "valor_minimo" in body:
+            linhas.append(("Valor mínimo", _fmt_valor_minimo(body["valor_minimo"])))
+        if "disponivel_b2b" in body:
+            linhas.append(("Disponível B2B", _fmt_bool(body["disponivel_b2b"])))
+        if "considerar_limite_credito" in body:
+            linhas.append(
+                ("Considerar limite de crédito", _fmt_bool(body["considerar_limite_credito"]))
+            )
+        linhas.extend(
+            [
+                ("Ativo", ativo_label),
+                ("Excluído", excluido_label),
+                ("Origem", "Mercos Sandbox"),
+            ]
+        )
+        card = _card(
+            "Condição de pagamento alterada",
+            linhas,
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="condicao_pagamento", entity_id=cid)
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/formas-pagamento-criar", response_class=HTMLResponse)
 def acao_formas_pagamento_criar(
     request: Request,
