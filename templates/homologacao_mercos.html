@@ -541,9 +541,26 @@
         <!-- 6 -->
         <section class="panel" id="sec-condicoes" data-homolog-sec="condicoes-buscar">
           <h2>Condições de pagamento — Buscar</h2>
-          <p class="hint">Condições usadas em pedidos e títulos.</p>
+          <p class="hint">Ciclo de homologação em 3 etapas: 1/3 busca completa (todos os lotes) e 2/3 e 3/3 incrementais com alterado_apos. A busca simples fica bloqueada durante o ciclo ativo. Entidade distinta de Formas de Pagamento.</p>
           <div class="toolbar">
-            <button type="button" data-action="/mercos/homologacao-ui/acoes/condicoes" data-target="res-condicoes">Buscar condições</button>
+            <button type="button" id="btn-condicoes-reiniciar" class="secondary">
+              Reiniciar ciclo de sincronização
+            </button>
+            <button type="button" id="btn-condicoes-sincronizar">
+              Sincronizar próxima etapa
+            </button>
+          </div>
+          <div class="toolbar">
+            <label class="field">Localizar condição pelo nome
+              <input type="text" id="input-condicoes-nome" placeholder="Nome completo ou prefixo (ex.: 232fb9e7)" />
+            </label>
+            <button type="button" id="btn-condicoes-localizar" class="secondary">
+              Localizar condição
+            </button>
+          </div>
+          <p class="hint" id="aviso-busca-condicoes-bloqueada" hidden>Busca simples bloqueada durante a homologação. Use «Sincronizar próxima etapa».</p>
+          <div class="toolbar">
+            <button type="button" class="condicoes-busca-manual" data-action="/mercos/homologacao-ui/acoes/condicoes" data-target="res-condicoes">Buscar condições</button>
           </div>
           <div class="resultado" id="res-condicoes"></div>
         </section>
@@ -1026,12 +1043,16 @@
       var PAGAMENTOS_CURSOR_KEY = "mercos_pagamentos_cursor";
       var PAGAMENTOS_CATALOGO_KEY = "mercos_pagamentos_catalogo";
       var PAGAMENTOS_CICLO_KEY = "mercos_pagamentos_ciclo_ativo";
+      var CONDICOES_CURSOR_KEY = "mercos_condicoes_pagamento_cursor";
+      var CONDICOES_CATALOGO_KEY = "mercos_condicoes_pagamento_catalogo";
+      var CONDICOES_CICLO_KEY = "mercos_condicoes_pagamento_ciclo_ativo";
       var produtosSyncBusy = false;
       var clientesSyncBusy = false;
       var usuariosSyncBusy = false;
       var pedidosSyncBusy = false;
       var tiposSyncBusy = false;
       var pagamentosSyncBusy = false;
+      var condicoesSyncBusy = false;
       var store = {
         cliente: localStorage.getItem("homolog_cliente_id") || "",
         pedido: localStorage.getItem("homolog_pedido_id") || "",
@@ -1258,6 +1279,50 @@
           btn.setAttribute("aria-disabled", ativo ? "true" : "false");
         });
         var aviso = document.getElementById("aviso-busca-tipos-bloqueada");
+        if (aviso) aviso.hidden = !ativo;
+      }
+
+      function getCondicoesCursor() {
+        return localStorage.getItem(CONDICOES_CURSOR_KEY) || "";
+      }
+
+      function setCondicoesCursor(valor) {
+        if (valor) {
+          localStorage.setItem(CONDICOES_CURSOR_KEY, valor);
+        } else {
+          localStorage.removeItem(CONDICOES_CURSOR_KEY);
+        }
+      }
+
+      function getCondicoesCatalogoJson() {
+        return localStorage.getItem(CONDICOES_CATALOGO_KEY) || "";
+      }
+
+      function isCicloCondicoesAtivoLocal() {
+        try {
+          var raw = localStorage.getItem(CONDICOES_CATALOGO_KEY);
+          if (raw) {
+            var snap = JSON.parse(raw);
+            if (snap && snap.ciclo && snap.ciclo.ativo) return true;
+          }
+        } catch (e) {}
+        return localStorage.getItem(CONDICOES_CICLO_KEY) === "1";
+      }
+
+      function setCicloCondicoesAtivoLocal(ativo) {
+        if (ativo) localStorage.setItem(CONDICOES_CICLO_KEY, "1");
+        else localStorage.removeItem(CONDICOES_CICLO_KEY);
+        atualizarBuscaCondicoesBloqueada();
+      }
+
+      function atualizarBuscaCondicoesBloqueada() {
+        var ativo = isCicloCondicoesAtivoLocal();
+        document.querySelectorAll(".condicoes-busca-manual").forEach(function (btn) {
+          btn.disabled = !!ativo;
+          btn.hidden = !!ativo;
+          btn.setAttribute("aria-disabled", ativo ? "true" : "false");
+        });
+        var aviso = document.getElementById("aviso-busca-condicoes-bloqueada");
         if (aviso) aviso.hidden = !ativo;
       }
 
@@ -1513,6 +1578,65 @@
         }
       }
 
+      function setCondicoesCatalogoFromBlob(target) {
+        var blob = target.querySelector(".mercos-condicoes-catalogo-blob");
+        if (!blob) return;
+        var texto = (blob.value || blob.textContent || "").trim();
+        if (!texto) return;
+        try {
+          var snap = JSON.parse(texto);
+          localStorage.setItem(CONDICOES_CATALOGO_KEY, texto);
+          if (snap && snap.ciclo) {
+            setCicloCondicoesAtivoLocal(!!snap.ciclo.ativo);
+          }
+        } catch (e) { /* ignora blob inválido */ }
+        blob.parentNode && blob.parentNode.removeChild(blob);
+      }
+
+      function applyCicloCondicoesFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-catalogo-limpo") === "1") {
+          localStorage.setItem(
+            CONDICOES_CATALOGO_KEY,
+            JSON.stringify({
+              condicoes: {},
+              ids_ultimo_lote: [],
+              ultima_sync: {},
+              ciclo: {
+                ativo: true,
+                etapa_interna: 0,
+                chamadas_completas: 0,
+                chamadas_incrementais: 0
+              },
+              total: 0
+            })
+          );
+        }
+        if (wrap.hasAttribute("data-ciclo-ativo")) {
+          setCicloCondicoesAtivoLocal(wrap.getAttribute("data-ciclo-ativo") === "1");
+        }
+        if (wrap.getAttribute("data-bloquear-busca-completa") === "1") {
+          setCicloCondicoesAtivoLocal(true);
+        }
+        atualizarBuscaCondicoesBloqueada();
+      }
+
+      function applyCondicoesCursorFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-cursor-fixo") === "1") {
+          return;
+        }
+        if (wrap.getAttribute("data-cursor-limpo") === "1") {
+          setCondicoesCursor("");
+          return;
+        }
+        if (wrap.hasAttribute("data-novo-cursor")) {
+          setCondicoesCursor(wrap.getAttribute("data-novo-cursor") || "");
+        }
+      }
+
       function setPagamentosCatalogoFromBlob(target) {
         var blob = target.querySelector(".mercos-pagamentos-catalogo-blob");
         if (!blob) return;
@@ -1733,6 +1857,10 @@
             applyPagamentosCursorFromResult(target);
             setPagamentosCatalogoFromBlob(target);
             applyCicloPagamentosFromResult(target);
+          } else if (opts.entidade === "condicoes") {
+            applyCondicoesCursorFromResult(target);
+            setCondicoesCatalogoFromBlob(target);
+            applyCicloCondicoesFromResult(target);
           } else {
             applyCursorFromResult(target);
             setCatalogoFromBlob(target);
@@ -1757,6 +1885,7 @@
           atualizarBuscaClientesBloqueada();
           atualizarBuscaUsuariosBloqueada();
           atualizarBuscaTiposBloqueada();
+          atualizarBuscaCondicoesBloqueada();
         }
       }
 
@@ -1770,6 +1899,7 @@
       atualizarBuscaClientesBloqueada();
       atualizarBuscaUsuariosBloqueada();
       atualizarBuscaTiposBloqueada();
+      atualizarBuscaCondicoesBloqueada();
 
       if (btnReiniciar && resProdutos) {
         btnReiniciar.addEventListener("click", async function () {
@@ -2189,6 +2319,82 @@
           );
           if (getTiposCursor() !== cursorAntes) {
             setTiposCursor(cursorAntes);
+          }
+        });
+      }
+
+      var btnCondReiniciar = document.getElementById("btn-condicoes-reiniciar");
+      var btnCondSincronizar = document.getElementById("btn-condicoes-sincronizar");
+      var btnCondLocalizar = document.getElementById("btn-condicoes-localizar");
+      var resCondicoes = document.getElementById("res-condicoes");
+
+      if (btnCondReiniciar && resCondicoes) {
+        btnCondReiniciar.addEventListener("click", async function () {
+          if (condicoesSyncBusy) return;
+          condicoesSyncBusy = true;
+          setCondicoesCursor("");
+          localStorage.removeItem(CONDICOES_CATALOGO_KEY);
+          setCicloCondicoesAtivoLocal(true);
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/condicoes-reiniciar",
+              {},
+              resCondicoes,
+              btnCondReiniciar,
+              { entidade: "condicoes", semRetry: true, timeoutMs: 65000 }
+            );
+          } finally {
+            condicoesSyncBusy = false;
+            btnCondReiniciar.disabled = false;
+            if (btnCondSincronizar) btnCondSincronizar.disabled = false;
+            atualizarBuscaCondicoesBloqueada();
+          }
+        });
+      }
+
+      if (btnCondSincronizar && resCondicoes) {
+        btnCondSincronizar.addEventListener("click", async function () {
+          if (condicoesSyncBusy) return;
+          condicoesSyncBusy = true;
+          btnCondSincronizar.disabled = true;
+          if (btnCondReiniciar) btnCondReiniciar.disabled = true;
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/condicoes-sincronizar",
+              {
+                cursor: getCondicoesCursor(),
+                catalogo_json: getCondicoesCatalogoJson()
+              },
+              resCondicoes,
+              btnCondSincronizar,
+              { entidade: "condicoes", syncThrottle: true, timeoutMs: 180000 }
+            );
+          } finally {
+            condicoesSyncBusy = false;
+            btnCondSincronizar.disabled = false;
+            if (btnCondReiniciar) btnCondReiniciar.disabled = false;
+            atualizarBuscaCondicoesBloqueada();
+          }
+        });
+      }
+
+      if (btnCondLocalizar && resCondicoes) {
+        btnCondLocalizar.addEventListener("click", async function () {
+          if (condicoesSyncBusy) return;
+          var nomeEl = document.getElementById("input-condicoes-nome");
+          var cursorAntes = getCondicoesCursor();
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/condicoes-localizar",
+            {
+              nome: nomeEl ? nomeEl.value : "",
+              catalogo_json: getCondicoesCatalogoJson()
+            },
+            resCondicoes,
+            btnCondLocalizar,
+            { entidade: "condicoes", semRetry: true, timeoutMs: 30000 }
+          );
+          if (getCondicoesCursor() !== cursorAntes) {
+            setCondicoesCursor(cursorAntes);
           }
         });
       }
