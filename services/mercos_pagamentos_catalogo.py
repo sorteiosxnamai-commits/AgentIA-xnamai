@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 from copy import deepcopy
+from datetime import datetime
 from typing import Any
 
 _LOCK = threading.Lock()
@@ -77,6 +78,21 @@ def _normalizar_pagamento(item: dict) -> dict[str, Any] | None:
     pid = item.get("id")
     if pid is None or pid == "":
         return None
+    transacoes: list[dict[str, Any]] = []
+    raw_transacoes = item.get("transacoes")
+    if isinstance(raw_transacoes, list):
+        for transacao in raw_transacoes:
+            if not isinstance(transacao, dict):
+                continue
+            transacoes.append(
+                {
+                    "transacao_id": transacao.get("transacao_id"),
+                    "data_vencimento": transacao.get("data_vencimento"),
+                    # O status deve ser preservado exatamente como veio da Mercos.
+                    "status": transacao.get("status"),
+                    "valor": transacao.get("valor"),
+                }
+            )
     out: dict[str, Any] = {
         "id": pid,
         "valor": item.get("valor"),
@@ -89,6 +105,7 @@ def _normalizar_pagamento(item: dict) -> dict[str, Any] | None:
         "numero_parcelas": item.get("numero_parcelas"),
         "excluido": item.get("excluido"),
         "ultima_alteracao": item.get("ultima_alteracao"),
+        "transacoes": transacoes,
     }
     # Nunca persistir token de link de pagamento (não exibir na UI).
     return out
@@ -329,6 +346,55 @@ def buscar_por_id(
     return deepcopy(encontrado), no_lote, estado
 
 
+def _normalizar_data_vencimento(valor: str) -> str | None:
+    texto = str(valor or "").strip()
+    for formato in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(texto, formato).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def buscar_transacao_por_vencimento(
+    sessao_id: str,
+    data_vencimento: str,
+) -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    bool,
+    dict[str, Any],
+]:
+    """Busca uma transação aninhada pela data de vencimento no catálogo local."""
+    estado = obter(sessao_id)
+    data_iso = _normalizar_data_vencimento(data_vencimento)
+    if not data_iso:
+        return None, None, False, estado
+    for pagamento in (estado.get("pagamentos") or {}).values():
+        if not isinstance(pagamento, dict):
+            continue
+        transacoes = pagamento.get("transacoes")
+        if not isinstance(transacoes, list):
+            continue
+        for transacao in transacoes:
+            if not isinstance(transacao, dict):
+                continue
+            if _normalizar_data_vencimento(
+                str(transacao.get("data_vencimento") or "")
+            ) != data_iso:
+                continue
+            no_lote = str(pagamento.get("id")) in set(
+                estado.get("ids_ultimo_lote") or []
+            )
+            return (
+                deepcopy(pagamento),
+                deepcopy(transacao),
+                no_lote,
+                estado,
+            )
+    return None, None, False, estado
+
+
 def snapshot_sessao(sessao_id: str) -> dict[str, Any]:
     estado = obter(sessao_id)
     return {
@@ -360,6 +426,7 @@ __all__ = [
     "upsert_incremental",
     "hidratar_se_vazio",
     "buscar_por_id",
+    "buscar_transacao_por_vencimento",
     "snapshot_sessao",
     "total",
     "_reset_todos_para_testes",

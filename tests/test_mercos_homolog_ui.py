@@ -6182,8 +6182,11 @@ def test_ui_secao_pagamentos_buscar_presente(client):
     assert 'id="btn-pagamentos-sincronizar"' in secao
     assert 'id="input-pagamentos-id"' in secao
     assert 'id="btn-pagamentos-localizar"' in secao
+    assert 'id="input-pagamentos-vencimento"' in secao
+    assert 'id="btn-pagamentos-localizar-vencimento"' in secao
     assert "Reiniciar ciclo de sincronização" in secao
     assert "Localizar pagamento pelo ID" in secao
+    assert "Localizar transação pela data de vencimento" in secao
     assert "Pagamentos — Buscar" in secao
     # Demais seções intactas
     assert 'id="sec-condicoes"' in html
@@ -6524,4 +6527,165 @@ def test_demais_fluxos_intactos_apos_pagamentos(client, monkeypatch):
     ):
         resp = client.post(rota, data={})
         assert resp.status_code != 404, rota
+
+
+def _catalogar_transacao_vencimento_7716(catg, sessao):
+    catg.substituir_completo(
+        sessao,
+        [
+            {
+                "id": 7716,
+                "valor": 156.0,
+                "pedido_id": 2150165,
+                "cliente_id": 9290646,
+                "data_criacao": "2026-07-18 16:10:50",
+                "excluido": False,
+                "ultima_alteracao": "2026-07-19 16:10:50",
+                "transacoes": [
+                    {
+                        "transacao_id": "pay_1006121739",
+                        "data_vencimento": "2026-08-18",
+                        "status": "confirmado",
+                        "valor": 100.0,
+                    },
+                    {
+                        "transacao_id": "pay_3257771107",
+                        "data_vencimento": "2026-09-17",
+                        "status": "pendente",
+                        "valor": 56.0,
+                    },
+                ],
+            }
+        ],
+        meta={
+            "tipo": "incremental",
+            "cursor_base": "2026-07-18 16:10:50",
+            "alterado_apos_enviado": "2026-07-18 16:10:50",
+            "novo_cursor": "2026-07-19 16:10:50",
+            "status_sync": "Concluída",
+            "total_lote": 1,
+        },
+    )
+
+
+def test_pagamentos_localiza_transacao_por_data_br_e_status_exato(client, monkeypatch):
+    """18/08/2026 encontra a transação aninhada e mantém status sem tradução."""
+    catg = _prep_pagamentos(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizador por vencimento não pode chamar a Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", explode)
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", explode)
+    client.post("/mercos/homologacao-ui/acoes/pagamentos-reiniciar")
+    sessao = client.cookies.get("mercos_pagamentos_sessao")
+    _catalogar_transacao_vencimento_7716(catg, sessao)
+    etapa_antes = catg.obter_ciclo(sessao)["etapa_interna"]
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pagamentos-localizar-vencimento",
+        data={"data_vencimento": "18/08/2026"},
+    )
+
+    assert resp.status_code == 200
+    assert "Transação localizada" in resp.text
+    assert "7716" in resp.text
+    assert "pay_1006121739" in resp.text
+    assert "2026-08-18" in resp.text
+    assert "confirmado" in resp.text
+    assert "Confirmado" not in resp.text
+    assert 'data-status-transacao="confirmado"' in resp.text
+    assert "100.00" in resp.text
+    assert "2150165" in resp.text
+    assert "9290646" in resp.text
+    assert 'data-cursor-intacto="1"' in resp.text
+    assert catg.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+
+def test_pagamentos_localiza_transacao_por_data_iso_sem_http(client, monkeypatch):
+    """2026-08-18 é aceito e a pesquisa permanece exclusivamente local."""
+    catg = _prep_pagamentos(client, monkeypatch)
+    http = MagicMock(side_effect=AssertionError("não pode chamar HTTP"))
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", http)
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", http)
+    client.post("/mercos/homologacao-ui/acoes/pagamentos-reiniciar")
+    sessao = client.cookies.get("mercos_pagamentos_sessao")
+    _catalogar_transacao_vencimento_7716(catg, sessao)
+    ciclo_antes = catg.obter_ciclo(sessao)
+    cookie_antes = client.cookies.get("mercos_pagamentos_cursor")
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/pagamentos-localizar-vencimento",
+        data={"data_vencimento": "2026-08-18"},
+    )
+
+    assert resp.status_code == 200
+    assert "pay_1006121739" in resp.text
+    assert "confirmado" in resp.text
+    http.assert_not_called()
+    assert client.cookies.get("mercos_pagamentos_cursor") == cookie_antes
+    assert catg.obter_ciclo(sessao) == ciclo_antes
+
+
+def test_pagamentos_etapa_2_incremental_preserva_transacoes(client, monkeypatch):
+    """A etapa 2 usa alterado_apos exato e persiste a lista aninhada."""
+    catg = _prep_pagamentos(client, monkeypatch)
+    cursores: list[str | None] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/pagamentos"
+        cursor = (params or {}).get("alterado_apos")
+        cursores.append(cursor)
+        headers = {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "0"}
+        if cursor is None:
+            return (
+                [
+                    {
+                        "id": 7716,
+                        "valor": 156.0,
+                        "ultima_alteracao": "2026-07-18 16:10:50",
+                        "transacoes": [],
+                    }
+                ],
+                headers,
+            )
+        return (
+            [
+                {
+                    "id": 7716,
+                    "valor": 156.0,
+                    "pedido_id": 2150165,
+                    "cliente_id": 9290646,
+                    "ultima_alteracao": "2026-07-19 16:10:50",
+                    "transacoes": [
+                        {
+                            "transacao_id": "pay_1006121739",
+                            "data_vencimento": "2026-08-18",
+                            "status": "confirmado",
+                            "valor": 100.0,
+                        }
+                    ],
+                }
+            ],
+            headers,
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    client.post("/mercos/homologacao-ui/acoes/pagamentos-reiniciar")
+    sessao = client.cookies.get("mercos_pagamentos_sessao")
+    r1 = client.post("/mercos/homologacao-ui/acoes/pagamentos-sincronizar")
+    r2 = client.post("/mercos/homologacao-ui/acoes/pagamentos-sincronizar")
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert cursores == [None, "2026-07-18 16:10:50"]
+    assert 'data-tipo-busca="incremental"' in r2.text
+    assert 'data-alterado-apos-enviado="2026-07-18 16:10:50"' in r2.text
+    assert catg.obter_ciclo(sessao)["etapa_interna"] == 2
+    transacoes = catg.obter(sessao)["pagamentos"]["7716"]["transacoes"]
+    assert transacoes[0]["data_vencimento"] == "2026-08-18"
+    assert transacoes[0]["status"] == "confirmado"
 

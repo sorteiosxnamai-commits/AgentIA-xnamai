@@ -4362,6 +4362,102 @@ def acao_pagamentos_localizar(
     return _garantir_sessao_pagamentos_cookie(resp, sessao)
 
 
+@router.post(
+    "/homologacao-ui/acoes/pagamentos-localizar-vencimento",
+    response_class=HTMLResponse,
+)
+def acao_pagamentos_localizar_vencimento(
+    request: Request,
+    token: str = Form(""),
+    data_vencimento: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Localiza transação aninhada por vencimento somente no catálogo local."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_pagamentos(request)
+    _hidratar_catalogo_pagamentos_form(sessao, catalogo_json)
+    ciclo_antes = catalogo_pagamentos.obter_ciclo(sessao)
+    busca = (data_vencimento or "").strip()
+    if not busca:
+        return _garantir_sessao_pagamentos_cookie(
+            _wrap_result(
+                _card(
+                    "Localizar transação pela data de vencimento",
+                    [("Mensagem", "Informe a data no formato DD/MM/AAAA ou AAAA-MM-DD.")],
+                    status_label="Atenção",
+                    css="erro",
+                ),
+                extra_attrs={
+                    "cursor-intacto": "1",
+                    **_attrs_ciclo_pagamentos(sessao),
+                },
+            ),
+            sessao,
+        )
+
+    pagamento, transacao, no_ultimo_lote, estado = (
+        catalogo_pagamentos.buscar_transacao_por_vencimento(sessao, busca)
+    )
+    if not pagamento or not transacao:
+        return _garantir_sessao_pagamentos_cookie(
+            _wrap_result(
+                _card(
+                    "Transação não encontrada",
+                    [
+                        ("Data de vencimento buscada", busca),
+                        ("Pagamentos no catálogo local", catalogo_pagamentos.total(sessao)),
+                    ]
+                    + _linhas_ciclo_pagamentos(sessao, estado),
+                    status_label="Não encontrada",
+                    css="erro",
+                ),
+                extra_attrs={
+                    "cursor-intacto": "1",
+                    **_attrs_ciclo_pagamentos(sessao),
+                },
+            ),
+            sessao,
+        )
+
+    linhas: list[tuple[str, Any]] = [
+        ("ID do pagamento", pagamento.get("id")),
+        ("ID da transação", transacao.get("transacao_id") or "—"),
+        ("Data de vencimento", transacao.get("data_vencimento") or "—"),
+        # Não traduzir, capitalizar ou normalizar o status retornado.
+        ("Status da transação", transacao.get("status") or "—"),
+        ("Valor", _fmt_valor_pagamento(transacao.get("valor"))),
+        ("Pedido relacionado", pagamento.get("pedido_id") or "—"),
+        ("Cliente relacionado", pagamento.get("cliente_id") or "—"),
+        ("Origem", "Catálogo local sincronizado"),
+    ]
+    linhas.extend(_linhas_ciclo_pagamentos(sessao, estado))
+    nota = ""
+    if not no_ultimo_lote:
+        nota = (
+            '<p class="hint">Transação localizada no catálogo do ERP; '
+            "não veio no último lote incremental.</p>"
+        )
+    card = _card(
+        "Transação localizada",
+        linhas,
+        status_label="Encontrada",
+        css="ok",
+    )
+    ciclo_depois = catalogo_pagamentos.obter_ciclo(sessao)
+    if ciclo_antes.get("etapa_interna") != ciclo_depois.get("etapa_interna"):
+        catalogo_pagamentos._salvar_ciclo(sessao, ciclo_antes)
+    resp = _wrap_result(
+        nota + card + _html_patch_catalogo_pagamentos(sessao),
+        extra_attrs={
+            "status-sync": "transacao-localizada",
+            "cursor-intacto": "1",
+            "status-transacao": str(transacao.get("status") or ""),
+            **_attrs_ciclo_pagamentos(sessao),
+        },
+    )
+    return _garantir_sessao_pagamentos_cookie(resp, sessao)
+
+
 def _sem_acentos_minusculo(texto: str) -> str:
     import unicodedata
 

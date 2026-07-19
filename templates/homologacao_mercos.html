@@ -777,6 +777,12 @@
             <button type="button" id="btn-pagamentos-localizar" class="secondary">
               Localizar pagamento
             </button>
+            <label class="field">Localizar transação pela data de vencimento
+              <input type="text" id="input-pagamentos-vencimento" placeholder="DD/MM/AAAA ou AAAA-MM-DD" value="18/08/2026" />
+            </label>
+            <button type="button" id="btn-pagamentos-localizar-vencimento" class="secondary">
+              Localizar transação
+            </button>
           </div>
           <div class="resultado" id="res-pagamentos-buscar"></div>
         </section>
@@ -2190,6 +2196,7 @@
       var btnPagReiniciar = document.getElementById("btn-pagamentos-reiniciar");
       var btnPagSincronizar = document.getElementById("btn-pagamentos-sincronizar");
       var btnPagLocalizar = document.getElementById("btn-pagamentos-localizar");
+      var btnPagLocalizarVencimento = document.getElementById("btn-pagamentos-localizar-vencimento");
       var resPagamentos = document.getElementById("res-pagamentos-buscar");
 
       if (btnPagReiniciar && resPagamentos) {
@@ -2253,6 +2260,27 @@
             },
             resPagamentos,
             btnPagLocalizar,
+            { entidade: "pagamentos", semRetry: true, timeoutMs: 30000 }
+          );
+          if (getPagamentosCursor() !== cursorAntes) {
+            setPagamentosCursor(cursorAntes);
+          }
+        });
+      }
+
+      if (btnPagLocalizarVencimento && resPagamentos) {
+        btnPagLocalizarVencimento.addEventListener("click", async function () {
+          if (pagamentosSyncBusy) return;
+          var vencimentoEl = document.getElementById("input-pagamentos-vencimento");
+          var cursorAntes = getPagamentosCursor();
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/pagamentos-localizar-vencimento",
+            {
+              data_vencimento: vencimentoEl ? vencimentoEl.value : "",
+              catalogo_json: getPagamentosCatalogoJson()
+            },
+            resPagamentos,
+            btnPagLocalizarVencimento,
             { entidade: "pagamentos", semRetry: true, timeoutMs: 30000 }
           );
           if (getPagamentosCursor() !== cursorAntes) {
