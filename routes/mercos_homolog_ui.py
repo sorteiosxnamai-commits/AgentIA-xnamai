@@ -2687,6 +2687,64 @@ def acao_categorias_localizar(
     return _garantir_sessao_categorias_cookie(resp, sessao)
 
 
+@router.post("/homologacao-ui/acoes/categorias-criar", response_class=HTMLResponse)
+def acao_categorias_criar(
+    request: Request,
+    token: str = Form(""),
+    nome: str = Form(""),
+    categoria_pai_id: str = Form(""),
+    ativo: str = Form("sim"),
+):
+    """POST /v1/categorias — um único envio à Mercos por clique.
+
+    Entidade Categoria de Produto (não confundir com Produto nem com
+    Categorias por Cliente). Contrato oficial: nome obrigatório (até 50);
+    opcionais categoria_pai_id e excluido. Ativo=Sim vira excluido=false.
+    Não vincula cliente e não altera o ciclo GET.
+    """
+    _auth(request, token)
+    nome_limpo = (nome or "").strip()
+    if not nome_limpo:
+        return _wrap_result(
+            _card(
+                "Campos obrigatórios",
+                [("Ação", "Informe o nome da categoria de produto.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    ativo_bool = (ativo or "sim").strip().lower() != "nao"
+    body: dict[str, Any] = {"nome": nome_limpo, "excluido": not ativo_bool}
+
+    pai = (categoria_pai_id or "").strip()
+    if pai:
+        body["categoria_pai_id"] = pai
+
+    try:
+        out = homolog.criar_categoria(body)
+        status = out.get("status_code") or 201
+        cid = out.get("id") or (out.get("dados") or {}).get("id") or "—"
+        linhas: list[tuple[str, Any]] = [
+            ("Status HTTP", status),
+            ("ID criado", cid),
+            ("Nome", nome_limpo),
+        ]
+        if "categoria_pai_id" in body:
+            linhas.append(("Categoria pai", body["categoria_pai_id"]))
+        linhas.append(("Ativo", "Sim" if ativo_bool else "Não"))
+        linhas.append(("Excluído", _fmt_bool(not ativo_bool)))
+        linhas.append(("Origem", "Mercos Sandbox"))
+        card = _card(
+            "Categoria de produto criada",
+            linhas,
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="categoria", entity_id=str(cid or ""))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/clientes-buscar", response_class=HTMLResponse)
 def acao_clientes_buscar(
     request: Request,

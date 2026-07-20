@@ -211,6 +211,7 @@
       <a href="#sec-produtos">Produto</a>
       <a href="#sec-produtos-criar">Cadastrar produto</a>
       <a href="#sec-categorias">Categoria</a>
+      <a href="#sec-categorias-criar">Categoria — Incluir</a>
       <a href="#sec-clientes-buscar">Clientes</a>
       <a href="#sec-clientes-liberar-tabelas">Cliente — Liberar tabelas</a>
       <a href="#sec-condicoes">Condições</a>
@@ -426,6 +427,32 @@
             <button type="button" class="categorias-busca-manual" data-action="/mercos/homologacao-ui/acoes/categorias" data-target="res-categorias">Buscar categorias</button>
           </div>
           <div class="resultado" id="res-categorias"></div>
+        </section>
+
+        <section class="panel" id="sec-categorias-criar" data-homolog-sec="categoria-incluir">
+          <h2>Categoria de produto — Incluir</h2>
+          <p class="hint">Cadastra uma categoria de produto no sandbox. Entidade própria, distinta de Produto e de Categorias por Cliente. Um clique envia um único POST. Nesta etapa não vincula cliente.</p>
+          <div class="toolbar">
+            <label class="field">Nome
+              <input type="text" id="input-categoria-nome" maxlength="50" value="a608c2993e3042bb" />
+            </label>
+            <label class="field">Categoria pai
+              <input type="text" id="input-categoria-pai" placeholder="Opcional — ID da categoria pai" value="" />
+            </label>
+            <label class="field">Ativo
+              <select id="input-categoria-ativo">
+                <option value="sim" selected>Sim</option>
+                <option value="nao">Não</option>
+              </select>
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/categorias-criar"
+              data-target="res-categorias-criar"
+              data-fields="nome:input-categoria-nome,categoria_pai_id:input-categoria-pai,ativo:input-categoria-ativo">
+              Incluir categoria
+            </button>
+          </div>
+          <div class="resultado" id="res-categorias-criar"></div>
         </section>
 
         <!-- 3 -->

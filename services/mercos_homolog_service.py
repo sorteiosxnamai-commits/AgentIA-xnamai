@@ -74,6 +74,7 @@ def inventario_homologacao() -> dict[str, Any]:
         "application_token_env": "MERCOS_APPLICATION_TOKEN",
         "entidades": [
             {"entidade": "Categorias de Produtos", "metodo": "GET", "path": _path("categorias"), "status": "pronto"},
+            {"entidade": "Categorias de Produtos", "metodo": "POST", "path": _path("categorias"), "status": "pronto"},
             {"entidade": "Clientes", "metodo": "GET", "path": _path("clientes"), "status": "pronto"},
             {"entidade": "Clientes", "metodo": "POST", "path": _path("clientes"), "status": "pronto"},
             {"entidade": "Clientes", "metodo": "PUT", "path": _path("clientes") + "/{id}", "status": "pronto"},
@@ -1950,6 +1951,45 @@ def sincronizar_categorias(
         _SYNC_CATEGORIAS_LOCK.release()
 
 
+def criar_categoria(body: dict) -> dict:
+    """POST /v1/categorias — um único envio à Mercos.
+
+    Contrato oficial (docs/Apiary v1): nome (obrigatório, String:50);
+    opcionais categoria_pai_id (Integer) e excluido (Boolean). Sucesso 201;
+    validação 412. ID criado no header MeusPedidosID (capturado por
+    post_json). Entidade distinta de Produto e de Categorias por Cliente
+    (/v1/clientes_categorias). Não altera o ciclo GET nem vincula cliente.
+    """
+    payload = dict(body or {})
+    payload.pop("id", None)
+    nome = str(payload.get("nome") or "").strip()
+    if not nome:
+        raise MercosApiError(
+            "Campo obrigatório ausente para categoria de produto: nome.",
+            status_code=422,
+        )
+    if len(nome) > 50:
+        raise MercosApiError(
+            "Nome da categoria de produto excede 50 caracteres.",
+            status_code=422,
+        )
+    permitido: dict[str, Any] = {"nome": nome}
+    if "categoria_pai_id" in payload and payload.get("categoria_pai_id") not in (
+        None,
+        "",
+    ):
+        try:
+            permitido["categoria_pai_id"] = int(payload["categoria_pai_id"])
+        except (TypeError, ValueError) as exc:
+            raise MercosApiError(
+                "categoria_pai_id inválido para categoria de produto.",
+                status_code=422,
+            ) from exc
+    if "excluido" in payload and payload.get("excluido") is not None:
+        permitido["excluido"] = bool(payload["excluido"])
+    return post_json(_path("categorias"), permitido)
+
+
 def listar_tipos_pedido(
     params_mercos: dict | None = None,
     **kw,
@@ -2397,6 +2437,7 @@ __all__ = [
     "listar_categorias",
     "listar_categorias_paginado_seguro",
     "sincronizar_categorias",
+    "criar_categoria",
     "listar_clientes",
     "listar_condicoes_pagamento",
     "listar_condicoes_pagamento_paginado_seguro",

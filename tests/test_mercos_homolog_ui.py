@@ -7524,6 +7524,242 @@ def test_produto_get_e_demais_intactos_apos_categorias(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Categoria de Produto POST — incluir
+# ---------------------------------------------------------------------------
+
+
+def test_ui_secao_categoria_produto_incluir_presente(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    assert 'id="sec-categorias-criar"' in html
+    assert "Categoria de produto — Incluir" in html
+    assert 'value="a608c2993e3042bb"' in html
+    assert "Incluir categoria" in html
+    # Ciclo GET preservado
+    assert 'id="btn-categorias-sincronizar"' in html
+    assert 'id="sec-categorias"' in html
+    # Produto permanece distinto
+    assert 'id="sec-produtos"' in html
+    assert 'id="sec-produtos-criar"' in html
+
+
+def test_botao_categorias_criar_usa_url_registrada(client, monkeypatch):
+    """A URL do botão renderizado na UI e a rota FastAPI são exatamente iguais."""
+    import re
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    m = re.search(r'data-action="([^"]*categorias-criar[^"]*)"', html)
+    assert m, "botão de categoria sem data-action na UI"
+    url = m.group(1)
+    assert url == "/mercos/homologacao-ui/acoes/categorias-criar"
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 201, "id": 50100, "dados": {}},
+    )
+    resp = client.post(
+        url,
+        data={
+            "nome": "a608c2993e3042bb",
+            "categoria_pai_id": "",
+            "ativo": "sim",
+        },
+    )
+    assert resp.status_code != 404
+    assert resp.status_code == 200
+    assert "Status 201" in resp.text
+    assert "50100" in resp.text
+
+
+def test_categorias_post_payload_e_endpoint_corretos(client, monkeypatch):
+    """Um único POST em /v1/categorias com nome exato; sem ID no corpo; sem cliente."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+
+    def fake_post_json(path, body):
+        chamadas.append((path, dict(body)))
+        return {"ok": True, "status_code": 201, "id": 50101, "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post_json
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/categorias-criar",
+        data={
+            "nome": "a608c2993e3042bb",
+            "categoria_pai_id": "",
+            "ativo": "sim",
+        },
+    )
+    assert resp.status_code == 200
+    assert len(chamadas) == 1
+    path, body = chamadas[0]
+    assert path == "/v1/categorias"
+    assert path != "/v1/produtos"
+    assert path != "/v1/clientes_categorias"
+    assert "id" not in body
+    assert "cliente_id" not in body
+    assert "categorias_liberadas" not in body
+    assert body["nome"] == "a608c2993e3042bb"
+    assert body["excluido"] is False
+    assert "categoria_pai_id" not in body
+
+    html = resp.text
+    assert "201" in html
+    assert "50101" in html
+    assert "a608c2993e3042bb" in html
+    assert "Categoria de produto criada" in html
+    assert "Mercos Sandbox" in html
+    assert '"nome"' not in html
+    assert "segredo-ui-homolog" not in html
+    assert "CompanyToken" not in html
+
+
+def test_categorias_post_somente_um_post_por_clique(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[str] = []
+
+    def fake_post_json(path, body):
+        chamadas.append(path)
+        return {"ok": True, "status_code": 201, "id": 1, "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post_json
+    )
+    client.post(
+        "/mercos/homologacao-ui/acoes/categorias-criar",
+        data={"nome": "a608c2993e3042bb", "ativo": "sim"},
+    )
+    assert chamadas == ["/v1/categorias"]
+
+
+def test_categorias_post_captura_id_do_header(monkeypatch):
+    """post_json captura MeusPedidosID; criar_categoria propaga o ID."""
+    from services.mercos_homolog_service import criar_categoria
+
+    def fake_post_json(path, body):
+        assert path == "/v1/categorias"
+        return {"ok": True, "status_code": 201, "id": "50999", "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post_json
+    )
+    out = criar_categoria({"nome": "a608c2993e3042bb", "excluido": False})
+    assert out["id"] == "50999"
+    assert out["status_code"] == 201
+
+
+def test_categorias_post_erro_412_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    def boom(path, body):
+        raise MercosApiError("Dados inválidos", status_code=412)
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", boom)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/categorias-criar",
+        data={"nome": "a608c2993e3042bb", "ativo": "sim"},
+    )
+    assert resp.status_code == 200
+    assert "Falha na operação" in resp.text
+    assert "412" in resp.text
+    assert '{"mensagem"' not in resp.text
+    assert "CompanyToken" not in resp.text
+
+
+def test_categorias_post_sem_nome_nao_chama_mercos(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    post = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", post)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/categorias-criar",
+        data={"nome": "   ", "ativo": "sim"},
+    )
+    assert resp.status_code == 200
+    assert "Campos obrigatórios" in resp.text
+    post.assert_not_called()
+
+
+def test_categorias_get_continua_apos_post(client, monkeypatch):
+    """Ciclo GET de categorias permanece funcional após o POST."""
+    catc = _prep_categorias(client, monkeypatch)
+    called_get = MagicMock(
+        return_value=(
+            [
+                {
+                    "id": 1,
+                    "nome": "Geral",
+                    "excluido": True,
+                    "ultima_alteracao": "2026-01-01 10:00:01",
+                }
+            ],
+            {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "0"},
+        )
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called_get
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 201, "id": 9, "dados": {}},
+    )
+    client.post(
+        "/mercos/homologacao-ui/acoes/categorias-criar",
+        data={"nome": "a608c2993e3042bb", "ativo": "sim"},
+    )
+    client.post("/mercos/homologacao-ui/acoes/categorias-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/categorias-sincronizar")
+    assert resp.status_code == 200
+    assert "1/3" in resp.text
+    assert called_get.called
+    sessao = client.cookies.get("mercos_categorias_sessao")
+    assert catc.obter_ciclo(sessao)["chamadas_completas"] == 1
+
+
+def test_produto_get_post_put_intactos_apos_categoria_post(client, monkeypatch):
+    """Produto GET/POST/PUT permanecem intactos após POST de categoria."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    assert 'id="sec-produtos"' in html
+    assert 'id="btn-produtos-sincronizar"' in html
+    assert 'id="sec-produtos-criar"' in html
+    assert 'data-action="/mercos/homologacao-ui/acoes/produtos-criar"' in html
+    assert 'id="sec-produtos-alterar"' in html or "produtos-alterar" in html
+
+    resp = client.post("/mercos/homologacao-ui/acoes/produtos-reiniciar")
+    assert resp.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in resp.text
+
+
+# ---------------------------------------------------------------------------
 # Condição de Pagamento POST — incluir (etapa 1/1)
 # ---------------------------------------------------------------------------
 
