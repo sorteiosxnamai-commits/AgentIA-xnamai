@@ -7069,6 +7069,461 @@ def test_demais_homologacoes_intactas_apos_condicoes(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Categoria de Produto GET — ciclo de 3 etapas (busca completa + 2 incrementais)
+# ---------------------------------------------------------------------------
+
+
+def _prep_categorias(client, monkeypatch):
+    from services import mercos_categorias_catalogo as catc
+    from services.mercos_homolog_service import _reset_resume_clientes_para_testes
+
+    catc._reset_todos_para_testes()
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    return catc
+
+
+def test_ui_secao_categorias_ciclo_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    secao = html.split('id="sec-categorias"')[1].split("</section>")[0]
+    assert "Categoria de produto — Buscar" in secao
+    assert 'id="btn-categorias-reiniciar"' in secao
+    assert 'id="btn-categorias-sincronizar"' in secao
+    assert 'id="input-categorias-nome"' in secao
+    assert 'id="btn-categorias-localizar"' in secao
+    assert "Reiniciar ciclo de sincronização" in secao
+    assert "Sincronizar próxima etapa" in secao
+    assert "Localizar categoria pelo nome" in secao
+    assert "categorias-busca-manual" in secao
+    assert "mercos_categorias_cursor" in html
+    assert "mercos_categorias_catalogo" in html
+
+
+def test_categorias_botoes_rotas_registradas_sem_404(client, monkeypatch):
+    """Botões do ciclo e busca simples apontam para rotas FastAPI existentes."""
+    import re
+
+    _prep_categorias(client, monkeypatch)
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    secao = html.split('id="sec-categorias"')[1].split("</section>")[0]
+    assert 'data-action="/mercos/homologacao-ui/acoes/categorias"' in secao
+    assert "/mercos/homologacao-ui/acoes/categorias-reiniciar" in html
+    assert "/mercos/homologacao-ui/acoes/categorias-sincronizar" in html
+    assert "/mercos/homologacao-ui/acoes/categorias-localizar" in html
+
+    from fastapi.testclient import TestClient
+    from main import app
+
+    anonimo = TestClient(app)
+    for url in (
+        "/mercos/homologacao-ui/acoes/categorias",
+        "/mercos/homologacao-ui/acoes/categorias-reiniciar",
+        "/mercos/homologacao-ui/acoes/categorias-sincronizar",
+        "/mercos/homologacao-ui/acoes/categorias-localizar",
+    ):
+        resp = anonimo.post(url)
+        assert resp.status_code != 404, f"rota inexistente: {url}"
+
+    # data-action da busca simples também cobre o contrato geral
+    m = re.search(r'data-action="([^"]*acoes/categorias)"', secao)
+    assert m and m.group(1) == "/mercos/homologacao-ui/acoes/categorias"
+
+
+def test_categorias_reiniciar_nao_chama_mercos(client, monkeypatch):
+    catc = _prep_categorias(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called
+    )
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", called)
+    resp = client.post("/mercos/homologacao-ui/acoes/categorias-reiniciar")
+    assert resp.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in resp.text
+    assert "0/3" in resp.text
+    assert 'data-ciclo-ativo="1"' in resp.text
+    called.assert_not_called()
+    sessao = client.cookies.get("mercos_categorias_sessao")
+    assert catc.total(sessao) == 0
+    assert catc.obter_ciclo(sessao)["etapa_interna"] == 0
+
+
+def _fake_categorias_sandbox(cursores_vistos):
+    """Contrato real do diagnóstico 2026-07-20: GET /v1/categorias, lote de 2,
+    keyset alterado_apos estritamente maior, total 9 → extras 4 → 5 chamadas
+    na completa. Sem pagina/offset."""
+
+    lotes = {
+        None: (
+            [
+                {
+                    "id": 1001,
+                    "nome": "Geral",
+                    "excluido": True,
+                    "ultima_alteracao": "2026-01-01 10:00:01",
+                    "representada_id": 1,
+                },
+                {
+                    "id": 1002,
+                    "nome": "Acessórios",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-01-01 10:00:02",
+                    "representada_id": 1,
+                },
+            ],
+            "4",
+        ),
+        "2026-01-01 10:00:02": (
+            [
+                {
+                    "id": 1003,
+                    "nome": "49d2ecfa-categoria-homolog",
+                    "categoria_pai_id": 1001,
+                    "excluido": False,
+                    "ultima_alteracao": "2026-01-02 10:00:03",
+                    "representada_id": 1,
+                },
+                {
+                    "id": 1004,
+                    "nome": "Outra",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-01-02 10:00:04",
+                    "representada_id": 1,
+                },
+            ],
+            "3",
+        ),
+        "2026-01-02 10:00:04": (
+            [
+                {
+                    "id": 1005,
+                    "nome": "Lote3a",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-01-03 10:00:05",
+                },
+                {
+                    "id": 1006,
+                    "nome": "Lote3b",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-01-03 10:00:06",
+                },
+            ],
+            "2",
+        ),
+        "2026-01-03 10:00:06": (
+            [
+                {
+                    "id": 1007,
+                    "nome": "Lote4a",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-01-04 10:00:07",
+                },
+                {
+                    "id": 1008,
+                    "nome": "Lote4b",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-01-04 10:00:08",
+                },
+            ],
+            "1",
+        ),
+        "2026-01-04 10:00:08": (
+            [
+                {
+                    "id": 1009,
+                    "nome": "Lote5",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-01-05 10:00:09",
+                },
+            ],
+            "0",
+        ),
+        "2026-01-05 10:00:09": (
+            [
+                {
+                    "id": 1010,
+                    "nome": "Incremental etapa2",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-01-06 11:00:00",
+                },
+            ],
+            "0",
+        ),
+        "2026-01-06 11:00:00": ([], "0"),
+    }
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/categorias"
+        params = params or {}
+        assert "pagina" not in params
+        assert "offset" not in params
+        cursor = params.get("alterado_apos")
+        cursores_vistos.append(cursor)
+        itens, extras = lotes[cursor]
+        headers = {
+            "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+            "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "9",
+            "MEUSPEDIDOS_REQUISICOES_EXTRAS": extras,
+        }
+        return (itens, headers)
+
+    return fake_get
+
+
+def test_categorias_ciclo_3_etapas_completa_todos_lotes(client, monkeypatch):
+    """Etapa 1 percorre TODOS os lotes (1 + extras); 49d2ecfa aparece;
+    etapas 2 e 3 usam alterado_apos exato; catálogo acumulado; excluídos ok."""
+    catc = _prep_categorias(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_categorias_sandbox(cursores),
+    )
+    client.post("/mercos/homologacao-ui/acoes/categorias-reiniciar")
+    sessao = client.cookies.get("mercos_categorias_sessao")
+
+    # Etapa 1 — completa: extras=4 → exatamente 5 chamadas
+    r1 = client.post("/mercos/homologacao-ui/acoes/categorias-sincronizar")
+    assert r1.status_code == 200
+    assert cursores == [
+        None,
+        "2026-01-01 10:00:02",
+        "2026-01-02 10:00:04",
+        "2026-01-03 10:00:06",
+        "2026-01-04 10:00:08",
+    ]
+    assert "1/3" in r1.text
+    assert 'data-tipo-busca="completa"' in r1.text
+    assert "49d2ecfa-categoria-homolog" in r1.text
+    assert catc.total(sessao) == 9
+    estado = catc.obter(sessao)
+    assert "1003" in estado["categorias"]
+    assert estado["categorias"]["1001"]["excluido"] is True
+    assert catc.obter_ciclo(sessao)["chamadas_completas"] == 1
+    assert 'data-requisicoes-executadas="5"' in r1.text
+    assert 'data-requisicoes-previstas="5"' in r1.text
+
+    # Etapa 2 — incremental com cursor EXATO
+    r2 = client.post("/mercos/homologacao-ui/acoes/categorias-sincronizar")
+    assert r2.status_code == 200
+    assert cursores[5] == "2026-01-05 10:00:09"
+    assert "2/3" in r2.text
+    assert 'data-tipo-busca="incremental"' in r2.text
+    assert 'data-cursor-base="2026-01-05 10:00:09"' in r2.text
+    assert 'data-alterado-apos-enviado="2026-01-05 10:00:09"' in r2.text
+    assert "2026-01-05 10:00:08" not in r2.text
+    assert catc.total(sessao) == 10
+    estado = catc.obter(sessao)
+    assert "1001" in estado["categorias"]
+    assert "1010" in estado["categorias"]
+    assert estado["categorias"]["1001"]["excluido"] is True
+
+    # Etapa 3 — incremental com cursor da etapa 2
+    r3 = client.post("/mercos/homologacao-ui/acoes/categorias-sincronizar")
+    assert r3.status_code == 200
+    assert cursores[6] == "2026-01-06 11:00:00"
+    assert 'data-cursor-base="2026-01-06 11:00:00"' in r3.text
+    assert 'data-alterado-apos-enviado="2026-01-06 11:00:00"' in r3.text
+    assert "3/3" in r3.text
+    ciclo = catc.obter_ciclo(sessao)
+    assert ciclo["chamadas_completas"] == 1
+    assert ciclo["chamadas_incrementais"] == 2
+    assert ciclo["etapa_interna"] == 3
+    assert catc.total(sessao) == 10
+    assert "Requisições previstas" in r3.text
+    assert "Requisições executadas" in r3.text
+    assert "CompanyToken" not in r3.text
+    assert '"itens"' not in r3.text
+
+
+def test_categorias_extras_headers_limita_chamadas(monkeypatch):
+    """extras=4 → exatamente 5 chamadas; sem 6ª esperando lote vazio."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        listar_categorias_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    chamadas: list[str | None] = []
+    cursores: list[str | None] = []
+    fake = _fake_categorias_sandbox(cursores)
+
+    def counting_get(path, *, params=None, **kw):
+        chamadas.append((params or {}).get("alterado_apos"))
+        assert len(chamadas) <= 5, "não pode existir 6ª chamada"
+        return fake(path, params=params, **kw)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", counting_get
+    )
+    out = listar_categorias_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert len(chamadas) == 5
+    assert chamadas[0] is None
+    assert out["total"] == 9
+    assert out["requisicoes_extras"] == 4
+    assert out["requisicoes_previstas"] == 5
+    assert out["requisicoes_executadas"] == 5
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    nomes = [i.get("nome") for i in out["itens"]]
+    assert any(str(n).startswith("49d2ecfa") for n in nomes)
+
+
+def test_categorias_localizar_nao_faz_requisicao_http(client, monkeypatch):
+    """Localizar usa só o catálogo local; não altera cursor nem etapa."""
+    catc = _prep_categorias(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar categoria não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", explode)
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", explode)
+
+    client.post("/mercos/homologacao-ui/acoes/categorias-reiniciar")
+    sessao = client.cookies.get("mercos_categorias_sessao")
+    catc.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 1003,
+                "nome": "49d2ecfa-categoria-homolog",
+                "categoria_pai_id": 1001,
+                "excluido": False,
+                "ultima_alteracao": "2026-01-02 10:00:03",
+            }
+        ],
+    )
+    etapa_antes = catc.obter_ciclo(sessao)["etapa_interna"]
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/categorias-localizar",
+        data={"nome": "49d2ecfa"},
+    )
+    assert resp.status_code == 200
+    assert "Categoria de produto localizada" in resp.text
+    assert "49d2ecfa-categoria-homolog" in resp.text
+    assert "Categoria pai" in resp.text
+    assert "1001" in resp.text
+    assert "Excluído" in resp.text
+    assert "Última alteração" in resp.text
+    assert resp.cookies.get("mercos_categorias_cursor") is None
+    assert 'data-cursor-fixo="1"' in resp.text
+    assert catc.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+    resp2 = client.post(
+        "/mercos/homologacao-ui/acoes/categorias-localizar",
+        data={"nome": "49d2ecfa-categoria-homolog"},
+    )
+    assert "Categoria de produto localizada" in resp2.text
+
+
+def test_categorias_busca_simples_bloqueada_durante_ciclo(client, monkeypatch):
+    _prep_categorias(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called
+    )
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", called)
+    client.post("/mercos/homologacao-ui/acoes/categorias-reiniciar")
+
+    resp = client.post("/mercos/homologacao-ui/acoes/categorias")
+    assert resp.status_code == 200
+    assert "Busca manual bloqueada durante a homologação" in resp.text
+    called.assert_not_called()
+
+
+def test_categorias_429_retorna_retry_after_e_libera_lock(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import _SYNC_CATEGORIAS_LOCK
+
+    _prep_categorias(client, monkeypatch)
+
+    def sempre_429(path, *, params=None, **_kw):
+        raise MercosApiError("429", status_code=429, retry_after=12.0)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", sempre_429
+    )
+    client.post("/mercos/homologacao-ui/acoes/categorias-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/categorias-sincronizar")
+    assert resp.status_code == 429
+    assert resp.headers.get("Retry-After") == "12"
+    assert "Aguardando limite da Mercos" in resp.text
+    assert _SYNC_CATEGORIAS_LOCK.acquire(blocking=False) is True
+    _SYNC_CATEGORIAS_LOCK.release()
+
+
+def test_categorias_incremental_envia_cursor_exato(monkeypatch):
+    from services.mercos_homolog_service import sincronizar_categorias
+
+    capt: dict = {}
+
+    def fake_listar(alterado_apos=None, **_kw):
+        capt["alterado_apos"] = alterado_apos
+        return {"itens": [], "paginas_lidas": 1}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_categorias_paginado_seguro",
+        fake_listar,
+    )
+    out = sincronizar_categorias("2026-01-05 10:00:09")
+    assert capt["alterado_apos"] == "2026-01-05 10:00:09"
+    assert out["cursor_base"] == "2026-01-05 10:00:09"
+    assert out["alterado_apos_enviado"] == "2026-01-05 10:00:09"
+    assert out["tipo"] == "incremental"
+
+
+def test_categorias_sincronizar_bloqueia_concorrencia(client, monkeypatch):
+    from services.mercos_homolog_service import _SYNC_CATEGORIAS_LOCK
+
+    _prep_categorias(client, monkeypatch)
+    assert _SYNC_CATEGORIAS_LOCK.acquire(blocking=False) is True
+    try:
+        client.post("/mercos/homologacao-ui/acoes/categorias-reiniciar")
+        resp = client.post("/mercos/homologacao-ui/acoes/categorias-sincronizar")
+        assert resp.status_code == 409
+        assert "já em andamento" in resp.text
+    finally:
+        _SYNC_CATEGORIAS_LOCK.release()
+
+
+def test_produto_get_e_demais_intactos_apos_categorias(client, monkeypatch):
+    """Produto GET e demais homologações permanecem intactos."""
+    _prep_categorias(client, monkeypatch)
+    client.post("/mercos/homologacao-ui/acoes/categorias-reiniciar")
+    for rota in (
+        "/mercos/homologacao-ui/acoes/produtos-reiniciar",
+        "/mercos/homologacao-ui/acoes/clientes-reiniciar",
+        "/mercos/homologacao-ui/acoes/usuarios-reiniciar",
+        "/mercos/homologacao-ui/acoes/pedidos-reiniciar",
+        "/mercos/homologacao-ui/acoes/tipos-pedido-reiniciar",
+        "/mercos/homologacao-ui/acoes/pagamentos-reiniciar",
+        "/mercos/homologacao-ui/acoes/condicoes-reiniciar",
+    ):
+        resp = client.post(rota)
+        assert resp.status_code == 200, rota
+        assert "Ciclo de sincronização reiniciado" in resp.text
+
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    assert 'id="sec-produtos"' in html
+    assert "Produto" in html
+    assert 'id="btn-produtos-sincronizar"' in html
+    assert 'id="sec-categorias"' in html
+    assert "Categoria de produto — Buscar" in html
+
+
+# ---------------------------------------------------------------------------
 # Condição de Pagamento POST — incluir (etapa 1/1)
 # ---------------------------------------------------------------------------
 

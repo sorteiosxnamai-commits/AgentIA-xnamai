@@ -404,9 +404,26 @@
         <!-- 2 -->
         <section class="panel" id="sec-categorias" data-homolog-sec="categoria-buscar">
           <h2>Categoria de produto — Buscar</h2>
-          <p class="hint">Categorias do cadastro comercial.</p>
+          <p class="hint">Ciclo de homologação em 3 etapas: 1/3 busca completa (todos os lotes) e 2/3 e 3/3 incrementais com alterado_apos. A busca simples fica bloqueada durante o ciclo ativo. Entidade distinta de Produto GET.</p>
           <div class="toolbar">
-            <button type="button" data-action="/mercos/homologacao-ui/acoes/categorias" data-target="res-categorias">Buscar categorias</button>
+            <button type="button" id="btn-categorias-reiniciar" class="secondary">
+              Reiniciar ciclo de sincronização
+            </button>
+            <button type="button" id="btn-categorias-sincronizar">
+              Sincronizar próxima etapa
+            </button>
+          </div>
+          <div class="toolbar">
+            <label class="field">Localizar categoria pelo nome
+              <input type="text" id="input-categorias-nome" placeholder="Nome completo ou prefixo (ex.: 49d2ecfa)" />
+            </label>
+            <button type="button" id="btn-categorias-localizar" class="secondary">
+              Localizar categoria
+            </button>
+          </div>
+          <p class="hint" id="aviso-busca-categorias-bloqueada" hidden>Busca simples bloqueada durante a homologação. Use «Sincronizar próxima etapa».</p>
+          <div class="toolbar">
+            <button type="button" class="categorias-busca-manual" data-action="/mercos/homologacao-ui/acoes/categorias" data-target="res-categorias">Buscar categorias</button>
           </div>
           <div class="resultado" id="res-categorias"></div>
         </section>
@@ -1205,6 +1222,9 @@
       var CONDICOES_CURSOR_KEY = "mercos_condicoes_pagamento_cursor";
       var CONDICOES_CATALOGO_KEY = "mercos_condicoes_pagamento_catalogo";
       var CONDICOES_CICLO_KEY = "mercos_condicoes_pagamento_ciclo_ativo";
+      var CATEGORIAS_CURSOR_KEY = "mercos_categorias_cursor";
+      var CATEGORIAS_CATALOGO_KEY = "mercos_categorias_catalogo";
+      var CATEGORIAS_CICLO_KEY = "mercos_categorias_ciclo_ativo";
       var produtosSyncBusy = false;
       var clientesSyncBusy = false;
       var usuariosSyncBusy = false;
@@ -1212,6 +1232,7 @@
       var tiposSyncBusy = false;
       var pagamentosSyncBusy = false;
       var condicoesSyncBusy = false;
+      var categoriasSyncBusy = false;
       var store = {
         cliente: localStorage.getItem("homolog_cliente_id") || "",
         pedido: localStorage.getItem("homolog_pedido_id") || "",
@@ -1482,6 +1503,50 @@
           btn.setAttribute("aria-disabled", ativo ? "true" : "false");
         });
         var aviso = document.getElementById("aviso-busca-condicoes-bloqueada");
+        if (aviso) aviso.hidden = !ativo;
+      }
+
+      function getCategoriasCursor() {
+        return localStorage.getItem(CATEGORIAS_CURSOR_KEY) || "";
+      }
+
+      function setCategoriasCursor(valor) {
+        if (valor) {
+          localStorage.setItem(CATEGORIAS_CURSOR_KEY, valor);
+        } else {
+          localStorage.removeItem(CATEGORIAS_CURSOR_KEY);
+        }
+      }
+
+      function getCategoriasCatalogoJson() {
+        return localStorage.getItem(CATEGORIAS_CATALOGO_KEY) || "";
+      }
+
+      function isCicloCategoriasAtivoLocal() {
+        try {
+          var raw = localStorage.getItem(CATEGORIAS_CATALOGO_KEY);
+          if (raw) {
+            var snap = JSON.parse(raw);
+            if (snap && snap.ciclo && snap.ciclo.ativo) return true;
+          }
+        } catch (e) {}
+        return localStorage.getItem(CATEGORIAS_CICLO_KEY) === "1";
+      }
+
+      function setCicloCategoriasAtivoLocal(ativo) {
+        if (ativo) localStorage.setItem(CATEGORIAS_CICLO_KEY, "1");
+        else localStorage.removeItem(CATEGORIAS_CICLO_KEY);
+        atualizarBuscaCategoriasBloqueada();
+      }
+
+      function atualizarBuscaCategoriasBloqueada() {
+        var ativo = isCicloCategoriasAtivoLocal();
+        document.querySelectorAll(".categorias-busca-manual").forEach(function (btn) {
+          btn.disabled = !!ativo;
+          btn.hidden = !!ativo;
+          btn.setAttribute("aria-disabled", ativo ? "true" : "false");
+        });
+        var aviso = document.getElementById("aviso-busca-categorias-bloqueada");
         if (aviso) aviso.hidden = !ativo;
       }
 
@@ -1796,6 +1861,65 @@
         }
       }
 
+      function setCategoriasCatalogoFromBlob(target) {
+        var blob = target.querySelector(".mercos-categorias-catalogo-blob");
+        if (!blob) return;
+        var texto = (blob.value || blob.textContent || "").trim();
+        if (!texto) return;
+        try {
+          var snap = JSON.parse(texto);
+          localStorage.setItem(CATEGORIAS_CATALOGO_KEY, texto);
+          if (snap && snap.ciclo) {
+            setCicloCategoriasAtivoLocal(!!snap.ciclo.ativo);
+          }
+        } catch (e) { /* ignora blob inválido */ }
+        blob.parentNode && blob.parentNode.removeChild(blob);
+      }
+
+      function applyCicloCategoriasFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-catalogo-limpo") === "1") {
+          localStorage.setItem(
+            CATEGORIAS_CATALOGO_KEY,
+            JSON.stringify({
+              categorias: {},
+              ids_ultimo_lote: [],
+              ultima_sync: {},
+              ciclo: {
+                ativo: true,
+                etapa_interna: 0,
+                chamadas_completas: 0,
+                chamadas_incrementais: 0
+              },
+              total: 0
+            })
+          );
+        }
+        if (wrap.hasAttribute("data-ciclo-ativo")) {
+          setCicloCategoriasAtivoLocal(wrap.getAttribute("data-ciclo-ativo") === "1");
+        }
+        if (wrap.getAttribute("data-bloquear-busca-completa") === "1") {
+          setCicloCategoriasAtivoLocal(true);
+        }
+        atualizarBuscaCategoriasBloqueada();
+      }
+
+      function applyCategoriasCursorFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-cursor-fixo") === "1") {
+          return;
+        }
+        if (wrap.getAttribute("data-cursor-limpo") === "1") {
+          setCategoriasCursor("");
+          return;
+        }
+        if (wrap.hasAttribute("data-novo-cursor")) {
+          setCategoriasCursor(wrap.getAttribute("data-novo-cursor") || "");
+        }
+      }
+
       function setPagamentosCatalogoFromBlob(target) {
         var blob = target.querySelector(".mercos-pagamentos-catalogo-blob");
         if (!blob) return;
@@ -2020,6 +2144,10 @@
             applyCondicoesCursorFromResult(target);
             setCondicoesCatalogoFromBlob(target);
             applyCicloCondicoesFromResult(target);
+          } else if (opts.entidade === "categorias") {
+            applyCategoriasCursorFromResult(target);
+            setCategoriasCatalogoFromBlob(target);
+            applyCicloCategoriasFromResult(target);
           } else {
             applyCursorFromResult(target);
             setCatalogoFromBlob(target);
@@ -2045,6 +2173,7 @@
           atualizarBuscaUsuariosBloqueada();
           atualizarBuscaTiposBloqueada();
           atualizarBuscaCondicoesBloqueada();
+          atualizarBuscaCategoriasBloqueada();
         }
       }
 
@@ -2059,6 +2188,7 @@
       atualizarBuscaUsuariosBloqueada();
       atualizarBuscaTiposBloqueada();
       atualizarBuscaCondicoesBloqueada();
+      atualizarBuscaCategoriasBloqueada();
 
       if (btnReiniciar && resProdutos) {
         btnReiniciar.addEventListener("click", async function () {
@@ -2554,6 +2684,82 @@
           );
           if (getCondicoesCursor() !== cursorAntes) {
             setCondicoesCursor(cursorAntes);
+          }
+        });
+      }
+
+      var btnCatReiniciar = document.getElementById("btn-categorias-reiniciar");
+      var btnCatSincronizar = document.getElementById("btn-categorias-sincronizar");
+      var btnCatLocalizar = document.getElementById("btn-categorias-localizar");
+      var resCategorias = document.getElementById("res-categorias");
+
+      if (btnCatReiniciar && resCategorias) {
+        btnCatReiniciar.addEventListener("click", async function () {
+          if (categoriasSyncBusy) return;
+          categoriasSyncBusy = true;
+          setCategoriasCursor("");
+          localStorage.removeItem(CATEGORIAS_CATALOGO_KEY);
+          setCicloCategoriasAtivoLocal(true);
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/categorias-reiniciar",
+              {},
+              resCategorias,
+              btnCatReiniciar,
+              { entidade: "categorias", semRetry: true, timeoutMs: 65000 }
+            );
+          } finally {
+            categoriasSyncBusy = false;
+            btnCatReiniciar.disabled = false;
+            if (btnCatSincronizar) btnCatSincronizar.disabled = false;
+            atualizarBuscaCategoriasBloqueada();
+          }
+        });
+      }
+
+      if (btnCatSincronizar && resCategorias) {
+        btnCatSincronizar.addEventListener("click", async function () {
+          if (categoriasSyncBusy) return;
+          categoriasSyncBusy = true;
+          btnCatSincronizar.disabled = true;
+          if (btnCatReiniciar) btnCatReiniciar.disabled = true;
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/categorias-sincronizar",
+              {
+                cursor: getCategoriasCursor(),
+                catalogo_json: getCategoriasCatalogoJson()
+              },
+              resCategorias,
+              btnCatSincronizar,
+              { entidade: "categorias", syncThrottle: true, timeoutMs: 180000 }
+            );
+          } finally {
+            categoriasSyncBusy = false;
+            btnCatSincronizar.disabled = false;
+            if (btnCatReiniciar) btnCatReiniciar.disabled = false;
+            atualizarBuscaCategoriasBloqueada();
+          }
+        });
+      }
+
+      if (btnCatLocalizar && resCategorias) {
+        btnCatLocalizar.addEventListener("click", async function () {
+          if (categoriasSyncBusy) return;
+          var nomeEl = document.getElementById("input-categorias-nome");
+          var cursorAntes = getCategoriasCursor();
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/categorias-localizar",
+            {
+              nome: nomeEl ? nomeEl.value : "",
+              catalogo_json: getCategoriasCatalogoJson()
+            },
+            resCategorias,
+            btnCatLocalizar,
+            { entidade: "categorias", semRetry: true, timeoutMs: 30000 }
+          );
+          if (getCategoriasCursor() !== cursorAntes) {
+            setCategoriasCursor(cursorAntes);
           }
         });
       }
