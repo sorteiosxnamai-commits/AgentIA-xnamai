@@ -216,6 +216,7 @@
       <a href="#sec-clientes-liberar-tabelas">Cliente — Liberar tabelas</a>
       <a href="#sec-clientes-vincular-categoria">Cliente — Vincular categoria</a>
       <a href="#sec-clientes-liberar-categorias">Cliente — Liberar categorias</a>
+      <a href="#sec-clientes-vincular-condicao">Cliente — Vincular condição</a>
       <a href="#sec-condicoes">Condições</a>
       <a href="#sec-condicoes-criar">Condição — Incluir</a>
       <a href="#sec-condicoes-alterar">Condição — Alterar</a>
@@ -658,6 +659,35 @@
             </button>
           </div>
           <div class="resultado" id="res-clientes-liberar-categorias"></div>
+        </section>
+
+        <section class="panel" id="sec-clientes-vincular-condicao" data-homolog-sec="cliente-vincular-condicao">
+          <h2>Cliente — Vincular condição de pagamento</h2>
+          <p class="hint">Libera a condição de pagamento informada para o cliente. Um clique envia uma única chamada. Não cria cliente nem condição e não altera os cadastros.</p>
+          <div class="toolbar">
+            <label class="field">ID do cliente
+              <input type="text" id="input-cliente-vinc-cond-id" value="9290675" />
+            </label>
+            <label class="field">Razão social
+              <input type="text" id="input-cliente-vinc-cond-razao" value="fdfa92fa09814f3f" />
+            </label>
+            <label class="field">CNPJ
+              <input type="text" id="input-cliente-vinc-cond-cnpj" value="78121331000177" />
+            </label>
+            <label class="field">ID da condição
+              <input type="text" id="input-cliente-vinc-cond-condicao-id" value="265174" />
+            </label>
+            <label class="field">Nome da condição
+              <input type="text" id="input-cliente-vinc-cond-condicao-nome" value="9a221eb10df24148" />
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/clientes-vincular-condicao"
+              data-target="res-clientes-vincular-condicao"
+              data-fields="cliente_id:input-cliente-vinc-cond-id,razao_social:input-cliente-vinc-cond-razao,cnpj:input-cliente-vinc-cond-cnpj,condicao_id:input-cliente-vinc-cond-condicao-id,condicao_nome:input-cliente-vinc-cond-condicao-nome">
+              Vincular condição
+            </button>
+          </div>
+          <div class="resultado" id="res-clientes-vincular-condicao"></div>
         </section>
 
         <!-- 6 -->

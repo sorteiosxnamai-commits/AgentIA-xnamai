@@ -3712,6 +3712,99 @@ def acao_clientes_vincular_categoria(
         return _wrap_result(_erro_html(exc))
 
 
+@router.post(
+    "/homologacao-ui/acoes/clientes-vincular-condicao",
+    response_class=HTMLResponse,
+)
+def acao_clientes_vincular_condicao(
+    request: Request,
+    token: str = Form(""),
+    cliente_id: str = Form(""),
+    razao_social: str = Form(""),
+    cnpj: str = Form(""),
+    condicao_id: str = Form(""),
+    condicao_nome: str = Form(""),
+):
+    """POST /v1/clientes_condicoes_pagamento — um único POST por clique.
+
+    Vincula condições de pagamento liberadas ao cliente. IDs no corpo
+    (cliente_id e condicoes_pagamento_liberadas). Não cria cliente nem
+    condição; não altera cadastros. Preserva Cliente POST e Condição GET/POST/PUT.
+    """
+    _auth(request, token)
+    cid = (cliente_id or "").strip()
+    razao_val = (razao_social or "").strip()
+    cond_id = (condicao_id or "").strip()
+    cond_nome = (condicao_nome or "").strip()
+    if not cid or not cond_id:
+        faltando = []
+        if not cid:
+            faltando.append("ID do cliente")
+        if not cond_id:
+            faltando.append("ID da condição")
+        return _wrap_result(
+            _card(
+                "Campos obrigatórios",
+                [("Ação", "Informe: " + ", ".join(faltando) + ".")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    try:
+        out = homolog.vincular_cliente_condicoes_pagamento(cid, [cond_id])
+        status = out.get("status_code") or 200
+        card = _card(
+            "Vínculo realizado",
+            [
+                ("Status HTTP", status),
+                ("ID do cliente", cid),
+                ("Razão social", razao_val or "—"),
+                ("ID da condição de pagamento", cond_id),
+                ("Nome da condição", cond_nome or "—"),
+                ("Resultado", "Vínculo realizado"),
+                ("Origem", "Mercos Sandbox"),
+            ],
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="cliente", entity_id=cid)
+    except MercosApiError as exc:
+        if exc.status_code == 404:
+            return _wrap_result(
+                _card(
+                    "Recurso não encontrado",
+                    [
+                        ("HTTP", 404),
+                        ("ID do cliente", cid),
+                        ("ID da condição", cond_id),
+                        (
+                            "Mensagem",
+                            "Cliente ou condição de pagamento não encontrado na Mercos.",
+                        ),
+                    ],
+                    status_label="Erro 404",
+                    css="erro",
+                )
+            )
+        if exc.status_code == 412:
+            return _wrap_result(
+                _card(
+                    "Dados inválidos",
+                    [
+                        ("HTTP", 412),
+                        ("ID do cliente", cid),
+                        ("ID da condição", cond_id),
+                        ("Mensagem", exc.message or "Dados inválidos"),
+                    ],
+                    status_label="Erro 412",
+                    css="erro",
+                )
+            )
+        return _wrap_result(_erro_html(exc))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/condicoes", response_class=HTMLResponse)
 def acao_condicoes(request: Request, token: str = Form("")):
     _auth(request, token)

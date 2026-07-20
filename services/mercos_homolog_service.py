@@ -41,6 +41,8 @@ PATHS = {
     "clientes_categorias": "/v1/clientes_categorias",
     # Doc oficial Mercos: POST /v1/clientes_categorias/liberar_todas
     "clientes_categorias_liberar_todas": "/v1/clientes_categorias/liberar_todas",
+    # Doc oficial Mercos: POST /v1/clientes_condicoes_pagamento
+    "clientes_condicoes_pagamento": "/v1/clientes_condicoes_pagamento",
     # Não encontrado path listagem global no sandbox; use nested ou MERCOS_PATH_TABELAS_PRECO_PRODUTO
     "tabelas_preco_produto": "/v1/tabelas_preco",
     # Doc Mercos: listagem GET /v1/pedidos/tipo
@@ -108,6 +110,12 @@ def inventario_homologacao() -> dict[str, Any]:
                 "entidade": "Categorias de Produtos por Cliente",
                 "metodo": "POST",
                 "path": _path("clientes_categorias_liberar_todas"),
+                "status": "pronto",
+            },
+            {
+                "entidade": "Condições de Pagamento por Cliente",
+                "metodo": "POST",
+                "path": _path("clientes_condicoes_pagamento"),
                 "status": "pronto",
             },
             {
@@ -1720,6 +1728,48 @@ def liberar_todas_categorias_cliente(cliente_id: int | str) -> dict:
     return post_json(_path("clientes_categorias_liberar_todas"), body)
 
 
+def vincular_cliente_condicoes_pagamento(
+    cliente_id: int | str,
+    condicoes_pagamento_liberadas: list[int | str],
+) -> dict:
+    """POST /v1/clientes_condicoes_pagamento — vincula condições ao cliente.
+
+    Contrato oficial (Apiary v1): corpo com cliente_id (Integer, obrigatório)
+    e condicoes_pagamento_liberadas (lista de Integer, obrigatório). IDs vão
+    no corpo, não na URL. Sucesso 200; validação 412; recurso inexistente
+    404. Não cria cliente nem condição; não altera cadastros. Distinto de
+    POST /v1/condicoes_pagamento e de liberar_todas.
+    """
+    cid = str(cliente_id or "").strip()
+    if not cid:
+        raise MercosApiError(
+            "Informe o ID do cliente para vincular condições de pagamento.",
+            status_code=422,
+        )
+    ids: list[int] = []
+    for raw in condicoes_pagamento_liberadas or []:
+        texto = str(raw or "").strip()
+        if not texto:
+            continue
+        try:
+            ids.append(int(texto))
+        except (TypeError, ValueError) as exc:
+            raise MercosApiError(
+                "ID de condição de pagamento inválido para vínculo com o cliente.",
+                status_code=422,
+            ) from exc
+    if not ids:
+        raise MercosApiError(
+            "Informe ao menos uma condição de pagamento para liberar ao cliente.",
+            status_code=422,
+        )
+    body: dict[str, Any] = {
+        "cliente_id": int(cid) if cid.isdigit() else cid,
+        "condicoes_pagamento_liberadas": ids,
+    }
+    return post_json(_path("clientes_condicoes_pagamento"), body)
+
+
 def listar_tabelas_preco_produto(**kw) -> dict:
     """Listagem global (path configurável). Preferir listar_produtos_da_tabela_preco."""
     return listar_paginado(_path("tabelas_preco_produto"), **kw)
@@ -2641,6 +2691,7 @@ __all__ = [
     "liberar_todas_tabelas_preco_cliente",
     "vincular_cliente_categorias",
     "liberar_todas_categorias_cliente",
+    "vincular_cliente_condicoes_pagamento",
     "listar_tabelas_preco_produto",
     "listar_produtos_da_tabela_preco",
     "listar_tipos_pedido",
