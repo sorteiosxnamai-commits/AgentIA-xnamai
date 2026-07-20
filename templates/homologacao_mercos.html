@@ -215,6 +215,7 @@
       <a href="#sec-clientes-buscar">Clientes</a>
       <a href="#sec-clientes-liberar-tabelas">Cliente — Liberar tabelas</a>
       <a href="#sec-clientes-vincular-categoria">Cliente — Vincular categoria</a>
+      <a href="#sec-clientes-liberar-categorias">Cliente — Liberar categorias</a>
       <a href="#sec-condicoes">Condições</a>
       <a href="#sec-condicoes-criar">Condição — Incluir</a>
       <a href="#sec-condicoes-alterar">Condição — Alterar</a>
@@ -634,6 +635,29 @@
             </button>
           </div>
           <div class="resultado" id="res-clientes-vincular-categoria"></div>
+        </section>
+
+        <section class="panel" id="sec-clientes-liberar-categorias" data-homolog-sec="cliente-liberar-categorias">
+          <h2>Cliente — Liberar todas as categorias de produto</h2>
+          <p class="hint">Libera todas as categorias de produto disponíveis para o cliente. Um clique envia uma única chamada. Não cria nem altera cliente ou categoria e não envia lista manual de IDs.</p>
+          <div class="toolbar">
+            <label class="field">ID do cliente
+              <input type="text" id="input-cliente-liberar-cat-id" value="9290668" />
+            </label>
+            <label class="field">Razão social
+              <input type="text" id="input-cliente-liberar-cat-razao" value="f6c1d128589642a8" />
+            </label>
+            <label class="field">CNPJ
+              <input type="text" id="input-cliente-liberar-cat-cnpj" value="41540880000176" />
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/clientes-liberar-categorias"
+              data-target="res-clientes-liberar-categorias"
+              data-fields="cliente_id:input-cliente-liberar-cat-id,cnpj:input-cliente-liberar-cat-cnpj,razao_social:input-cliente-liberar-cat-razao">
+              Liberar todas as categorias
+            </button>
+          </div>
+          <div class="resultado" id="res-clientes-liberar-categorias"></div>
         </section>
 
         <!-- 6 -->

@@ -8965,3 +8965,232 @@ def test_cliente_post_e_categoria_get_post_intactos_apos_vincular(client, monkey
     assert r_get.status_code == 200
     assert "Ciclo de sincronização reiniciado" in r_get.text
 
+
+# ---------------------------------------------------------------------------
+# Liberar todas as categorias de produto para o cliente — POST
+# ---------------------------------------------------------------------------
+
+
+def test_ui_secao_cliente_liberar_categorias_presente(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    secao = html.split('id="sec-clientes-liberar-categorias"')[1].split("</section>")[0]
+    assert "Cliente — Liberar todas as categorias de produto" in secao
+    assert 'value="9290668"' in secao
+    assert 'value="f6c1d128589642a8"' in secao
+    assert 'value="41540880000176"' in secao
+    assert "Liberar todas as categorias" in secao
+    assert 'id="sec-clientes-criar"' in html
+    assert 'id="sec-clientes-vincular-categoria"' in html
+    assert 'id="sec-categorias-criar"' in html
+
+
+def test_botao_liberar_categorias_usa_url_registrada(client, monkeypatch):
+    import re
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    m = re.search(
+        r'data-action="([^"]*clientes-liberar-categorias[^"]*)"', html
+    )
+    assert m, "botão liberar categorias sem data-action na UI"
+    url = m.group(1)
+    assert url == "/mercos/homologacao-ui/acoes/clientes-liberar-categorias"
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 200, "dados": {}},
+    )
+    resp = client.post(
+        url,
+        data={
+            "cliente_id": "9290668",
+            "cnpj": "41540880000176",
+            "razao_social": "f6c1d128589642a8",
+        },
+    )
+    assert resp.status_code != 404
+    assert resp.status_code == 200
+    assert "Status 200" in resp.text
+    assert "Todas as categorias liberadas" in resp.text
+
+
+def test_liberar_categorias_endpoint_e_payload_corretos(client, monkeypatch):
+    """Um único POST em /v1/clientes_categorias/liberar_todas; só cliente_id."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+
+    def fake_post_json(path, body):
+        chamadas.append((path, dict(body)))
+        return {"ok": True, "status_code": 200, "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post_json
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-categorias",
+        data={
+            "cliente_id": "9290668",
+            "cnpj": "41540880000176",
+            "razao_social": "f6c1d128589642a8",
+        },
+    )
+    assert resp.status_code == 200
+    assert len(chamadas) == 1
+    path, body = chamadas[0]
+    assert path == "/v1/clientes_categorias/liberar_todas"
+    assert body == {"cliente_id": 9290668}
+    assert "categorias_liberadas" not in body
+    assert path != "/v1/clientes"
+    assert path != "/v1/categorias"
+    assert path != "/v1/clientes_categorias"
+
+    html = resp.text
+    assert "Status 200" in html
+    assert "9290668" in html
+    assert "41540880000176" in html
+    assert "f6c1d128589642a8" in html
+    assert "Todas as categorias liberadas" in html
+    assert "Mercos Sandbox" in html
+    assert '"cliente_id"' not in html
+    assert "segredo-ui-homolog" not in html
+    assert "CompanyToken" not in html
+
+
+def test_liberar_categorias_somente_uma_chamada(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[str] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: chamadas.append(path)
+        or {"ok": True, "status_code": 200, "dados": {}},
+    )
+    client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-categorias",
+        data={"cliente_id": "9290668"},
+    )
+    assert chamadas == ["/v1/clientes_categorias/liberar_todas"]
+
+
+def test_liberar_categorias_sem_id_nao_chama_mercos(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    post = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", post)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-categorias",
+        data={"cliente_id": ""},
+    )
+    assert resp.status_code == 200
+    assert "Campos obrigatórios" in resp.text
+    post.assert_not_called()
+
+
+def test_liberar_categorias_erro_404_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        MagicMock(side_effect=MercosApiError("Não encontrado", status_code=404)),
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-categorias",
+        data={"cliente_id": "9290668"},
+    )
+    assert resp.status_code == 200
+    assert "404" in resp.text
+    assert "não foi encontrado" in resp.text.lower() or "não encontrado" in resp.text.lower()
+    assert '{"mensagem"' not in resp.text
+    assert "CompanyToken" not in resp.text
+
+
+def test_liberar_categorias_erro_412_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        MagicMock(side_effect=MercosApiError("Dados inválidos", status_code=412)),
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-categorias",
+        data={"cliente_id": "9290668"},
+    )
+    assert resp.status_code == 200
+    assert "Dados inválidos" in resp.text
+    assert "412" in resp.text
+    assert '{"mensagem"' not in resp.text
+
+
+def test_demais_fluxos_intactos_apos_liberar_categorias(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+
+    def fake_post_json(path, body):
+        chamadas.append((path, dict(body)))
+        code = 200 if "liberar" in path or path.endswith("clientes_categorias") else 201
+        return {"ok": True, "status_code": code, "id": 99, "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post_json
+    )
+
+    r_lib = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-categorias",
+        data={"cliente_id": "9290668"},
+    )
+    assert r_lib.status_code == 200
+    assert chamadas[-1][0] == "/v1/clientes_categorias/liberar_todas"
+    assert "categorias_liberadas" not in chamadas[-1][1]
+
+    r_vinc = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-vincular-categoria",
+        data={"cliente_id": "9290664", "categoria_id": "321414"},
+    )
+    assert r_vinc.status_code == 200
+    assert chamadas[-1][0] == "/v1/clientes_categorias"
+
+    r_cat = client.post(
+        "/mercos/homologacao-ui/acoes/categorias-criar",
+        data={"nome": "a608c2993e3042bb", "ativo": "sim"},
+    )
+    assert r_cat.status_code == 200
+    assert chamadas[-1][0] == "/v1/categorias"
+
+    r_cli = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-criar",
+        data={"razao_social": ""},
+    )
+    assert r_cli.status_code != 404
+    assert r_cli.status_code == 200
+
