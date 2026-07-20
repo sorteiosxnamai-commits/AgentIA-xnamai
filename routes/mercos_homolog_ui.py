@@ -2779,6 +2779,88 @@ def acao_clientes_alterar(
         return _wrap_result(_erro_html(exc))
 
 
+@router.post(
+    "/homologacao-ui/acoes/clientes-liberar-tabelas-preco",
+    response_class=HTMLResponse,
+)
+def acao_clientes_liberar_tabelas_preco(
+    request: Request,
+    token: str = Form(""),
+    cliente_id: str = Form(""),
+    cnpj: str = Form(""),
+    razao_social: str = Form(""),
+):
+    """POST /v1/clientes_tabela_preco/liberar_todas — um único POST por clique.
+
+    Libera TODAS as tabelas de preço para o cliente. O cliente_id vai no
+    corpo (contrato Apiary). Não cria cliente nem tabela; não altera o
+    cadastro; não usa Pedido POST.
+    """
+    _auth(request, token)
+    cid = (cliente_id or "").strip()
+    cnpj_val = (cnpj or "").strip()
+    razao_val = (razao_social or "").strip()
+    if not cid:
+        return _wrap_result(
+            _card(
+                "Campos obrigatórios",
+                [("Ação", "Informe o ID do cliente.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    try:
+        out = homolog.liberar_todas_tabelas_preco_cliente(cid)
+        status = out.get("status_code") or 200
+        card = _card(
+            "Tabelas de preço liberadas",
+            [
+                ("Status HTTP", status),
+                ("ID do cliente", cid),
+                ("CNPJ", cnpj_val or "—"),
+                ("Razão social", razao_val or "—"),
+                ("Tabelas de preço", "Todas liberadas"),
+                ("Origem", "Mercos Sandbox"),
+            ],
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="cliente", entity_id=cid)
+    except MercosApiError as exc:
+        if exc.status_code == 404:
+            return _wrap_result(
+                _card(
+                    "Cliente não encontrado",
+                    [
+                        ("HTTP", 404),
+                        ("ID do cliente", cid),
+                        (
+                            "Mensagem",
+                            "O cliente informado não foi encontrado na Mercos.",
+                        ),
+                    ],
+                    status_label="Erro 404",
+                    css="erro",
+                )
+            )
+        if exc.status_code == 412:
+            return _wrap_result(
+                _card(
+                    "Dados inválidos",
+                    [
+                        ("HTTP", 412),
+                        ("ID do cliente", cid),
+                        ("Mensagem", exc.message or "Dados inválidos"),
+                    ],
+                    status_label="Erro 412",
+                    css="erro",
+                )
+            )
+        return _wrap_result(_erro_html(exc))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/condicoes", response_class=HTMLResponse)
 def acao_condicoes(request: Request, token: str = Form("")):
     _auth(request, token)

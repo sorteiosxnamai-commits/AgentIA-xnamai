@@ -212,6 +212,7 @@
       <a href="#sec-produtos-criar">Cadastrar produto</a>
       <a href="#sec-categorias">Categoria</a>
       <a href="#sec-clientes-buscar">Clientes</a>
+      <a href="#sec-clientes-liberar-tabelas">Cliente — Liberar tabelas</a>
       <a href="#sec-condicoes">Condições</a>
       <a href="#sec-condicoes-criar">Condição — Incluir</a>
       <a href="#sec-condicoes-alterar">Condição — Alterar</a>
@@ -539,6 +540,29 @@
             </button>
           </div>
           <div class="resultado" id="res-clientes-alterar"></div>
+        </section>
+
+        <section class="panel" id="sec-clientes-liberar-tabelas" data-homolog-sec="cliente-liberar-tabelas">
+          <h2>Cliente — Liberar todas as tabelas de preço</h2>
+          <p class="hint">Libera todas as tabelas de preço disponíveis para o cliente. Um clique envia uma única chamada. Não altera o cadastro do cliente nem cria tabelas.</p>
+          <div class="toolbar">
+            <label class="field">ID do cliente
+              <input type="text" id="input-cliente-liberar-id" value="9290655" />
+            </label>
+            <label class="field">CNPJ
+              <input type="text" id="input-cliente-liberar-cnpj" value="12441875000108" />
+            </label>
+            <label class="field">Razão social
+              <input type="text" id="input-cliente-liberar-razao" value="b675d90e7cc144c0" />
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/clientes-liberar-tabelas-preco"
+              data-target="res-clientes-liberar-tabelas"
+              data-fields="cliente_id:input-cliente-liberar-id,cnpj:input-cliente-liberar-cnpj,razao_social:input-cliente-liberar-razao">
+              Liberar todas as tabelas
+            </button>
+          </div>
+          <div class="resultado" id="res-clientes-liberar-tabelas"></div>
         </section>
 
         <!-- 6 -->

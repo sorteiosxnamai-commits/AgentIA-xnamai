@@ -7815,3 +7815,227 @@ def test_pedidos_intactos_apos_tabelas_preco_post(client, monkeypatch):
     assert r_buscar.status_code == 200
     assert "Ciclo de sincronização reiniciado" in r_buscar.text
 
+
+# ---------------------------------------------------------------------------
+# Liberar todas as tabelas de preço para o cliente — POST (etapa 3/3)
+# ---------------------------------------------------------------------------
+
+
+def test_ui_secao_cliente_liberar_tabelas_presente(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    secao = html.split('id="sec-clientes-liberar-tabelas"')[1].split("</section>")[0]
+    assert "Cliente — Liberar todas as tabelas de preço" in secao
+    assert 'value="9290655"' in secao
+    assert 'value="12441875000108"' in secao
+    assert 'value="b675d90e7cc144c0"' in secao
+    assert "Liberar todas as tabelas" in secao
+    assert 'id="sec-clientes-criar"' in html
+    assert 'id="sec-tabelas-criar"' in html
+
+
+def test_botao_liberar_tabelas_usa_url_registrada(client, monkeypatch):
+    import re
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    m = re.search(
+        r'data-action="([^"]*clientes-liberar-tabelas-preco[^"]*)"', html
+    )
+    assert m, "botão liberar tabelas sem data-action na UI"
+    url = m.group(1)
+    assert url == "/mercos/homologacao-ui/acoes/clientes-liberar-tabelas-preco"
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 200, "dados": {}},
+    )
+    resp = client.post(
+        url,
+        data={
+            "cliente_id": "9290655",
+            "cnpj": "12441875000108",
+            "razao_social": "b675d90e7cc144c0",
+        },
+    )
+    assert resp.status_code != 404
+    assert resp.status_code == 200
+    assert "Status 200" in resp.text
+
+
+def test_liberar_tabelas_endpoint_e_payload_corretos(client, monkeypatch):
+    """Um único POST em /v1/clientes_tabela_preco/liberar_todas; ID no corpo."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+
+    def fake_post_json(path, body):
+        chamadas.append((path, dict(body)))
+        return {"ok": True, "status_code": 200, "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post_json
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-tabelas-preco",
+        data={
+            "cliente_id": "9290655",
+            "cnpj": "12441875000108",
+            "razao_social": "b675d90e7cc144c0",
+        },
+    )
+    assert resp.status_code == 200
+    assert len(chamadas) == 1
+    path, body = chamadas[0]
+    assert path == "/v1/clientes_tabela_preco/liberar_todas"
+    assert body == {"cliente_id": 9290655}
+    # Não cria cliente nem tabela neste clique
+    assert path != "/v1/clientes"
+    assert path != "/v1/tabelas_preco"
+    assert path != "/v2/pedidos"
+
+    html = resp.text
+    assert "Status 200" in html
+    assert "9290655" in html
+    assert "12441875000108" in html
+    assert "b675d90e7cc144c0" in html
+    assert "Todas liberadas" in html
+    assert "Mercos Sandbox" in html
+    assert '"cliente_id"' not in html
+    assert "segredo-ui-homolog" not in html
+    assert "CompanyToken" not in html
+
+
+def test_liberar_tabelas_somente_uma_chamada(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[str] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: chamadas.append(path)
+        or {"ok": True, "status_code": 200, "dados": {}},
+    )
+    client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-tabelas-preco",
+        data={"cliente_id": "9290655"},
+    )
+    assert chamadas == ["/v1/clientes_tabela_preco/liberar_todas"]
+
+
+def test_liberar_tabelas_sem_id_nao_chama_mercos(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    post = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", post)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-tabelas-preco",
+        data={"cliente_id": "  "},
+    )
+    assert resp.status_code == 200
+    assert "Campos obrigatórios" in resp.text
+    post.assert_not_called()
+
+
+def test_liberar_tabelas_erro_404_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: (_ for _ in ()).throw(
+            MercosApiError("Não encontrado", status_code=404)
+        ),
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-tabelas-preco",
+        data={"cliente_id": "9290655"},
+    )
+    assert resp.status_code == 200
+    assert "Cliente não encontrado" in resp.text
+    assert "404" in resp.text
+    assert '{"mensagem"' not in resp.text
+
+
+def test_liberar_tabelas_erro_412_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: (_ for _ in ()).throw(
+            MercosApiError("Dados inválidos", status_code=412)
+        ),
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-tabelas-preco",
+        data={"cliente_id": "9290655"},
+    )
+    assert resp.status_code == 200
+    assert "Dados inválidos" in resp.text
+    assert "412" in resp.text
+    assert '{"mensagem"' not in resp.text
+
+
+def test_cliente_post_e_tabela_post_intactos_apos_liberar(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+
+    def fake_post_json(path, body):
+        chamadas.append((path, dict(body)))
+        return {"ok": True, "status_code": 201, "id": 99, "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post_json
+    )
+
+    # Liberar
+    r_lib = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-tabelas-preco",
+        data={"cliente_id": "9290655"},
+    )
+    assert r_lib.status_code == 200
+    assert chamadas[-1][0] == "/v1/clientes_tabela_preco/liberar_todas"
+
+    # Tabela POST continua
+    r_tab = client.post(
+        "/mercos/homologacao-ui/acoes/tabelas-preco-criar",
+        data={"tipo": "P", "nome": "153271fca35044de", "ativo": "sim"},
+    )
+    assert r_tab.status_code == 200
+    assert chamadas[-1][0] == "/v1/tabelas_preco"
+
+    # Cliente POST continua registrado (validação local)
+    r_cli = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-criar",
+        data={"razao_social": ""},
+    )
+    assert r_cli.status_code != 404
+    assert r_cli.status_code == 200
+

@@ -35,6 +35,8 @@ PATHS = {
     "produtos": "/v1/produtos",
     "segmentos": "/v1/segmentos",
     "tabelas_preco": "/v1/tabelas_preco",
+    # Doc oficial Mercos (Apiary): POST /v1/clientes_tabela_preco/liberar_todas
+    "clientes_tabela_preco_liberar_todas": "/v1/clientes_tabela_preco/liberar_todas",
     # Não encontrado path listagem global no sandbox; use nested ou MERCOS_PATH_TABELAS_PRECO_PRODUTO
     "tabelas_preco_produto": "/v1/tabelas_preco",
     # Doc Mercos: listagem GET /v1/pedidos/tipo
@@ -85,6 +87,12 @@ def inventario_homologacao() -> dict[str, Any]:
             {"entidade": "Segmentos de Clientes", "metodo": "GET", "path": _path("segmentos"), "status": "pronto"},
             {"entidade": "Tabelas de Preço", "metodo": "GET", "path": _path("tabelas_preco"), "status": "pronto"},
             {"entidade": "Tabelas de Preço", "metodo": "POST", "path": _path("tabelas_preco"), "status": "pronto"},
+            {
+                "entidade": "Tabelas de Preço por Cliente",
+                "metodo": "POST",
+                "path": _path("clientes_tabela_preco_liberar_todas"),
+                "status": "pronto",
+            },
             {
                 "entidade": "Tabelas de Preço por Produto",
                 "metodo": "GET",
@@ -1519,6 +1527,25 @@ def criar_tabela_preco(body: dict) -> dict:
     return post_json(_path("tabelas_preco"), permitido)
 
 
+def liberar_todas_tabelas_preco_cliente(cliente_id: int | str) -> dict:
+    """POST /v1/clientes_tabela_preco/liberar_todas — libera TODAS as tabelas.
+
+    Contrato oficial (Apiary): corpo com cliente_id (obrigatório, Integer).
+    ID vai no corpo, não na URL. Sucesso 200; validação 412. Não cria
+    cliente nem tabela; não altera cadastro do cliente; não usa Pedido.
+    """
+    cid = str(cliente_id or "").strip()
+    if not cid:
+        raise MercosApiError(
+            "Informe o ID do cliente para liberar as tabelas de preço.",
+            status_code=422,
+        )
+    body: dict[str, Any] = {
+        "cliente_id": int(cid) if cid.isdigit() else cid,
+    }
+    return post_json(_path("clientes_tabela_preco_liberar_todas"), body)
+
+
 def listar_tabelas_preco_produto(**kw) -> dict:
     """Listagem global (path configurável). Preferir listar_produtos_da_tabela_preco."""
     return listar_paginado(_path("tabelas_preco_produto"), **kw)
@@ -2298,6 +2325,7 @@ __all__ = [
     "listar_segmentos",
     "listar_tabelas_preco",
     "criar_tabela_preco",
+    "liberar_todas_tabelas_preco_cliente",
     "listar_tabelas_preco_produto",
     "listar_produtos_da_tabela_preco",
     "listar_tipos_pedido",
