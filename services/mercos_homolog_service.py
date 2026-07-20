@@ -84,6 +84,7 @@ def inventario_homologacao() -> dict[str, Any]:
             {"entidade": "Produtos", "metodo": "GET", "path": _path("produtos"), "status": "pronto"},
             {"entidade": "Segmentos de Clientes", "metodo": "GET", "path": _path("segmentos"), "status": "pronto"},
             {"entidade": "Tabelas de Preço", "metodo": "GET", "path": _path("tabelas_preco"), "status": "pronto"},
+            {"entidade": "Tabelas de Preço", "metodo": "POST", "path": _path("tabelas_preco"), "status": "pronto"},
             {
                 "entidade": "Tabelas de Preço por Produto",
                 "metodo": "GET",
@@ -1466,6 +1467,58 @@ def listar_tabelas_preco(**kw) -> dict:
     return listar_paginado(_path("tabelas_preco"), **kw)
 
 
+def criar_tabela_preco(body: dict) -> dict:
+    """POST /v1/tabelas_preco — um único envio à Mercos.
+
+    Contrato oficial (Apiary): nome (obrigatório, String:100) e tipo
+    (obrigatório no POST, String:2 — P=preço livre, A=acréscimo, D=desconto);
+    opcionais acrescimo (Float, tipo A), desconto (Float, tipo D), excluido
+    (Boolean). Sucesso 201; ID no header MeusPedidosID (capturado por
+    post_json). Validação tipicamente 412. Entidade distinta de Pedido,
+    Condição de Pagamento e preço de produto. Não altera o GET.
+    """
+    payload = dict(body or {})
+    payload.pop("id", None)
+    nome = str(payload.get("nome") or "").strip()
+    tipo = str(payload.get("tipo") or "").strip().upper()
+    if not nome:
+        raise MercosApiError(
+            "Campo obrigatório ausente para tabela de preço: nome.",
+            status_code=422,
+        )
+    if len(nome) > 100:
+        raise MercosApiError(
+            "Nome da tabela de preço excede 100 caracteres.",
+            status_code=422,
+        )
+    if tipo not in ("P", "A", "D"):
+        raise MercosApiError(
+            "Campo obrigatório ausente ou inválido para tabela de preço: tipo "
+            "(valores aceitos: P, A, D).",
+            status_code=422,
+        )
+    permitido: dict[str, Any] = {"nome": nome, "tipo": tipo}
+    if tipo == "A" and payload.get("acrescimo") not in (None, ""):
+        try:
+            permitido["acrescimo"] = float(payload["acrescimo"])
+        except (TypeError, ValueError) as exc:
+            raise MercosApiError(
+                "acrescimo inválido para tabela de preço.",
+                status_code=422,
+            ) from exc
+    if tipo == "D" and payload.get("desconto") not in (None, ""):
+        try:
+            permitido["desconto"] = float(payload["desconto"])
+        except (TypeError, ValueError) as exc:
+            raise MercosApiError(
+                "desconto inválido para tabela de preço.",
+                status_code=422,
+            ) from exc
+    if "excluido" in payload and payload.get("excluido") is not None:
+        permitido["excluido"] = bool(payload["excluido"])
+    return post_json(_path("tabelas_preco"), permitido)
+
+
 def listar_tabelas_preco_produto(**kw) -> dict:
     """Listagem global (path configurável). Preferir listar_produtos_da_tabela_preco."""
     return listar_paginado(_path("tabelas_preco_produto"), **kw)
@@ -2244,6 +2297,7 @@ __all__ = [
     "criar_imagem_produto",
     "listar_segmentos",
     "listar_tabelas_preco",
+    "criar_tabela_preco",
     "listar_tabelas_preco_produto",
     "listar_produtos_da_tabela_preco",
     "listar_tipos_pedido",

@@ -218,6 +218,7 @@
       <a href="#sec-formas-pagamento-criar">Formas de pagamento</a>
       <a href="#sec-segmentos">Segmentos</a>
       <a href="#sec-tabelas">Tabelas de preço</a>
+      <a href="#sec-tabelas-criar">Tabela — Incluir</a>
       <a href="#sec-tipos">Tipo de pedido</a>
       <a href="#sec-usuarios">Usuários</a>
       <a href="#sec-pedidos-buscar">Pedidos</a>
@@ -747,6 +748,42 @@
             <button type="button" data-action="/mercos/homologacao-ui/acoes/tabelas-preco" data-target="res-tabelas">Buscar tabelas de preço</button>
           </div>
           <div class="resultado" id="res-tabelas"></div>
+        </section>
+
+        <section class="panel" id="sec-tabelas-criar" data-homolog-sec="tabela-preco-incluir">
+          <h2>Tabela de preço — Incluir</h2>
+          <p class="hint">Cadastra uma tabela de preço (tipo P=livre, A=acréscimo, D=desconto). Entidade própria, diferente de Pedido e de preço por produto. Um clique envia um único POST. Não vincula cliente nesta etapa.</p>
+          <div class="toolbar">
+            <label class="field">Tipo
+              <select id="input-tabela-tipo">
+                <option value="P" selected>P (preço livre)</option>
+                <option value="A">A (acréscimo)</option>
+                <option value="D">D (desconto)</option>
+              </select>
+            </label>
+            <label class="field">Nome
+              <input type="text" id="input-tabela-nome" maxlength="100" value="153271fca35044de" />
+            </label>
+            <label class="field">Acréscimo
+              <input type="text" id="input-tabela-acrescimo" placeholder="Só para tipo A" value="" />
+            </label>
+            <label class="field">Desconto
+              <input type="text" id="input-tabela-desconto" placeholder="Só para tipo D" value="" />
+            </label>
+            <label class="field">Ativo
+              <select id="input-tabela-ativo">
+                <option value="sim" selected>Sim</option>
+                <option value="nao">Não</option>
+              </select>
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/tabelas-preco-criar"
+              data-target="res-tabelas-criar"
+              data-fields="tipo:input-tabela-tipo,nome:input-tabela-nome,acrescimo:input-tabela-acrescimo,desconto:input-tabela-desconto,ativo:input-tabela-ativo">
+              Incluir tabela de preço
+            </button>
+          </div>
+          <div class="resultado" id="res-tabelas-criar"></div>
         </section>
 
         <!-- 9 -->

@@ -7574,3 +7574,244 @@ def test_formas_pagamento_intactas_apos_condicoes_put(client, monkeypatch):
     assert resp.status_code == 200
     assert chamadas[0][0] == "/v1/formas_pagamento/90000"
 
+
+# ---------------------------------------------------------------------------
+# Tabela de Preço POST — incluir (homologação etapa 2/3)
+# ---------------------------------------------------------------------------
+
+
+def test_ui_secao_tabela_preco_incluir_presente(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    assert 'id="sec-tabelas-criar"' in html
+    assert "Tabela de preço — Incluir" in html
+    assert 'value="153271fca35044de"' in html
+    assert 'value="P"' in html or 'option value="P" selected' in html
+    assert "Incluir tabela de preço" in html
+    # GET e Pedido preservados
+    assert 'id="sec-tabelas"' in html
+    assert 'id="sec-pedidos-criar"' in html
+    assert 'id="sec-pedidos-buscar"' in html
+
+
+def test_botao_tabelas_preco_criar_usa_url_registrada(client, monkeypatch):
+    import re
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    m = re.search(r'data-action="([^"]*tabelas-preco-criar[^"]*)"', html)
+    assert m, "botão de tabela de preço sem data-action na UI"
+    url = m.group(1)
+    assert url == "/mercos/homologacao-ui/acoes/tabelas-preco-criar"
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 201, "id": 501001, "dados": {}},
+    )
+    resp = client.post(
+        url,
+        data={"tipo": "P", "nome": "153271fca35044de", "ativo": "sim"},
+    )
+    assert resp.status_code != 404
+    assert resp.status_code == 200
+    assert "Status 201" in resp.text
+    assert "501001" in resp.text
+
+
+def test_tabelas_preco_post_payload_e_endpoint_corretos(client, monkeypatch):
+    """Um único POST em /v1/tabelas_preco com tipo P e nome exato; sem ID no corpo."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[tuple[str, dict]] = []
+
+    def fake_post_json(path, body):
+        chamadas.append((path, dict(body)))
+        return {"ok": True, "status_code": 201, "id": 501002, "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post_json
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/tabelas-preco-criar",
+        data={
+            "tipo": "P",
+            "nome": "153271fca35044de",
+            "acrescimo": "",
+            "desconto": "",
+            "ativo": "sim",
+        },
+    )
+    assert resp.status_code == 200
+    assert len(chamadas) == 1
+    path, body = chamadas[0]
+    assert path == "/v1/tabelas_preco"
+    assert path != "/v2/pedidos"
+    assert "id" not in body
+    assert body == {
+        "nome": "153271fca35044de",
+        "tipo": "P",
+        "excluido": False,
+    }
+
+    html = resp.text
+    assert "201" in html
+    assert "501002" in html
+    assert "153271fca35044de" in html
+    assert "Tabela de preço criada" in html
+    assert "Mercos Sandbox" in html
+    assert '"nome"' not in html
+    assert "segredo-ui-homolog" not in html
+    assert "CompanyToken" not in html
+    # Não vincula cliente nesta etapa
+    assert "9290655" not in html
+
+
+def test_tabelas_preco_post_somente_um_post_por_clique(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    chamadas: list[str] = []
+
+    def fake_post_json(path, body):
+        chamadas.append(path)
+        return {"ok": True, "status_code": 201, "id": 1, "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post_json
+    )
+    client.post(
+        "/mercos/homologacao-ui/acoes/tabelas-preco-criar",
+        data={"tipo": "P", "nome": "153271fca35044de", "ativo": "sim"},
+    )
+    assert chamadas == ["/v1/tabelas_preco"]
+
+
+def test_tabelas_preco_post_captura_id_do_header(monkeypatch):
+    from services.mercos_homolog_service import criar_tabela_preco
+
+    def fake_post_json(path, body):
+        assert path == "/v1/tabelas_preco"
+        return {"ok": True, "status_code": 201, "id": "501999", "dados": {}}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json", fake_post_json
+    )
+    out = criar_tabela_preco(
+        {"nome": "153271fca35044de", "tipo": "P", "excluido": False}
+    )
+    assert out["id"] == "501999"
+    assert out["status_code"] == 201
+
+
+def test_tabelas_preco_post_erro_412_amigavel(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    from services.mercos_api_client import MercosApiError
+
+    def boom(path, body):
+        raise MercosApiError("Dados inválidos", status_code=412)
+
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", boom)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/tabelas-preco-criar",
+        data={"tipo": "P", "nome": "153271fca35044de", "ativo": "sim"},
+    )
+    assert resp.status_code == 200
+    assert "Falha na operação" in resp.text
+    assert "412" in resp.text
+    assert '{"mensagem"' not in resp.text
+    assert "CompanyToken" not in resp.text
+
+
+def test_tabelas_preco_post_campos_obrigatorios_nao_chama_mercos(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    post = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.post_json", post)
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/tabelas-preco-criar",
+        data={"tipo": "P", "nome": "   ", "ativo": "sim"},
+    )
+    assert resp.status_code == 200
+    assert "Campos obrigatórios" in resp.text
+    post.assert_not_called()
+
+    resp2 = client.post(
+        "/mercos/homologacao-ui/acoes/tabelas-preco-criar",
+        data={"tipo": "", "nome": "153271fca35044de", "ativo": "sim"},
+    )
+    assert "Campos obrigatórios" in resp2.text
+    post.assert_not_called()
+
+
+def test_tabelas_preco_get_preservado_apos_post(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    listar = MagicMock(
+        return_value={
+            "itens": [{"id": 1, "nome": "Tabela X", "excluido": False}],
+            "total": 1,
+        }
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_tabelas_preco", listar
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 201, "id": 10, "dados": {}},
+    )
+    r_post = client.post(
+        "/mercos/homologacao-ui/acoes/tabelas-preco-criar",
+        data={"tipo": "P", "nome": "153271fca35044de", "ativo": "sim"},
+    )
+    assert r_post.status_code == 200
+    r_get = client.post("/mercos/homologacao-ui/acoes/tabelas-preco")
+    assert r_get.status_code == 200
+    assert listar.called
+    assert "Tabela X" in r_get.text
+
+
+def test_pedidos_intactos_apos_tabelas_preco_post(client, monkeypatch):
+    """Pedido GET/POST/PUT continuam registrados e não usam tabelas_preco."""
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    assert 'id="sec-pedidos-buscar"' in html
+    assert 'id="sec-pedidos-criar"' in html
+    assert 'id="sec-pedidos-alterar"' in html
+
+    # Rotas de pedido respondem (não 404); validação local sem chamar Mercos
+    r_criar = client.post(
+        "/mercos/homologacao-ui/acoes/pedidos-criar", data={"cliente_id": ""}
+    )
+    assert r_criar.status_code != 404
+    assert r_criar.status_code == 200
+
+    r_buscar = client.post("/mercos/homologacao-ui/acoes/pedidos-reiniciar")
+    assert r_buscar.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in r_buscar.text
+

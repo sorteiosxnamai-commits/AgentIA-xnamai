@@ -3132,6 +3132,81 @@ def acao_segmentos(request: Request, token: str = Form("")):
         return _wrap_result(_erro_html(exc))
 
 
+@router.post("/homologacao-ui/acoes/tabelas-preco-criar", response_class=HTMLResponse)
+def acao_tabelas_preco_criar(
+    request: Request,
+    token: str = Form(""),
+    tipo: str = Form(""),
+    nome: str = Form(""),
+    acrescimo: str = Form(""),
+    desconto: str = Form(""),
+    ativo: str = Form("sim"),
+):
+    """POST /v1/tabelas_preco — um único envio à Mercos por clique.
+
+    Entidade Tabela de Preço (não confundir com Pedido, Condição de Pagamento
+    ou preço de produto). Contrato: nome e tipo obrigatórios no POST
+    (P/A/D); opcionais acrescimo, desconto e excluido. Ativo=Sim vira
+    excluido=false. Não vincula cliente nem cria pedido. Não altera o GET.
+    """
+    _auth(request, token)
+    tipo_limpo = (tipo or "").strip().upper()
+    nome_limpo = (nome or "").strip()
+    faltando = []
+    if not tipo_limpo:
+        faltando.append("tipo")
+    if not nome_limpo:
+        faltando.append("nome")
+    if faltando:
+        return _wrap_result(
+            _card(
+                "Campos obrigatórios",
+                [("Ação", f"Informe: {', '.join(faltando)}.")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    ativo_bool = (ativo or "sim").strip().lower() != "nao"
+    body: dict[str, Any] = {
+        "tipo": tipo_limpo,
+        "nome": nome_limpo,
+        "excluido": not ativo_bool,
+    }
+    acr = (acrescimo or "").strip()
+    if acr:
+        body["acrescimo"] = acr
+    desc = (desconto or "").strip()
+    if desc:
+        body["desconto"] = desc
+    try:
+        out = homolog.criar_tabela_preco(body)
+        status = out.get("status_code") or 201
+        tid = out.get("id") or (out.get("dados") or {}).get("id") or "—"
+        tipo_label = {
+            "P": "P (preço livre)",
+            "A": "A (acréscimo)",
+            "D": "D (desconto)",
+        }.get(tipo_limpo, tipo_limpo)
+        linhas: list[tuple[str, Any]] = [
+            ("Status HTTP", status),
+            ("ID criado", tid),
+            ("Tipo", tipo_label),
+            ("Nome", nome_limpo),
+            ("Ativo", "Sim" if ativo_bool else "Não"),
+            ("Excluído", _fmt_bool(not ativo_bool)),
+            ("Origem", "Mercos Sandbox"),
+        ]
+        card = _card(
+            "Tabela de preço criada",
+            linhas,
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="tabela_preco", entity_id=str(tid or ""))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/tabelas-preco", response_class=HTMLResponse)
 def acao_tabelas_preco(request: Request, token: str = Form("")):
     _auth(request, token)
