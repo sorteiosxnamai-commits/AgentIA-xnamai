@@ -37,6 +37,8 @@ PATHS = {
     "tabelas_preco": "/v1/tabelas_preco",
     # Doc oficial Mercos (Apiary): POST /v1/clientes_tabela_preco/liberar_todas
     "clientes_tabela_preco_liberar_todas": "/v1/clientes_tabela_preco/liberar_todas",
+    # Doc oficial Mercos: POST /v1/clientes_categorias (vínculo cliente ↔ categorias)
+    "clientes_categorias": "/v1/clientes_categorias",
     # Não encontrado path listagem global no sandbox; use nested ou MERCOS_PATH_TABELAS_PRECO_PRODUTO
     "tabelas_preco_produto": "/v1/tabelas_preco",
     # Doc Mercos: listagem GET /v1/pedidos/tipo
@@ -92,6 +94,12 @@ def inventario_homologacao() -> dict[str, Any]:
                 "entidade": "Tabelas de Preço por Cliente",
                 "metodo": "POST",
                 "path": _path("clientes_tabela_preco_liberar_todas"),
+                "status": "pronto",
+            },
+            {
+                "entidade": "Categorias de Produtos por Cliente",
+                "metodo": "POST",
+                "path": _path("clientes_categorias"),
                 "status": "pronto",
             },
             {
@@ -1547,6 +1555,48 @@ def liberar_todas_tabelas_preco_cliente(cliente_id: int | str) -> dict:
     return post_json(_path("clientes_tabela_preco_liberar_todas"), body)
 
 
+def vincular_cliente_categorias(
+    cliente_id: int | str,
+    categorias_liberadas: list[int | str],
+) -> dict:
+    """POST /v1/clientes_categorias — vincula categorias liberadas ao cliente.
+
+    Contrato oficial (docs/Apiary v1): corpo com cliente_id (Integer,
+    obrigatório) e categorias_liberadas (lista de Integer, obrigatório).
+    IDs vão no corpo, não na URL. Sucesso 200; validação 412; recurso
+    inexistente 404. Não cria cliente nem categoria; não altera cadastros.
+    Distinto de POST /v1/categorias e de liberar_todas.
+    """
+    cid = str(cliente_id or "").strip()
+    if not cid:
+        raise MercosApiError(
+            "Informe o ID do cliente para vincular categorias.",
+            status_code=422,
+        )
+    ids: list[int] = []
+    for raw in categorias_liberadas or []:
+        texto = str(raw or "").strip()
+        if not texto:
+            continue
+        try:
+            ids.append(int(texto))
+        except (TypeError, ValueError) as exc:
+            raise MercosApiError(
+                "ID de categoria inválido para vínculo com o cliente.",
+                status_code=422,
+            ) from exc
+    if not ids:
+        raise MercosApiError(
+            "Informe ao menos uma categoria para liberar ao cliente.",
+            status_code=422,
+        )
+    body: dict[str, Any] = {
+        "cliente_id": int(cid) if cid.isdigit() else cid,
+        "categorias_liberadas": ids,
+    }
+    return post_json(_path("clientes_categorias"), body)
+
+
 def listar_tabelas_preco_produto(**kw) -> dict:
     """Listagem global (path configurável). Preferir listar_produtos_da_tabela_preco."""
     return listar_paginado(_path("tabelas_preco_produto"), **kw)
@@ -2464,6 +2514,7 @@ __all__ = [
     "listar_tabelas_preco",
     "criar_tabela_preco",
     "liberar_todas_tabelas_preco_cliente",
+    "vincular_cliente_categorias",
     "listar_tabelas_preco_produto",
     "listar_produtos_da_tabela_preco",
     "listar_tipos_pedido",

@@ -3405,6 +3405,98 @@ def acao_clientes_liberar_tabelas_preco(
         return _wrap_result(_erro_html(exc))
 
 
+@router.post(
+    "/homologacao-ui/acoes/clientes-vincular-categoria",
+    response_class=HTMLResponse,
+)
+def acao_clientes_vincular_categoria(
+    request: Request,
+    token: str = Form(""),
+    cliente_id: str = Form(""),
+    razao_social: str = Form(""),
+    categoria_id: str = Form(""),
+    categoria_nome: str = Form(""),
+):
+    """POST /v1/clientes_categorias — um único POST por clique.
+
+    Vincula categorias liberadas ao cliente. IDs no corpo (cliente_id e
+    categorias_liberadas). Não cria cliente nem categoria; não altera
+    cadastros. Preserva Cliente POST e Categoria GET/POST.
+    """
+    _auth(request, token)
+    cid = (cliente_id or "").strip()
+    razao_val = (razao_social or "").strip()
+    cat_id = (categoria_id or "").strip()
+    cat_nome = (categoria_nome or "").strip()
+    if not cid or not cat_id:
+        faltando = []
+        if not cid:
+            faltando.append("ID do cliente")
+        if not cat_id:
+            faltando.append("ID da categoria")
+        return _wrap_result(
+            _card(
+                "Campos obrigatórios",
+                [("Ação", "Informe: " + ", ".join(faltando) + ".")],
+                status_label="Pendente",
+                css="pendente",
+            )
+        )
+    try:
+        out = homolog.vincular_cliente_categorias(cid, [cat_id])
+        status = out.get("status_code") or 200
+        card = _card(
+            "Vínculo realizado",
+            [
+                ("Status HTTP", status),
+                ("ID do cliente", cid),
+                ("Razão social", razao_val or "—"),
+                ("ID da categoria", cat_id),
+                ("Nome da categoria", cat_nome or "—"),
+                ("Resultado", "Vínculo realizado"),
+                ("Origem", "Mercos Sandbox"),
+            ],
+            status_label=f"Status {status}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="cliente", entity_id=cid)
+    except MercosApiError as exc:
+        if exc.status_code == 404:
+            return _wrap_result(
+                _card(
+                    "Recurso não encontrado",
+                    [
+                        ("HTTP", 404),
+                        ("ID do cliente", cid),
+                        ("ID da categoria", cat_id),
+                        (
+                            "Mensagem",
+                            "Cliente ou categoria não encontrado na Mercos.",
+                        ),
+                    ],
+                    status_label="Erro 404",
+                    css="erro",
+                )
+            )
+        if exc.status_code == 412:
+            return _wrap_result(
+                _card(
+                    "Dados inválidos",
+                    [
+                        ("HTTP", 412),
+                        ("ID do cliente", cid),
+                        ("ID da categoria", cat_id),
+                        ("Mensagem", exc.message or "Dados inválidos"),
+                    ],
+                    status_label="Erro 412",
+                    css="erro",
+                )
+            )
+        return _wrap_result(_erro_html(exc))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
 @router.post("/homologacao-ui/acoes/condicoes", response_class=HTMLResponse)
 def acao_condicoes(request: Request, token: str = Form("")):
     _auth(request, token)

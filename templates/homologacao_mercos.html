@@ -214,6 +214,7 @@
       <a href="#sec-categorias-criar">Categoria — Incluir</a>
       <a href="#sec-clientes-buscar">Clientes</a>
       <a href="#sec-clientes-liberar-tabelas">Cliente — Liberar tabelas</a>
+      <a href="#sec-clientes-vincular-categoria">Cliente — Vincular categoria</a>
       <a href="#sec-condicoes">Condições</a>
       <a href="#sec-condicoes-criar">Condição — Incluir</a>
       <a href="#sec-condicoes-alterar">Condição — Alterar</a>
@@ -607,6 +608,32 @@
             </button>
           </div>
           <div class="resultado" id="res-clientes-liberar-tabelas"></div>
+        </section>
+
+        <section class="panel" id="sec-clientes-vincular-categoria" data-homolog-sec="cliente-vincular-categoria">
+          <h2>Cliente — Vincular categoria de produto</h2>
+          <p class="hint">Libera a categoria informada para o cliente. Um clique envia uma única chamada. Não cria cliente nem categoria e não altera os cadastros.</p>
+          <div class="toolbar">
+            <label class="field">ID do cliente
+              <input type="text" id="input-cliente-vinc-cat-id" value="9290664" />
+            </label>
+            <label class="field">Razão social
+              <input type="text" id="input-cliente-vinc-cat-razao" value="a7d9e81fb7c8454d" />
+            </label>
+            <label class="field">ID da categoria
+              <input type="text" id="input-cliente-vinc-cat-categoria-id" value="321414" />
+            </label>
+            <label class="field">Nome da categoria
+              <input type="text" id="input-cliente-vinc-cat-categoria-nome" value="a608c2993e3042bb" />
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/clientes-vincular-categoria"
+              data-target="res-clientes-vincular-categoria"
+              data-fields="cliente_id:input-cliente-vinc-cat-id,razao_social:input-cliente-vinc-cat-razao,categoria_id:input-cliente-vinc-cat-categoria-id,categoria_nome:input-cliente-vinc-cat-categoria-nome">
+              Vincular categoria
+            </button>
+          </div>
+          <div class="resultado" id="res-clientes-vincular-categoria"></div>
         </section>
 
         <!-- 6 -->
