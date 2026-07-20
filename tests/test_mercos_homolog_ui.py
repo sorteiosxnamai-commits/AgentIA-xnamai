@@ -8483,6 +8483,428 @@ def test_tabelas_preco_get_preservado_apos_post(client, monkeypatch):
     assert "Tabela X" in r_get.text
 
 
+# ---------------------------------------------------------------------------
+# Tabela de Preço GET — ciclo de homologação (3 etapas)
+# ---------------------------------------------------------------------------
+
+
+def _prep_tabelas_preco(client, monkeypatch):
+    from services import mercos_tabelas_preco_catalogo as tpc
+    from services.mercos_homolog_service import _reset_resume_clientes_para_testes
+
+    tpc._reset_todos_para_testes()
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    return tpc
+
+
+def test_ui_secao_tabelas_preco_ciclo_presente(client, monkeypatch):
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    secao = html.split('id="sec-tabelas"')[1].split("</section>")[0]
+    assert "Tabela de preço — Buscar" in secao
+    assert 'id="btn-tabelas-preco-reiniciar"' in secao
+    assert 'id="btn-tabelas-preco-sincronizar"' in secao
+    assert 'id="input-tabelas-preco-nome"' in secao
+    assert 'id="btn-tabelas-preco-localizar"' in secao
+    assert "Reiniciar ciclo de sincronização" in secao
+    assert "Sincronizar próxima etapa" in secao
+    assert "Localizar tabela pelo nome" in secao
+    assert "tabelas-preco-busca-manual" in secao
+    assert "mercos_tabelas_preco_cursor" in html
+    assert "mercos_tabelas_preco_catalogo" in html
+
+
+def test_tabelas_preco_botoes_rotas_registradas_sem_404(client, monkeypatch):
+    """Botões do ciclo e busca simples apontam para rotas FastAPI existentes."""
+    import re
+
+    _prep_tabelas_preco(client, monkeypatch)
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    secao = html.split('id="sec-tabelas"')[1].split("</section>")[0]
+    assert 'data-action="/mercos/homologacao-ui/acoes/tabelas-preco"' in secao
+    assert "/mercos/homologacao-ui/acoes/tabelas-preco-reiniciar" in html
+    assert "/mercos/homologacao-ui/acoes/tabelas-preco-sincronizar" in html
+    assert "/mercos/homologacao-ui/acoes/tabelas-preco-localizar" in html
+
+    from fastapi.testclient import TestClient
+    from main import app
+
+    anonimo = TestClient(app)
+    for url in (
+        "/mercos/homologacao-ui/acoes/tabelas-preco",
+        "/mercos/homologacao-ui/acoes/tabelas-preco-reiniciar",
+        "/mercos/homologacao-ui/acoes/tabelas-preco-sincronizar",
+        "/mercos/homologacao-ui/acoes/tabelas-preco-localizar",
+    ):
+        resp = anonimo.post(url)
+        assert resp.status_code != 404, f"rota inexistente: {url}"
+
+    m = re.search(r'data-action="([^"]*acoes/tabelas-preco)"', secao)
+    assert m and m.group(1) == "/mercos/homologacao-ui/acoes/tabelas-preco"
+
+
+def test_tabelas_preco_reiniciar_nao_chama_mercos(client, monkeypatch):
+    tpc = _prep_tabelas_preco(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called
+    )
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", called)
+    resp = client.post("/mercos/homologacao-ui/acoes/tabelas-preco-reiniciar")
+    assert resp.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in resp.text
+    assert "0/3" in resp.text
+    assert 'data-ciclo-ativo="1"' in resp.text
+    called.assert_not_called()
+    sessao = client.cookies.get("mercos_tabelas_preco_sessao")
+    assert tpc.total(sessao) == 0
+    assert tpc.obter_ciclo(sessao)["etapa_interna"] == 0
+
+
+def _fake_tabelas_preco_sandbox(cursores_vistos):
+    """Contrato real do diagnóstico 2026-07-20: GET /v1/tabelas_preco, lote de 2,
+    keyset alterado_apos estritamente maior, total 4 → extras 1 → 2 chamadas
+    na completa. Sem pagina/offset."""
+
+    lotes = {
+        None: (
+            [
+                {
+                    "id": 3001,
+                    "nome": "Geral",
+                    "tipo": "P",
+                    "excluido": True,
+                    "ultima_alteracao": "2026-02-01 10:00:01",
+                },
+                {
+                    "id": 3002,
+                    "nome": "6e04f9d0bfef4d5f",
+                    "tipo": "A",
+                    "acrescimo": 5.0,
+                    "excluido": False,
+                    "ultima_alteracao": "2026-02-01 10:00:02",
+                },
+            ],
+            "1",
+        ),
+        "2026-02-01 10:00:02": (
+            [
+                {
+                    "id": 3003,
+                    "nome": "Desconto X",
+                    "tipo": "D",
+                    "desconto": 10.0,
+                    "excluido": False,
+                    "ultima_alteracao": "2026-02-02 10:00:03",
+                },
+                {
+                    "id": 3004,
+                    "nome": "Outra",
+                    "tipo": "P",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-02-02 10:00:04",
+                },
+            ],
+            "0",
+        ),
+        "2026-02-02 10:00:04": (
+            [
+                {
+                    "id": 3005,
+                    "nome": "Incremental etapa2",
+                    "tipo": "P",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-02-03 11:00:00",
+                },
+            ],
+            "0",
+        ),
+        "2026-02-03 11:00:00": ([], "0"),
+    }
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/tabelas_preco"
+        params = params or {}
+        assert "pagina" not in params
+        assert "offset" not in params
+        cursor = params.get("alterado_apos")
+        cursores_vistos.append(cursor)
+        itens, extras = lotes[cursor]
+        headers = {
+            "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+            "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "4",
+            "MEUSPEDIDOS_REQUISICOES_EXTRAS": extras,
+        }
+        return (itens, headers)
+
+    return fake_get
+
+
+def test_tabelas_preco_ciclo_3_etapas_completa_todos_lotes(client, monkeypatch):
+    """Etapa 1 percorre TODOS os lotes (1 + extras); 6e04f9d0 aparece;
+    etapas 2 e 3 usam alterado_apos exato; catálogo acumulado; excluídos ok."""
+    tpc = _prep_tabelas_preco(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_tabelas_preco_sandbox(cursores),
+    )
+    client.post("/mercos/homologacao-ui/acoes/tabelas-preco-reiniciar")
+    sessao = client.cookies.get("mercos_tabelas_preco_sessao")
+
+    r1 = client.post("/mercos/homologacao-ui/acoes/tabelas-preco-sincronizar")
+    assert r1.status_code == 200
+    assert cursores == [None, "2026-02-01 10:00:02"]
+    assert "1/3" in r1.text
+    assert 'data-tipo-busca="completa"' in r1.text
+    assert "6e04f9d0bfef4d5f" in r1.text
+    assert tpc.total(sessao) == 4
+    estado = tpc.obter(sessao)
+    assert "3002" in estado["tabelas"]
+    assert estado["tabelas"]["3001"]["excluido"] is True
+    assert tpc.obter_ciclo(sessao)["chamadas_completas"] == 1
+    assert 'data-requisicoes-executadas="2"' in r1.text
+    assert 'data-requisicoes-previstas="2"' in r1.text
+
+    r2 = client.post("/mercos/homologacao-ui/acoes/tabelas-preco-sincronizar")
+    assert r2.status_code == 200
+    assert cursores[2] == "2026-02-02 10:00:04"
+    assert "2/3" in r2.text
+    assert 'data-tipo-busca="incremental"' in r2.text
+    assert 'data-cursor-base="2026-02-02 10:00:04"' in r2.text
+    assert 'data-alterado-apos-enviado="2026-02-02 10:00:04"' in r2.text
+    assert 'data-alterado-apos-enviado="2026-02-02 10:00:03"' not in r2.text
+    assert tpc.total(sessao) == 5
+    estado = tpc.obter(sessao)
+    assert "3001" in estado["tabelas"]
+    assert "3005" in estado["tabelas"]
+    assert estado["tabelas"]["3001"]["excluido"] is True
+
+    r3 = client.post("/mercos/homologacao-ui/acoes/tabelas-preco-sincronizar")
+    assert r3.status_code == 200
+    assert cursores[3] == "2026-02-03 11:00:00"
+    assert 'data-cursor-base="2026-02-03 11:00:00"' in r3.text
+    assert 'data-alterado-apos-enviado="2026-02-03 11:00:00"' in r3.text
+    assert "3/3" in r3.text
+    ciclo = tpc.obter_ciclo(sessao)
+    assert ciclo["chamadas_completas"] == 1
+    assert ciclo["chamadas_incrementais"] == 2
+    assert ciclo["etapa_interna"] == 3
+    assert tpc.total(sessao) == 5
+    assert "Requisições previstas" in r3.text
+    assert "Requisições executadas" in r3.text
+    assert "CompanyToken" not in r3.text
+    assert '"itens"' not in r3.text
+
+
+def test_tabelas_preco_extras_headers_limita_chamadas(monkeypatch):
+    """extras=1 → exatamente 2 chamadas; sem 3ª esperando lote vazio."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        listar_tabelas_preco_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    chamadas: list[str | None] = []
+    cursores: list[str | None] = []
+    fake = _fake_tabelas_preco_sandbox(cursores)
+
+    def counting_get(path, *, params=None, **kw):
+        chamadas.append((params or {}).get("alterado_apos"))
+        assert len(chamadas) <= 2, "não pode existir 3ª chamada"
+        return fake(path, params=params, **kw)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", counting_get
+    )
+    out = listar_tabelas_preco_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert len(chamadas) == 2
+    assert chamadas[0] is None
+    assert out["total"] == 4
+    assert out["requisicoes_extras"] == 1
+    assert out["requisicoes_previstas"] == 2
+    assert out["requisicoes_executadas"] == 2
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    nomes = [i.get("nome") for i in out["itens"]]
+    assert any(str(n).startswith("6e04f9d0") for n in nomes)
+
+
+def test_tabelas_preco_localizar_nao_faz_requisicao_http(client, monkeypatch):
+    """Localizar usa só o catálogo local; não altera cursor nem etapa."""
+    tpc = _prep_tabelas_preco(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar tabela não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", explode)
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", explode)
+
+    client.post("/mercos/homologacao-ui/acoes/tabelas-preco-reiniciar")
+    sessao = client.cookies.get("mercos_tabelas_preco_sessao")
+    tpc.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 3002,
+                "nome": "6e04f9d0bfef4d5f",
+                "tipo": "A",
+                "acrescimo": 5.0,
+                "excluido": False,
+                "ultima_alteracao": "2026-02-01 10:00:02",
+            }
+        ],
+    )
+    etapa_antes = tpc.obter_ciclo(sessao)["etapa_interna"]
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/tabelas-preco-localizar",
+        data={"nome": "6e04f9d0"},
+    )
+    assert resp.status_code == 200
+    assert "Tabela de preço localizada" in resp.text
+    assert "6e04f9d0bfef4d5f" in resp.text
+    assert "Tipo" in resp.text
+    assert "Acréscimo" in resp.text
+    assert "Desconto" in resp.text
+    assert "Excluído" in resp.text
+    assert "Última alteração" in resp.text
+    assert resp.cookies.get("mercos_tabelas_preco_cursor") is None
+    assert 'data-cursor-fixo="1"' in resp.text
+    assert tpc.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+    resp2 = client.post(
+        "/mercos/homologacao-ui/acoes/tabelas-preco-localizar",
+        data={"nome": "6e04f9d0bfef4d5f"},
+    )
+    assert "Tabela de preço localizada" in resp2.text
+
+
+def test_tabelas_preco_busca_simples_bloqueada_durante_ciclo(client, monkeypatch):
+    _prep_tabelas_preco(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called
+    )
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", called)
+    client.post("/mercos/homologacao-ui/acoes/tabelas-preco-reiniciar")
+
+    resp = client.post("/mercos/homologacao-ui/acoes/tabelas-preco")
+    assert resp.status_code == 200
+    assert "Busca manual bloqueada durante a homologação" in resp.text
+    called.assert_not_called()
+
+
+def test_tabelas_preco_429_retorna_retry_after_e_libera_lock(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import _SYNC_TABELAS_PRECO_LOCK
+
+    _prep_tabelas_preco(client, monkeypatch)
+
+    def sempre_429(path, *, params=None, **_kw):
+        raise MercosApiError("429", status_code=429, retry_after=12.0)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", sempre_429
+    )
+    client.post("/mercos/homologacao-ui/acoes/tabelas-preco-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/tabelas-preco-sincronizar")
+    assert resp.status_code == 429
+    assert resp.headers.get("Retry-After") == "12"
+    assert "Aguardando limite da Mercos" in resp.text
+    assert _SYNC_TABELAS_PRECO_LOCK.acquire(blocking=False) is True
+    _SYNC_TABELAS_PRECO_LOCK.release()
+
+
+def test_tabelas_preco_incremental_envia_cursor_exato(monkeypatch):
+    from services.mercos_homolog_service import sincronizar_tabelas_preco
+
+    capt: dict = {}
+
+    def fake_listar(alterado_apos=None, **_kw):
+        capt["alterado_apos"] = alterado_apos
+        return {"itens": [], "paginas_lidas": 1}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_tabelas_preco_paginado_seguro",
+        fake_listar,
+    )
+    out = sincronizar_tabelas_preco("2026-02-02 10:00:04")
+    assert capt["alterado_apos"] == "2026-02-02 10:00:04"
+    assert out["cursor_base"] == "2026-02-02 10:00:04"
+    assert out["alterado_apos_enviado"] == "2026-02-02 10:00:04"
+    assert out["tipo"] == "incremental"
+
+
+def test_tabelas_preco_sincronizar_bloqueia_concorrencia(client, monkeypatch):
+    from services.mercos_homolog_service import _SYNC_TABELAS_PRECO_LOCK
+
+    _prep_tabelas_preco(client, monkeypatch)
+    assert _SYNC_TABELAS_PRECO_LOCK.acquire(blocking=False) is True
+    try:
+        client.post("/mercos/homologacao-ui/acoes/tabelas-preco-reiniciar")
+        resp = client.post("/mercos/homologacao-ui/acoes/tabelas-preco-sincronizar")
+        assert resp.status_code == 409
+        assert "já em andamento" in resp.text
+    finally:
+        _SYNC_TABELAS_PRECO_LOCK.release()
+
+
+def test_tabelas_preco_post_e_demais_intactos_apos_ciclo(client, monkeypatch):
+    """Tabela POST, liberar tabelas cliente, Produto e Pedido permanecem intactos."""
+    _prep_tabelas_preco(client, monkeypatch)
+    client.post("/mercos/homologacao-ui/acoes/tabelas-preco-reiniciar")
+    for rota in (
+        "/mercos/homologacao-ui/acoes/produtos-reiniciar",
+        "/mercos/homologacao-ui/acoes/pedidos-reiniciar",
+    ):
+        resp = client.post(rota)
+        assert resp.status_code == 200, rota
+        assert "Ciclo de sincronização reiniciado" in resp.text
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.post_json",
+        lambda path, body: {"ok": True, "status_code": 201, "id": 501001, "dados": {}},
+    )
+    r_post = client.post(
+        "/mercos/homologacao-ui/acoes/tabelas-preco-criar",
+        data={"tipo": "P", "nome": "153271fca35044de", "ativo": "sim"},
+    )
+    assert r_post.status_code == 200
+    assert "Tabela de preço criada" in r_post.text
+
+    r_lib = client.post(
+        "/mercos/homologacao-ui/acoes/clientes-liberar-tabelas-preco",
+        data={
+            "cliente_id": "9290655",
+            "cnpj": "12441875000108",
+            "razao_social": "b675d90e7cc144c0",
+        },
+    )
+    assert r_lib.status_code != 404
+
+    html = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog").text
+    assert 'id="sec-tabelas-criar"' in html
+    assert 'id="sec-produtos"' in html
+    assert 'id="sec-pedidos-buscar"' in html
+
+
 def test_pedidos_intactos_apos_tabelas_preco_post(client, monkeypatch):
     """Pedido GET/POST/PUT continuam registrados e não usam tabelas_preco."""
     monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)

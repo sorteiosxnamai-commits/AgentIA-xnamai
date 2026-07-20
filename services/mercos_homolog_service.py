@@ -1492,6 +1492,101 @@ def listar_tabelas_preco(**kw) -> dict:
     return listar_paginado(_path("tabelas_preco"), **kw)
 
 
+def listar_tabelas_preco_paginado_seguro(
+    *,
+    alterado_apos: str | None = None,
+    pagina_inicial: int = 1,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    params_extra: dict | None = None,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Lista tabelas de preço com o contrato seguro de categorias/condições.
+
+    Diagnóstico sandbox 2026-07-20: GET /v1/tabelas_preco responde lotes de 2
+    itens com headers MEUSPEDIDOS_LIMITOU_REGISTROS / QTDE_TOTAL_REGISTROS /
+    REQUISICOES_EXTRAS (total 4 → extras 1 → 2 chamadas na completa).
+    ``alterado_apos`` é keyset estritamente maior sobre ``ultima_alteracao``
+    (cursor exato). Campos: id, nome, tipo, acrescimo, desconto, excluido,
+    ultima_alteracao.
+    """
+    return _listar_paginado_seguro(
+        path=_path("tabelas_preco"),
+        resume_ns="tabelas_preco",
+        alterado_apos=alterado_apos,
+        pagina_inicial=pagina_inicial,
+        max_paginas=max_paginas,
+        timeout_request=timeout_request,
+        timeout_total=timeout_total,
+        params_extra=params_extra,
+        sessao_id=sessao_id,
+    )
+
+
+_SYNC_TABELAS_PRECO_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
+
+
+def sincronizar_tabelas_preco(
+    cursor: str | None = None,
+    *,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Uma sincronização Tabela de Preço GET (ciclo de 3 etapas).
+
+    Busca completa percorre todos os lotes (1 + extras). Incremental envia
+    o cursor EXATO. Lock próprio liberado no finally.
+    """
+    if not _SYNC_TABELAS_PRECO_LOCK.acquire(blocking=False):
+        raise MercosApiError(
+            "Sincronização de tabelas de preço já em andamento. Aguarde a conclusão.",
+            status_code=409,
+        )
+    try:
+        cursor_base = (cursor or "").strip() or None
+        tipo = "incremental" if cursor_base else "completa"
+        alterado_apos = cursor_base
+        data = listar_tabelas_preco_paginado_seguro(
+            alterado_apos=alterado_apos,
+            pagina_inicial=1,
+            max_paginas=max_paginas,
+            timeout_request=timeout_request,
+            timeout_total=timeout_total,
+            sessao_id=sessao_id,
+        )
+        itens = deduplicar_por_id_alteracao(data.get("itens") or [])
+        total = len(itens)
+        maior = maior_ultima_alteracao(itens)
+        novo_cursor = maior if maior else cursor_base
+        status = data.get("status") or "concluida"
+        return {
+            "ok": True,
+            "tipo": tipo,
+            "cursor_base": cursor_base,
+            "alterado_apos_enviado": alterado_apos,
+            "cursor_anterior": cursor_base,
+            "novo_cursor": novo_cursor,
+            "total": total,
+            "itens": itens,
+            "path": data.get("path"),
+            "paginas_lidas": data.get("paginas_lidas"),
+            "filtros": data.get("filtros") or {},
+            "status": status,
+            "motivo_parada": data.get("motivo_parada") or MOTIVO_PARADA_FIM,
+            "espera_429_segundos": data.get("espera_429_segundos") or 0,
+            "pagina_atual": data.get("pagina_atual"),
+            "requisicoes_extras": data.get("requisicoes_extras"),
+            "requisicoes_previstas": data.get("requisicoes_previstas"),
+            "requisicoes_executadas": data.get("requisicoes_executadas"),
+            "qtde_total_registros": data.get("qtde_total_registros"),
+        }
+    finally:
+        _SYNC_TABELAS_PRECO_LOCK.release()
+
+
 def criar_tabela_preco(body: dict) -> dict:
     """POST /v1/tabelas_preco — um único envio à Mercos.
 
@@ -2540,6 +2635,8 @@ __all__ = [
     "criar_imagem_produto",
     "listar_segmentos",
     "listar_tabelas_preco",
+    "listar_tabelas_preco_paginado_seguro",
+    "sincronizar_tabelas_preco",
     "criar_tabela_preco",
     "liberar_todas_tabelas_preco_cliente",
     "vincular_cliente_categorias",
