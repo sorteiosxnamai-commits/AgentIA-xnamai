@@ -338,3 +338,76 @@ def test_promocao_post_passa_pelo_throttler_e_considera_chamada_anterior(monkeyp
     assert wall.t - ts_produtos >= 10.0
     # Não cria produto: nenhum POST para /v1/produtos.
     assert not any(m == "POST" and u.endswith("/v1/produtos") for m, u in urls)
+
+
+def test_estado_compartilhado_entre_produto_e_promocao_com_restart(monkeypatch):
+    """Integração real: POST /v1/produtos e depois POST /v1/promocoes com o MESMO
+    CompanyToken compartilham o estado persistente — a promoção lê o produto como
+    chamada global anterior, respeita o piso de 10s, usa o mesmo hash e o mesmo
+    arquivo, e continua funcionando mesmo com 'reinício' entre as duas chamadas.
+    Falha se a promoção ler um estado antigo."""
+    from services import mercos_homolog_service as svc
+
+    # Token com espaços/quebra de linha nas extremidades: deve ser normalizado.
+    _prep_request(monkeypatch, company="  empresa-compartilhada\n")
+    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "10")
+    wall = _Wall(t=1000.0)
+    mercos_throttle.configurar_para_testes(relogio=wall.agora, dormir=wall.dormir)
+
+    def _req(method, url, **_kw):
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.text = "{}"
+        eh_produto = "/v1/produtos" in url
+        resp.headers = {"MeusPedidosID": "20405073" if eh_produto else "110482"}
+        resp.json.return_value = {"id": 20405073} if eh_produto else {"id": 110482}
+        return resp
+
+    monkeypatch.setattr("services.mercos_api_client.requests.request", _req)
+
+    # Normalização: token com espaços gera a MESMA chave do token limpo.
+    ch = mercos_throttle.hash_company()
+    assert ch == mercos_throttle.hash_company("empresa-compartilhada")
+    estado_path = mercos_throttle._paths(ch)[0]
+    assert os.path.isabs(estado_path)
+
+    out_prod = svc.criar_produto(
+        {"nome": "fad3fccd6b3245cf", "codigo": "HOM-P", "ativo": True, "preco_tabela": 7.90}
+    )
+    assert out_prod["status_code"] == 201
+    ts_produto = out_prod["throttle"]["ts"]
+    assert out_prod["throttle"]["endpoint"] == "/v1/produtos"
+
+    # "Reinício" do processo: zera a memória do módulo, mantém disco/dir/env.
+    mercos_throttle._reset_para_testes()
+    wall2 = _Wall(t=ts_produto + 4.0)  # só 4s: precisa esperar p/ alcançar 10s
+    mercos_throttle.configurar_para_testes(relogio=wall2.agora, dormir=wall2.dormir)
+
+    out_promo = svc.criar_promocao(
+        {
+            "nome": "2f9bdb1b4a8a4d81",
+            "slug": "4ad6facaaf3e419d",
+            "data_inicial": "2026-07-21",
+            "data_final": "2026-08-20",
+            "regras": [{"produto_id": 20405073, "desconto": 21}],
+        }
+    )
+    assert out_promo["status_code"] == 201
+    info = out_promo["throttle"]
+
+    # A promoção leu o PRODUTO como chamada global anterior (não um estado antigo).
+    assert info["anterior_metodo"] == "POST"
+    assert info["anterior_endpoint"] == "/v1/produtos"
+    assert info["anterior_ts"] == ts_produto
+    # Piso de 10s respeitado, medido a partir do produto (mesmo após reinício).
+    assert info["intervalo_desde_anterior"] >= 10.0
+    # Mesma chave/hash e mesmo arquivo persistente absoluto.
+    assert info["company_hash"] == ch
+    assert info["estado_path"] == estado_path
+    assert mercos_throttle._paths(mercos_throttle.hash_company())[0] == estado_path
+
+    # Auditoria confirma a continuidade: a promoção aponta para o produto.
+    registros = mercos_throttle.auditoria(limite=10)
+    promo_aud = [r for r in registros if r["endpoint"] == "/v1/promocoes"][0]
+    assert promo_aud["anterior_endpoint"] == "/v1/produtos"
+    assert promo_aud["anterior_ts"] == ts_produto

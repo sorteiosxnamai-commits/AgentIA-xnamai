@@ -258,6 +258,8 @@ def listar_paginado(
 
 def post_json(path: str, body: dict) -> dict[str, Any]:
     resp = request_mercos("POST", path, json_body=body or {})
+    # Metadata do throttling DESTA execução (mesma chamada que gravou o estado).
+    throttle_info = mercos_throttle.ultima_execucao_info()
     dados: Any = {}
     if (resp.text or "").strip():
         try:
@@ -277,11 +279,13 @@ def post_json(path: str, body: dict) -> dict[str, Any]:
         "id": mercos_id,
         "sandbox": mercos_ambiente_sandbox(),
         "dados": dados,
+        "throttle": throttle_info,
     }
 
 
 def put_json(path: str, body: dict) -> dict[str, Any]:
     resp = request_mercos("PUT", path, json_body=body or {})
+    throttle_info = mercos_throttle.ultima_execucao_info()
     dados: Any = {}
     if (resp.text or "").strip():
         try:
@@ -295,4 +299,5 @@ def put_json(path: str, body: dict) -> dict[str, Any]:
         "status_code": resp.status_code,
         "sandbox": mercos_ambiente_sandbox(),
         "dados": dados,
+        "throttle": throttle_info,
     }

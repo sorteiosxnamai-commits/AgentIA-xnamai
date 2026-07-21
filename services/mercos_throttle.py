@@ -52,6 +52,13 @@ _origem_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
     "mercos_throttle_origem", default=""
 )
 
+# Metadata da ÚLTIMA execução do throttle nesta thread/contexto. Preenchido por
+# :func:`executar` na MESMA chamada que grava o arquivo de estado, para que o
+# cartão exiba exatamente o que foi registrado (sem reutilizar metadata antiga).
+_ultima_info_ctx: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "mercos_throttle_ultima_info", default=None
+)
+
 # Contador de chamadas bloqueadas pelo modo exclusivo (por hash de empresa).
 _BLOQUEIOS: dict[str, int] = {}
 
@@ -92,15 +99,32 @@ def _intervalo_padrao() -> float:
 
 
 def _dir_base() -> str:
+    """Diretório base ABSOLUTO do estado, independente do CWD do processo.
+
+    Um ``MERCOS_THROTTLE_DIR`` relativo é resolvido contra o diretório home
+    (não contra o CWD), garantindo que reinícios/lançamentos a partir de pastas
+    diferentes usem sempre o mesmo caminho persistente.
+    """
     raw = os.getenv("MERCOS_THROTTLE_DIR", "").strip()
     if raw:
-        return raw
-    return os.path.join(os.path.expanduser("~"), ".mercos_homolog", "throttle")
+        if not os.path.isabs(raw):
+            raw = os.path.join(os.path.expanduser("~"), raw)
+        return os.path.abspath(raw)
+    return os.path.abspath(
+        os.path.join(os.path.expanduser("~"), ".mercos_homolog", "throttle")
+    )
+
+
+def _normalizar_company_token(token: str | None = None) -> str:
+    """Normaliza o CompanyToken para gerar a chave: remove espaços e quebras de
+    linha das EXTREMIDADES, sem alterar o conteúdo interno. Nunca é exibido."""
+    tok = token if token is not None else os.getenv("MERCOS_COMPANY_TOKEN", "")
+    return (tok or "").strip()
 
 
 def hash_company(token: str | None = None) -> str:
-    """Hash SHA-256 NÃO reversível do CompanyToken (nunca o token real)."""
-    tok = (token if token is not None else os.getenv("MERCOS_COMPANY_TOKEN", "")).strip()
+    """Hash SHA-256 NÃO reversível do CompanyToken normalizado (nunca o token real)."""
+    tok = _normalizar_company_token(token)
     if not tok:
         return "sem-company-token"
     return hashlib.sha256(f"mercos-throttle-v1:{tok}".encode("utf-8")).hexdigest()
@@ -269,6 +293,9 @@ def executar(
         with _LockArquivo(lock_path):
             estado = _ler_estado(estado_path)
             ultima = estado.get("ultima_chamada_ts")
+            anterior_metodo = estado.get("metodo")
+            anterior_endpoint = estado.get("endpoint")
+            anterior_ts = float(ultima) if isinstance(ultima, (int, float)) else None
             proximo = estado.get("proximo_permitido_ts")
             agora = _agora()
             alvo = agora
@@ -287,33 +314,61 @@ def executar(
             intervalo_desde = (
                 agora - float(ultima) if isinstance(ultima, (int, float)) else None
             )
+            metodo_norm = (metodo or "").upper()
             novo = {
                 "company_hash": ch,
                 "ultima_chamada_ts": agora,
-                "metodo": (metodo or "").upper(),
+                "metodo": metodo_norm,
                 "endpoint": endpoint,
                 "pid": os.getpid(),
                 "instancia": _instancia(),
                 "proximo_permitido_ts": None,
             }
+            # Grava o novo início ANTES da chamada e NÃO restaura estado antigo
+            # depois: a resposta não sobrescreve o timestamp recém-registrado.
             _escrever_estado(estado_path, novo)
             _append_auditoria(
                 audit_path,
                 {
                     "ts": agora,
-                    "metodo": (metodo or "").upper(),
+                    "metodo": metodo_norm,
                     "endpoint": endpoint,
                     "intervalo_desde_anterior": intervalo_desde,
+                    "anterior_metodo": anterior_metodo,
+                    "anterior_endpoint": anterior_endpoint,
+                    "anterior_ts": anterior_ts,
                     "origem": origem_final,
                     "pid": os.getpid(),
                 },
             )
-            resultado = chamada()
-            return resultado, {
+            info = {
+                "company_hash": ch,
+                "hash_abrev": ch[:12],
+                "estado_path": estado_path,
+                "ts": agora,
+                "metodo": metodo_norm,
+                "endpoint": endpoint,
                 "espera": espera,
-                "intervalo_desde_anterior": intervalo_desde,
                 "intervalo_minimo": piso,
+                "intervalo_desde_anterior": intervalo_desde,
+                "anterior_metodo": anterior_metodo,
+                "anterior_endpoint": anterior_endpoint,
+                "anterior_ts": anterior_ts,
             }
+            # Publica a metadata DESTA execução (mesma que gravou o arquivo).
+            _ultima_info_ctx.set(info)
+            resultado = chamada()
+            return resultado, info
+
+
+def ultima_execucao_info() -> dict[str, Any] | None:
+    """Metadata da última execução do throttle nesta thread/contexto.
+
+    Preenchida por :func:`executar` na mesma chamada que gravou o estado — o
+    cartão deve usar isto (e não reler o arquivo depois) para refletir
+    exatamente a chamada registrada.
+    """
+    return _ultima_info_ctx.get()
 
 
 def aplicar_retry_after(
@@ -449,6 +504,7 @@ __all__ = [
     "limpar_origem",
     "hash_company",
     "executar",
+    "ultima_execucao_info",
     "aplicar_retry_after",
     "estado_atual",
     "auditoria",

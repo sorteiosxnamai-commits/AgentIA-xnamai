@@ -1658,20 +1658,51 @@ def _html_tabela_auditoria_mercos(limite: int = 15) -> str:
     )
 
 
-def _linhas_throttling_global(metodo_entidade: str) -> list[tuple[str, Any]]:
+def _fmt_ts_global(ts: Any) -> str:
+    """Horário legível (local) de um timestamp epoch; nunca expõe segredos."""
+    if not isinstance(ts, (int, float)):
+        return "—"
+    try:
+        from datetime import datetime
+
+        return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, OSError, OverflowError):
+        return "—"
+
+
+def _linhas_throttling_global(
+    metodo_entidade: str, info: dict[str, Any] | None = None
+) -> list[tuple[str, Any]]:
     """Resumo do throttling GLOBAL persistente para o cartão (sem segredos).
 
-    ``intervalo_desde_anterior`` vem da última entrada de auditoria (a chamada
-    recém-executada). ``Throttling global respeitado`` é Sim só se esse intervalo
-    for >= ao piso global (10s) — ou se for a primeira chamada registrada.
+    Quando ``info`` (metadata da MESMA execução que gravou o estado) é fornecida,
+    ela é usada diretamente — garantindo que o cartão reflita exatamente a
+    chamada registrada, sem reler o arquivo depois. ``Throttling global
+    respeitado`` é Sim só se o intervalo persistido for >= ao piso global (10s)
+    — ou se for a primeira chamada global registrada. Mostra método/endpoint e
+    horário da chamada global ANTERIOR e o hash abreviado da chave (não o token).
     """
-    estado = mercos_throttle.estado_atual()
-    minimo = estado.get("intervalo_minimo")
+    if info:
+        minimo = info.get("intervalo_minimo")
+        intervalo = info.get("intervalo_desde_anterior")
+        anterior_metodo = info.get("anterior_metodo")
+        anterior_endpoint = info.get("anterior_endpoint")
+        anterior_ts = info.get("anterior_ts")
+        hash_abrev = info.get("hash_abrev") or (info.get("company_hash") or "")[:12]
+    else:
+        estado = mercos_throttle.estado_atual()
+        minimo = estado.get("intervalo_minimo")
+        registros = mercos_throttle.auditoria(limite=1)
+        primeiro = registros[0] if registros else {}
+        intervalo = primeiro.get("intervalo_desde_anterior")
+        anterior_metodo = primeiro.get("anterior_metodo")
+        anterior_endpoint = primeiro.get("anterior_endpoint")
+        anterior_ts = primeiro.get("anterior_ts")
+        hash_abrev = (estado.get("company_hash") or "")[:12]
+
     minimo_label = (
         f"{float(minimo):.1f}s" if isinstance(minimo, (int, float)) else "—"
     )
-    registros = mercos_throttle.auditoria(limite=1)
-    intervalo = registros[0].get("intervalo_desde_anterior") if registros else None
     intervalo_label = (
         f"{float(intervalo):.1f}s" if isinstance(intervalo, (int, float)) else "—"
     )
@@ -1681,8 +1712,16 @@ def _linhas_throttling_global(metodo_entidade: str) -> list[tuple[str, Any]]:
         respeitado_label = "Sim" if float(intervalo) >= float(minimo) else "Não"
     else:
         respeitado_label = "—"
+    anterior_label = (
+        f"{anterior_metodo} {anterior_endpoint}"
+        if anterior_metodo and anterior_endpoint
+        else "— (primeira chamada global)"
+    )
     return [
         ("Método e entidade", metodo_entidade),
+        ("Chave de throttling (hash)", hash_abrev or "—"),
+        ("Método/endpoint global anterior", anterior_label),
+        ("Horário da chamada global anterior", _fmt_ts_global(anterior_ts)),
         ("Intervalo mínimo global aplicado", minimo_label),
         ("Intervalo desde a chamada global anterior", intervalo_label),
         ("Throttling global respeitado", respeitado_label),
@@ -2372,7 +2411,7 @@ def acao_produtos_criar(
                     or "—",
                 ),
             ]
-            + _linhas_throttling_global("POST Produto"),
+            + _linhas_throttling_global("POST Produto", out.get("throttle")),
             status_label=f"Status {out.get('status_code') or 201}",
             css="ok",
         )
@@ -7447,7 +7486,7 @@ def acao_promocoes_criar(
             ("Produto", produto_label),
             ("Desconto", desconto_label),
         ]
-        linhas += _linhas_throttling_global("POST Promoção")
+        linhas += _linhas_throttling_global("POST Promoção", out.get("throttle"))
         linhas.append(
             ("Origem", "Mercos Sandbox" if out.get("sandbox") else "Mercos")
         )
