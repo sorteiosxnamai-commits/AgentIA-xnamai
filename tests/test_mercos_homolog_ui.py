@@ -6757,6 +6757,35 @@ def test_promocoes_reiniciar_nao_chama_mercos(client, monkeypatch):
     assert catg.obter_ciclo(sessao)["etapa_interna"] == 0
 
 
+def test_modo_exclusivo_bloqueia_outras_entidades_com_409(client, monkeypatch):
+    """Com o ciclo de Promoções ativo, outras chamadas Mercos da UI recebem 409
+    amigável; localizar no catálogo local e reiniciar continuam permitidos."""
+    _prep_promocoes(client, monkeypatch)
+    outra_chamada = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_categorias", outra_chamada
+    )
+    # Ativa o ciclo de Promoções (sem chamar a Mercos).
+    reinit = client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    assert reinit.status_code == 200
+
+    # Outra entidade (categorias) é bloqueada com 409 e NÃO chama a Mercos.
+    bloqueada = client.post(
+        "/mercos/homologacao-ui/acoes/categorias",
+        data={"token": "segredo-ui-homolog"},
+    )
+    assert bloqueada.status_code == 409
+    assert "Homologação de Promoções em andamento" in bloqueada.text
+    outra_chamada.assert_not_called()
+
+    # Localizar no catálogo local continua permitido (não chama a Mercos).
+    local = client.post(
+        "/mercos/homologacao-ui/acoes/promocoes-localizar",
+        data={"token": "segredo-ui-homolog", "slug": "inexistente"},
+    )
+    assert local.status_code == 200
+
+
 def _fake_promocoes_sandbox(cursores_vistos):
     """Contrato real: completa sem alterado_apos; incremental com cursor exato."""
 
@@ -7123,12 +7152,12 @@ def test_promocoes_rate_limiter_intervalo_minimo_antes_de_cada_request(monkeypat
     assert len(instantes) == 2
     assert out["requisicoes_executadas"] == 2
     assert out["motivo_parada"] == MOTIVO_PARADA_FIM
-    # Intervalo real entre os INÍCIOS das requisições >= 6.5 (margem segura).
-    assert instantes[1] - instantes[0] >= 6.5
-    # Espera calculada ANTES do envio (6.5 - 0.3s de duração).
-    assert clk.esperas == [6.2]
-    assert out["intervalo_minimo_aplicado"] == 6.5
-    assert out["menor_intervalo_real"] >= 6.5
+    # Intervalo real entre os INÍCIOS das requisições >= 8.0 (margem segura).
+    assert instantes[1] - instantes[0] >= 8.0
+    # Espera calculada ANTES do envio (8.0 - 0.3s de duração).
+    assert clk.esperas == [7.7]
+    assert out["intervalo_minimo_aplicado"] == 8.0
+    assert out["menor_intervalo_real"] >= 8.0
     assert out["throttling_respeitado"] is True
     # A promoção alvo (slug/ID) foi capturada.
     ids = [i.get("id") for i in out["itens"]]
@@ -7198,8 +7227,8 @@ def test_promocoes_rate_limiter_429_retry_after_menor_que_5s_nao_reduz_piso(monk
     # A MESMA página (mesmo alterado_apos) é refeita após o 429.
     assert len(cursores) == 3
     assert cursores[1] == cursores[2] == "2026-07-15 10:00:00"
-    # Retry-After de 1s NUNCA antecipa o piso: 2ª→3ª chamada respeita >= 6.5s.
-    assert instantes[2] - instantes[1] >= 6.5
+    # Retry-After de 1s NUNCA antecipa o piso: 2ª→3ª chamada respeita >= 8.0s.
+    assert instantes[2] - instantes[1] >= 8.0
     # Apenas as 2 respostas válidas contam como requisições executadas.
     assert out["requisicoes_executadas"] == 2
     assert out["total"] == 2
@@ -7256,9 +7285,9 @@ def test_promocoes_rate_limiter_compartilhado_mesmo_company_token(monkeypatch):
     # Exatamente 1 + extras chamadas, todas dentro do limiter.
     assert len(marcas_pre_http) == 2
     assert all(lock_preso)
-    assert marcas_pre_http[1] - marcas_pre_http[0] >= 6.5
-    assert out["intervalo_minimo_aplicado"] == 6.5
-    assert out["menor_intervalo_real"] >= 6.5
+    assert marcas_pre_http[1] - marcas_pre_http[0] >= 8.0
+    assert out["intervalo_minimo_aplicado"] == 8.0
+    assert out["menor_intervalo_real"] >= 8.0
     assert out["throttling_respeitado"] is True
     # Mesma instância compartilhada por CompanyToken em todo o processo.
     assert svc._rate_limiter_pedidos() is limiter
@@ -7397,12 +7426,12 @@ def test_promocoes_localizar_slug_so_excluido_sem_ativo(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Promoções GET — margem segura de 6.5s no throttling global por CompanyToken
+# Promoções GET — margem segura de 8.0s no throttling global por CompanyToken
 # ---------------------------------------------------------------------------
 
 
-def test_promocoes_intervalo_minimo_6_5s_entre_paginas(monkeypatch):
-    """Etapa 1 (1 + extras): a 2ª página só sai >= 6.5s após a 1ª (não 5.0)."""
+def test_promocoes_intervalo_minimo_8s_entre_paginas(monkeypatch):
+    """Etapa 1 (1 + extras): a 2ª página só sai >= 8.0s após a 1ª (não 5.0)."""
     from services.mercos_homolog_service import (
         MOTIVO_PARADA_FIM,
         PROMOCOES_INTERVALO_MINIMO_SEGUNDOS,
@@ -7411,10 +7440,10 @@ def test_promocoes_intervalo_minimo_6_5s_entre_paginas(monkeypatch):
         listar_promocoes_paginado_seguro,
     )
 
-    assert PROMOCOES_INTERVALO_MINIMO_SEGUNDOS == 6.5
+    assert PROMOCOES_INTERVALO_MINIMO_SEGUNDOS == 8.0
     _reset_resume_clientes_para_testes()
     clk = _RelogioFake()
-    # Instância com piso padrão 5.0: o override de 6.5 deve prevalecer.
+    # Instância com piso padrão 5.0: o override de 8.0 deve prevalecer.
     limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
     instantes: list[float] = []
 
@@ -7455,16 +7484,16 @@ def test_promocoes_intervalo_minimo_6_5s_entre_paginas(monkeypatch):
     )
     assert len(instantes) == 2
     assert out["motivo_parada"] == MOTIVO_PARADA_FIM
-    assert instantes[1] - instantes[0] >= 6.5
-    assert clk.esperas == [6.2]  # 6.5 - 0.3 de duração
-    assert out["intervalo_minimo_aplicado"] == 6.5
-    assert out["menor_intervalo_real"] >= 6.5
+    assert instantes[1] - instantes[0] >= 8.0
+    assert clk.esperas == [7.7]  # 8.0 - 0.3 de duração
+    assert out["intervalo_minimo_aplicado"] == 8.0
+    assert out["menor_intervalo_real"] >= 8.0
     assert out["throttling_respeitado"] is True
 
 
-def test_promocoes_intervalo_6_5s_entre_etapa1_e_etapa2_mesmo_limiter(monkeypatch):
+def test_promocoes_intervalo_8s_entre_etapa1_e_etapa2_mesmo_limiter(monkeypatch):
     """O gap entre a última chamada da etapa 1 e a primeira da etapa 2 (mesmo
-    limiter global por CompanyToken) é medido e respeita >= 6.5s."""
+    limiter global por CompanyToken) é medido e respeita >= 8.0s."""
     from services import mercos_homolog_service as svc
 
     svc._reset_resume_clientes_para_testes()
@@ -7525,13 +7554,13 @@ def test_promocoes_intervalo_6_5s_entre_etapa1_e_etapa2_mesmo_limiter(monkeypatc
     monkeypatch.setattr(svc, "get_json_com_headers", fake_get)
 
     etapa1 = svc.sincronizar_promocoes()
-    assert etapa1["intervalo_minimo_aplicado"] == 6.5
+    assert etapa1["intervalo_minimo_aplicado"] == 8.0
     etapa2 = svc.sincronizar_promocoes("2026-07-16 11:00:00")
-    # A 1ª chamada da etapa 2 só ocorreu >= 6.5s após a última da etapa 1.
+    # A 1ª chamada da etapa 2 só ocorreu >= 8.0s após a última da etapa 1.
     inicio_etapa2 = next(t for t, c in chamadas if c == "2026-07-16 11:00:00")
     ultima_etapa1 = max(t for t, c in chamadas if c == "2026-07-15 10:00:00")
-    assert inicio_etapa2 - ultima_etapa1 >= 6.5
-    assert etapa2["intervalo_global_anterior"] >= 6.5
+    assert inicio_etapa2 - ultima_etapa1 >= 8.0
+    assert etapa2["intervalo_global_anterior"] >= 8.0
     assert etapa2["throttling_respeitado"] is True
     # Limiter compartilhado (mesma instância) entre as duas sincronizações.
     assert svc._rate_limiter_pedidos() is limiter
@@ -7595,8 +7624,8 @@ def test_promocoes_limiter_compartilhado_entre_rotas_mesmo_company_token(monkeyp
     assert out["intervalo_global_anterior"] >= 5.0
 
 
-def test_promocoes_429_retry_after_menor_que_6_5_nao_reduz_piso(monkeypatch):
-    """429 com Retry-After 2s (< piso 6.5): o piso de 6.5s prevalece e a MESMA
+def test_promocoes_429_retry_after_menor_que_8_nao_reduz_piso(monkeypatch):
+    """429 com Retry-After 2s (< piso 8.0): o piso de 8.0s prevalece e a MESMA
     página é refeita."""
     from services.mercos_api_client import MercosApiError
     from services.mercos_homolog_service import (
@@ -7657,14 +7686,14 @@ def test_promocoes_429_retry_after_menor_que_6_5_nao_reduz_piso(monkeypatch):
     # A MESMA página é refeita após o 429.
     assert len(cursores) == 3
     assert cursores[1] == cursores[2] == "2026-07-15 10:00:00"
-    # Retry-After de 2s NUNCA antecipa o piso de 6.5s.
-    assert instantes[2] - instantes[1] >= 6.5
+    # Retry-After de 2s NUNCA antecipa o piso de 8.0s.
+    assert instantes[2] - instantes[1] >= 8.0
     assert out["requisicoes_executadas"] == 2
     assert out["throttling_respeitado"] is True
 
 
-def test_promocoes_id_ativo_localizado_apos_margem_6_5(client, monkeypatch):
-    """Com a margem de 6.5s, a busca completa continua localizando o ID ativo."""
+def test_promocoes_id_ativo_localizado_apos_margem_8(client, monkeypatch):
+    """Com a margem de 8.0s, a busca completa continua localizando o ID ativo."""
     catg = _prep_promocoes(client, monkeypatch)
     cursores: list[str | None] = []
     monkeypatch.setattr(

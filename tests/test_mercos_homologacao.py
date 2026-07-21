@@ -776,6 +776,7 @@ def test_429_esgota_retries(monkeypatch):
     resp = MagicMock()
     resp.status_code = 429
     resp.text = "too many"
+    resp.headers = {}  # sem Retry-After → backoff 10/20 (não Retry-After do limiter)
     monkeypatch.setattr(
         "services.mercos_api_client.mercos_configurado",
         lambda: True,

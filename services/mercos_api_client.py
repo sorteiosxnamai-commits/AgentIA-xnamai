@@ -17,6 +17,7 @@ from services.mercos_service import (
     mercos_ambiente_sandbox,
     mercos_configurado,
 )
+from services import mercos_throttle
 import os
 
 # Teto de segurança para listagens
@@ -89,14 +90,24 @@ def request_mercos(
 
     for application_token in _application_tokens():
         for tentativa in range(max_attempts):
+            # Throttling GLOBAL e persistente por CompanyToken: antes de QUALQUER
+            # requisição (GET/POST/PUT, páginas extras e retentativas) aguarda o
+            # intervalo mínimo desde a última chamada persistida (sobrevive a
+            # reinícios e a chamadas de outros processos/rotas) e registra
+            # atomicamente o novo início, mantendo o lock de arquivo durante o
+            # envio para serializar processos locais.
             try:
-                resp = requests.request(
-                    method.upper(),
-                    url,
-                    headers=_headers(application_token),
-                    params=params,
-                    json=json_body,
-                    timeout=timeout,
+                resp, _throttle_info = mercos_throttle.executar(
+                    method,
+                    path,
+                    lambda: requests.request(
+                        method.upper(),
+                        url,
+                        headers=_headers(application_token),
+                        params=params,
+                        json=json_body,
+                        timeout=timeout,
+                    ),
                 )
             except requests.Timeout as exc:
                 raise MercosApiError(
@@ -120,10 +131,11 @@ def request_mercos(
                         retry_val = None
                 if tentativa < max_attempts - 1:
                     if retry_val is not None:
-                        espera = retry_val
+                        # Reagenda no limiter global: a próxima tentativa aguarda
+                        # o Retry-After sem nunca reduzir o piso de intervalo.
+                        mercos_throttle.aplicar_retry_after(retry_val)
                     else:
-                        espera = 10.0 * (tentativa + 1)
-                    time.sleep(max(0.0, espera))
+                        time.sleep(max(0.0, 10.0 * (tentativa + 1)))
                     continue
                 raise MercosApiError(
                     "Mercos retornou 429 (throttling). Aguarde e tente novamente.",

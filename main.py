@@ -15,6 +15,35 @@ app.include_router(mercos_homolog_router)
 app.include_router(mercos_homolog_ui_router)
 
 
+@app.middleware("http")
+async def _mercos_modo_exclusivo_e_origem(request, call_next):
+    """Modo exclusivo de homologação de Promoções + origem de auditoria.
+
+    Enquanto o ciclo de Promoções está ativo, bloqueia com 409 amigável as demais
+    ações Mercos da UI (exceto Promoções, buscas locais e reinícios). Também
+    registra a rota interna como origem para a auditoria do throttling global.
+    """
+    path = request.url.path
+    if request.method == "POST" and path.startswith("/mercos/homologacao-ui/acoes/"):
+        from routes.mercos_homolog_ui import (
+            _acao_permitida_no_modo_exclusivo,
+            modo_exclusivo_bloqueio,
+        )
+
+        if not _acao_permitida_no_modo_exclusivo(path):
+            bloqueio = modo_exclusivo_bloqueio(request)
+            if bloqueio is not None:
+                return bloqueio
+
+    from services import mercos_throttle
+
+    token = mercos_throttle.definir_origem(path)
+    try:
+        return await call_next(request)
+    finally:
+        mercos_throttle.limpar_origem(token)
+
+
 @app.on_event("startup")
 def validar_tabelas_no_startup():
     """Valida CLIENTES_TABLE / CONVERSAS_TABLE sem fallback silencioso."""

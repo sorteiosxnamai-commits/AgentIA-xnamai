@@ -33,6 +33,7 @@ from services import mercos_categorias_catalogo as catalogo_categorias
 from services import mercos_tabelas_preco_catalogo as catalogo_tabelas_preco
 from services.mercos_api_client import MercosApiError
 from services.mercos_service import mercos_ambiente_sandbox, mercos_configurado
+from services import mercos_throttle
 
 router = APIRouter(prefix="/mercos", tags=["mercos-homologacao-ui"])
 
@@ -1557,6 +1558,29 @@ def _linhas_ciclo_promocoes(
     throttling = sync.get("throttling_respeitado")
     throttling_label = "—" if throttling is None else ("Sim" if throttling else "Não")
 
+    # Throttling GLOBAL persistente por CompanyToken (sobrevive a reinícios e a
+    # chamadas de outros processos/rotas). Sem segredos: só hash e horários.
+    estado_global = mercos_throttle.estado_atual()
+    intervalo_desde_global = estado_global.get("intervalo_desde_ultima_global")
+    intervalo_desde_global_label = (
+        f"{float(intervalo_desde_global):.1f}s"
+        if isinstance(intervalo_desde_global, (int, float))
+        else "—"
+    )
+    menor_global = mercos_throttle.menor_intervalo_persistido()
+    menor_global_label = (
+        f"{float(menor_global):.1f}s"
+        if isinstance(menor_global, (int, float))
+        else "—"
+    )
+    throttling_global = mercos_throttle.throttling_global_respeitado()
+    throttling_global_label = (
+        "—"
+        if throttling_global is None
+        else ("Sim" if throttling_global else "Não")
+    )
+    externas_bloqueadas = mercos_throttle.chamadas_externas() + mercos_throttle.bloqueios()
+
     return [
         ("Etapa interna", f"{etapa}/2"),
         ("Tipo da última busca", tipo_label),
@@ -1571,6 +1595,13 @@ def _linhas_ciclo_promocoes(
         ("Menor intervalo real entre chamadas", _seg("menor_intervalo_real")),
         ("Intervalo desde a chamada global anterior", _seg("intervalo_global_anterior")),
         ("Throttling respeitado", throttling_label),
+        (
+            "Intervalo desde a última chamada global persistida",
+            intervalo_desde_global_label,
+        ),
+        ("Menor intervalo entre chamadas (global)", menor_global_label),
+        ("Chamadas externas/bloqueadas", externas_bloqueadas),
+        ("Throttling global respeitado", throttling_global_label),
         ("Total retornado em todas as páginas", sync.get("total_lote") or 0),
         ("Total no catálogo", len((estado or {}).get("promocoes") or {})),
         ("Motivo da parada", sync.get("motivo_parada") or "—"),
@@ -1578,6 +1609,94 @@ def _linhas_ciclo_promocoes(
         ("Chamadas completas no ciclo", ciclo.get("chamadas_completas") or 0),
         ("Chamadas incrementais no ciclo", ciclo.get("chamadas_incrementais") or 0),
     ]
+
+
+def _html_tabela_auditoria_mercos(limite: int = 15) -> str:
+    """Auditoria local das chamadas Mercos (sem segredos, sem JSON cru)."""
+    registros = mercos_throttle.auditoria(limite=limite)
+    if not registros:
+        return ""
+    rows = []
+    for item in registros:
+        ts = item.get("ts")
+        try:
+            horario = datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError, OSError):
+            horario = "—"
+        intervalo = item.get("intervalo_desde_anterior")
+        intervalo_label = (
+            f"{float(intervalo):.1f}s"
+            if isinstance(intervalo, (int, float))
+            else "—"
+        )
+        rows.append(
+            [
+                horario,
+                item.get("metodo") or "—",
+                item.get("endpoint") or "—",
+                intervalo_label,
+                item.get("origem") or "—",
+            ]
+        )
+    tabela = _table(
+        ["Horário", "Método", "Endpoint", "Intervalo desde anterior", "Origem/rota interna"],
+        rows,
+    )
+    return (
+        '<div class="result-card ok"><h4>Auditoria de chamadas Mercos (local)</h4>'
+        "<p>Sem token e sem JSON cru — apenas hash de empresa em disco.</p>"
+        f"{tabela}</div>"
+    )
+
+
+_ACOES_PREFIX = "/mercos/homologacao-ui/acoes/"
+
+
+def _acao_permitida_no_modo_exclusivo(path: str) -> bool:
+    """Rotas que NÃO chamam a Mercos por outra entidade durante o ciclo ativo.
+
+    Permitidas no modo exclusivo de Promoções: as próprias rotas de Promoções, as
+    localizações no catálogo local (``*-localizar*``) e os reinícios de ciclo
+    (``*-reiniciar``) — nenhum deles dispara chamada Mercos de outra entidade.
+    """
+    nome = path[len(_ACOES_PREFIX):] if path.startswith(_ACOES_PREFIX) else path
+    if nome.startswith("promocoes"):
+        return True
+    if "-localizar" in nome:
+        return True
+    if nome.endswith("-reiniciar"):
+        return True
+    return False
+
+
+def modo_exclusivo_bloqueio(request: Request) -> HTMLResponse | None:
+    """Modo exclusivo: enquanto o ciclo de Promoções está ativo, bloqueia com 409
+    amigável as demais chamadas Mercos pela UI. Não bloqueia buscas locais."""
+    sessao = (request.cookies.get(_COOKIE_PROMOCOES_SESSAO) or "").strip()
+    if not sessao or not catalogo_promocoes.ciclo_ativo(sessao):
+        return None
+    mercos_throttle.registrar_bloqueio()
+    card = _card(
+        "Homologação de Promoções em andamento",
+        [
+            (
+                "Mensagem",
+                "Modo exclusivo ativo: enquanto o ciclo de Promoções estiver em "
+                "andamento, as demais chamadas Mercos ficam bloqueadas.",
+            ),
+            (
+                "Permitido agora",
+                "Localizar promoções no catálogo local e reiniciar o ciclo.",
+            ),
+            (
+                "Como liberar",
+                "Conclua o ciclo de Promoções (etapa 2/2) ou reinicie-o.",
+            ),
+        ],
+        status_label="Bloqueado (409)",
+        css="erro",
+    )
+    return HTMLResponse(card, status_code=409)
 
 
 def _attrs_ciclo_promocoes(sessao_id: str) -> dict[str, str]:
@@ -6972,7 +7091,10 @@ def acao_promocoes_sincronizar(
         )
         table = _html_tabela_promocoes(data.get("itens") or [])
         resp = _wrap_result(
-            resumo + table + _html_patch_catalogo_promocoes(sessao),
+            resumo
+            + table
+            + _html_tabela_auditoria_mercos()
+            + _html_patch_catalogo_promocoes(sessao),
             extra_attrs={
                 "novo-cursor": data.get("novo_cursor") or "",
                 "cursor-anterior": data.get("cursor_anterior") or "",

@@ -544,9 +544,11 @@ _SYNC_CLIENTES_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
 # ~5s após a requisição anterior).
 PEDIDOS_INTERVALO_MINIMO_SEGUNDOS = 5.0
 # Margem de segurança para Promoções GET: 5.0 fica no limite exato da medição
-# da Mercos (a janela real observada pode ser lida como < 5s por diferença de
-# relógio/latência). Usamos 6.5s de piso para folga confiável.
-PROMOCOES_INTERVALO_MINIMO_SEGUNDOS = 6.5
+# da Mercos e 6.5 ainda foi reprovado ("Throttling não foi respeitado") quando
+# havia chamadas globais não contabilizadas (outros processos/rotas/reinícios).
+# O piso agora é 8.0s, alinhado ao throttling GLOBAL persistente (mercos_throttle)
+# aplicado em request_mercos antes de QUALQUER chamada Mercos.
+PROMOCOES_INTERVALO_MINIMO_SEGUNDOS = 8.0
 
 
 class _RateLimiterMercos:
