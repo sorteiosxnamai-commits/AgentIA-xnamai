@@ -6927,6 +6927,73 @@ def test_reiniciar_nao_chama_mercos_e_limpa_exclusivo(client, monkeypatch):
     assert catg.modo_exclusivo_ativo() is False
 
 
+class _WallUI:
+    def __init__(self, t: float = 1000.0):
+        self.t = float(t)
+
+    def agora(self) -> float:
+        return self.t
+
+    def dormir(self, segundos: float) -> None:
+        if segundos > 0:
+            self.t += float(segundos)
+
+
+def test_produto_post_cartao_mostra_throttling_global_maior_igual_10(client, monkeypatch):
+    """Produto POST passa pelo throttler (10s), retorna 201 e o cartão mostra o
+    intervalo global >= 10s e 'Throttling global respeitado: Sim' — sem segredos."""
+    from services import mercos_throttle
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr("services.mercos_api_client.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "services.mercos_api_client._application_tokens", lambda: ["app-token"]
+    )
+    monkeypatch.setenv("MERCOS_COMPANY_TOKEN", "empresa-ui-post")
+    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "10")
+    wall = _WallUI()
+    mercos_throttle.configurar_para_testes(relogio=wall.agora, dormir=wall.dormir)
+
+    def _req(method, url, **_kw):
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.text = "{}"
+        resp.headers = {"MeusPedidosID": "20405071"}
+        resp.json.return_value = {"id": 20405071}
+        return resp
+
+    monkeypatch.setattr("services.mercos_api_client.requests.request", _req)
+
+    form = {
+        "token": "segredo-ui-homolog",
+        "nome": "ebc2b8af8bcb41a0",
+        "codigo": "HOM-P-01",
+        "preco_tabela": "7.90",
+        "ativo": "true",
+    }
+    # 1º POST fixa o início global; 2º POST deve aguardar >= 10s.
+    primeiro = client.post("/mercos/homologacao-ui/acoes/produtos-criar", data=form)
+    assert primeiro.status_code == 200
+    segundo = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-criar",
+        data={**form, "codigo": "HOM-P-02"},
+    )
+    assert segundo.status_code == 200
+    html = segundo.text
+    assert "Produto cadastrado" in html
+    assert "Status 201" in html
+    assert "POST Produto" in html
+    assert "Intervalo mínimo global aplicado" in html
+    assert "10.0s" in html
+    assert "Throttling global respeitado" in html
+    # Sem token, sem JSON cru.
+    assert "empresa-ui-post" not in html
+    assert '"dados"' not in html
+
+
 def _fake_promocoes_sandbox(cursores_vistos):
     """Contrato real: completa sem alterado_apos; incremental com cursor exato."""
 

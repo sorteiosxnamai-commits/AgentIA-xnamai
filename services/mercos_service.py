@@ -4,6 +4,7 @@ import time
 import unicodedata
 
 import requests
+from services import mercos_throttle
 from services.env_loader import carregar_env
 
 carregar_env()
@@ -95,13 +96,21 @@ def _executar_requisicao_mercos(
 
     for application_token in _application_tokens():
         for tentativa in range(3):
-            resposta = requests.request(
+            # Passa OBRIGATORIAMENTE pelo throttling global persistente por
+            # CompanyToken (mesmo limiter do mercos_api_client): nenhuma chamada
+            # Mercos deste cliente direto pode sair fora do controle global.
+            resposta, _throttle_info = mercos_throttle.executar(
                 method,
-                url,
-                headers=_headers(application_token),
-                params=params,
-                json=json_body,
-                timeout=timeout,
+                path,
+                lambda: requests.request(
+                    method,
+                    url,
+                    headers=_headers(application_token),
+                    params=params,
+                    json=json_body,
+                    timeout=timeout,
+                ),
+                origem="mercos_service",
             )
 
             if resposta.status_code in (200, 201):
@@ -109,7 +118,7 @@ def _executar_requisicao_mercos(
 
             if resposta.status_code == 429:
                 if tentativa < 2:
-                    time.sleep(10 * (tentativa + 1))
+                    mercos_throttle.aplicar_retry_after(10 * (tentativa + 1))
                     continue
 
                 raise ValueError(

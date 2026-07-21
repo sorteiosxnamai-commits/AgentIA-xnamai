@@ -1,7 +1,7 @@
 """Testes do throttling GLOBAL e persistente da Mercos (mercos_throttle).
 
 Cobrem os requisitos de sobreviver a reinícios, serializar processos, contabilizar
-chamadas de outras entidades e aplicar o piso de 8s a GET/POST/PUT e às
+chamadas de outras entidades e aplicar o piso de 10s a GET/POST/PUT e às
 retentativas após 429 — sempre dentro do limiter (nenhuma chamada HTTP fora dele).
 """
 
@@ -54,7 +54,7 @@ def _prep_request(monkeypatch, company: str = "empresa-throttle") -> None:
 def test_primeira_chamada_apos_restart_espera_tempo_restante(monkeypatch):
     """O estado persistido em disco sobrevive ao 'reinício' do processo: a
     primeira chamada após reiniciar aguarda apenas o tempo que falta para o piso."""
-    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "8")
+    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "10")
     wall = _Wall(t=1000.0)
     mercos_throttle.configurar_para_testes(relogio=wall.agora, dormir=wall.dormir)
 
@@ -72,9 +72,9 @@ def test_primeira_chamada_apos_restart_espera_tempo_restante(monkeypatch):
     mercos_throttle.executar(
         "GET", "/v1/promocoes", lambda: executou_em.append(wall2.t)
     )
-    # Esperou só o restante (8 - 3 = 5s), medido do timestamp PERSISTIDO em disco.
-    assert wall2.sleeps == [5.0]
-    assert executou_em == [ts_anterior + 8.0]
+    # Esperou só o restante (10 - 3 = 7s), medido do timestamp PERSISTIDO em disco.
+    assert wall2.sleeps == [7.0]
+    assert executou_em == [ts_anterior + 10.0]
 
 
 def test_lock_de_arquivo_serializa_processos_concorrentes(tmp_path):
@@ -105,7 +105,7 @@ def test_chamada_de_outra_entidade_antes_de_promocoes_e_considerada(monkeypatch)
     o piso global é medido a partir da última chamada persistida, qualquer que
     seja a entidade."""
     _prep_request(monkeypatch)
-    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "8")
+    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "10")
     wall = _Wall(t=1000.0)
     mercos_throttle.configurar_para_testes(relogio=wall.agora, dormir=wall.dormir)
 
@@ -123,14 +123,14 @@ def test_chamada_de_outra_entidade_antes_de_promocoes_e_considerada(monkeypatch)
     assert marcas[0][2] == 1000.0
     assert "clientes" in marcas[0][1]
     assert "promocoes" in marcas[1][1]
-    # Promoções só saiu >= 8s após a chamada de clientes (outra entidade).
-    assert marcas[1][2] - marcas[0][2] >= 8.0
+    # Promoções só saiu >= 10s após a chamada de clientes (outra entidade).
+    assert marcas[1][2] - marcas[0][2] >= 10.0
 
 
 def test_post_e_put_passam_pelo_limiter_global(monkeypatch):
     """POST e PUT também respeitam o piso global entre chamadas."""
     _prep_request(monkeypatch)
-    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "8")
+    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "10")
     wall = _Wall(t=1000.0)
     mercos_throttle.configurar_para_testes(relogio=wall.agora, dormir=wall.dormir)
 
@@ -147,13 +147,13 @@ def test_post_e_put_passam_pelo_limiter_global(monkeypatch):
 
     assert marcas[0][0] == "POST"
     assert marcas[1][0] == "PUT"
-    assert marcas[1][1] - marcas[0][1] >= 8.0
+    assert marcas[1][1] - marcas[0][1] >= 10.0
 
 
-def test_retentativa_429_mantem_piso_de_8s(monkeypatch):
-    """429 com Retry-After 2s (< piso): a próxima tentativa só sai >= 8s depois."""
+def test_retentativa_429_mantem_piso_de_10s(monkeypatch):
+    """429 com Retry-After 2s (< piso): a próxima tentativa só sai >= 10s depois."""
     _prep_request(monkeypatch)
-    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "8")
+    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "10")
     wall = _Wall(t=1000.0)
     mercos_throttle.configurar_para_testes(relogio=wall.agora, dormir=wall.dormir)
 
@@ -173,8 +173,8 @@ def test_retentativa_429_mantem_piso_de_8s(monkeypatch):
     request_mercos("GET", "/v1/promocoes")
 
     assert len(marcas) == 2  # 1 tentativa 429 + 1 tentativa OK
-    # O Retry-After de 2s NUNCA reduz o piso de 8s entre os INÍCIOS.
-    assert marcas[1] - marcas[0] >= 8.0
+    # O Retry-After de 2s NUNCA reduz o piso de 10s entre os INÍCIOS.
+    assert marcas[1] - marcas[0] >= 10.0
 
 
 def test_nenhuma_chamada_http_ocorre_fora_do_limiter(monkeypatch):
@@ -215,3 +215,76 @@ def test_auditoria_persistida_sem_segredos(monkeypatch):
     # Nunca aparece o CompanyToken real; só o hash em disco.
     texto = str(registros) + mercos_throttle.estado_atual()["company_hash"]
     assert "empresa-auditoria-secreta" not in texto
+
+
+def test_produto_post_passa_pelo_throttler_e_registra_auditoria(monkeypatch):
+    """Produto POST (criar_produto → post_json → request_mercos) passa pelo
+    throttler global: gera auditoria POST /v1/produtos, considera a chamada
+    anterior de outra entidade (>= 10s) e retorna 201."""
+    from services import mercos_homolog_service as svc
+
+    _prep_request(monkeypatch)
+    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "10")
+    wall = _Wall(t=1000.0)
+    mercos_throttle.configurar_para_testes(relogio=wall.agora, dormir=wall.dormir)
+
+    def _req(method, url, **_kw):
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.text = "{}"
+        resp.headers = {"MeusPedidosID": "20405071"}
+        resp.json.return_value = {"id": 20405071}
+        return resp
+
+    monkeypatch.setattr("services.mercos_api_client.requests.request", _req)
+
+    # Chamada anterior de OUTRA entidade (clientes) fixa o início global.
+    svc.get_json("/v1/clientes")
+    ts_clientes = wall.t
+
+    out = svc.criar_produto(
+        {"nome": "ebc2b8af8bcb41a0", "codigo": "HOM-P-01", "ativo": True, "preco_tabela": 7.90}
+    )
+    assert out["status_code"] == 201
+    assert str(out["id"]) == "20405071"
+
+    registros = mercos_throttle.auditoria(limite=10)
+    post_produtos = [
+        r for r in registros if r["metodo"] == "POST" and r["endpoint"] == "/v1/produtos"
+    ]
+    assert post_produtos, "Produto POST não gerou entrada de auditoria (fora do limiter)"
+    # O POST só saiu >= 10s após a chamada anterior de clientes.
+    assert post_produtos[0]["intervalo_desde_anterior"] >= 10.0
+    assert wall.t - ts_clientes >= 10.0
+
+
+def test_cliente_direto_do_mercos_service_passa_pelo_limiter(monkeypatch):
+    """O cliente HTTP direto (mercos_service) também passa pelo throttler: a
+    chamada HTTP ocorre com o lock de arquivo preso e gera auditoria."""
+    from services import mercos_service
+
+    _prep_request(monkeypatch, company="empresa-serv-direto")
+    base = os.environ["MERCOS_THROTTLE_DIR"]
+    ch = mercos_throttle.hash_company()
+    lock_dir = os.path.join(base, f"{ch}.lock")
+    lock_preso: list[bool] = []
+
+    def _req(method, url, **_kw):
+        lock_preso.append(os.path.isdir(lock_dir))
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.text = "{}"
+        resp.headers = {"MeusPedidosID": "999"}
+        resp.json.return_value = {"id": 999}
+        return resp
+
+    monkeypatch.setattr("services.mercos_service.requests.request", _req)
+
+    novo_id = mercos_service.criar_cliente_mercos("Cliente Teste", telefone="1199999")
+    assert novo_id == 999
+    assert lock_preso == [True]
+
+    registros = mercos_throttle.auditoria(limite=10)
+    assert any(
+        r["metodo"] == "POST" and r["endpoint"] == "/v1/clientes" for r in registros
+    )

@@ -1658,6 +1658,37 @@ def _html_tabela_auditoria_mercos(limite: int = 15) -> str:
     )
 
 
+def _linhas_throttling_global(metodo_entidade: str) -> list[tuple[str, Any]]:
+    """Resumo do throttling GLOBAL persistente para o cartão (sem segredos).
+
+    ``intervalo_desde_anterior`` vem da última entrada de auditoria (a chamada
+    recém-executada). ``Throttling global respeitado`` é Sim só se esse intervalo
+    for >= ao piso global (10s) — ou se for a primeira chamada registrada.
+    """
+    estado = mercos_throttle.estado_atual()
+    minimo = estado.get("intervalo_minimo")
+    minimo_label = (
+        f"{float(minimo):.1f}s" if isinstance(minimo, (int, float)) else "—"
+    )
+    registros = mercos_throttle.auditoria(limite=1)
+    intervalo = registros[0].get("intervalo_desde_anterior") if registros else None
+    intervalo_label = (
+        f"{float(intervalo):.1f}s" if isinstance(intervalo, (int, float)) else "—"
+    )
+    if intervalo is None:
+        respeitado_label = "Sim"  # primeira chamada global: nada a violar
+    elif isinstance(minimo, (int, float)):
+        respeitado_label = "Sim" if float(intervalo) >= float(minimo) else "Não"
+    else:
+        respeitado_label = "—"
+    return [
+        ("Método e entidade", metodo_entidade),
+        ("Intervalo mínimo global aplicado", minimo_label),
+        ("Intervalo desde a chamada global anterior", intervalo_label),
+        ("Throttling global respeitado", respeitado_label),
+    ]
+
+
 _ACOES_PREFIX = "/mercos/homologacao-ui/acoes/"
 
 
@@ -2296,6 +2327,9 @@ def acao_produtos_criar(
     if (observacoes or "").strip():
         body["observacoes"] = (observacoes or "").strip()[:5000]
     try:
+        # Modo exclusivo ATIVO durante a execução do Produto POST: outras ações
+        # Mercos ficam bloqueadas até concluir (buscas locais seguem liberadas).
+        catalogo_promocoes.iniciar_modo_exclusivo("POST Produto")
         out = homolog.criar_produto(body)
         dados = out.get("dados") if isinstance(out.get("dados"), dict) else {}
         pid = out.get("id") or dados.get("id")
@@ -2337,13 +2371,16 @@ def acao_produtos_criar(
                     or dados.get("data_criacao")
                     or "—",
                 ),
-            ],
+            ]
+            + _linhas_throttling_global("POST Produto"),
             status_label=f"Status {out.get('status_code') or 201}",
             css="ok",
         )
         return _wrap_result(card, entity="produto", entity_id=str(pid or ""))
     except Exception as exc:
         return _wrap_result(_erro_html(exc))
+    finally:
+        catalogo_promocoes.finalizar_modo_exclusivo()
 
 
 @router.post("/homologacao-ui/acoes/produtos-alterar", response_class=HTMLResponse)

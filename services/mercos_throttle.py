@@ -35,7 +35,7 @@ import threading
 import time
 from typing import Any, Callable
 
-INTERVALO_MINIMO_GLOBAL_SEGUNDOS = 8.0
+INTERVALO_MINIMO_GLOBAL_SEGUNDOS = 10.0
 _MAX_AUDITORIA = 200
 # Espera fixa (real) entre tentativas de aquisição do lock de arquivo.
 _LOCK_SPIN_SEGUNDOS = 0.02
