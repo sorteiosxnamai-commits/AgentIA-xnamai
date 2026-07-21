@@ -7066,7 +7066,7 @@ def test_demais_fluxos_intactos_apos_promocoes(client, monkeypatch):
 
 def test_promocoes_rate_limiter_intervalo_minimo_antes_de_cada_request(monkeypatch):
     """Etapa 1 (1 + extras): a chamada extra passa pelo MESMO limiter e só sai
-    após o intervalo mínimo de 5s; a promoção alvo aparece no lote."""
+    após o intervalo mínimo de 6.5s; a promoção alvo aparece no lote."""
     from services.mercos_homolog_service import (
         MOTIVO_PARADA_EXTRAS,
         PEDIDOS_INTERVALO_MINIMO_SEGUNDOS,
@@ -7123,12 +7123,12 @@ def test_promocoes_rate_limiter_intervalo_minimo_antes_de_cada_request(monkeypat
     assert len(instantes) == 2
     assert out["requisicoes_executadas"] == 2
     assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
-    # Intervalo real entre os INÍCIOS das requisições >= 5.0.
-    assert instantes[1] - instantes[0] >= 5.0
-    # Espera calculada ANTES do envio (5.0 - 0.3s de duração).
-    assert clk.esperas == [4.7]
-    assert out["intervalo_minimo_aplicado"] == 5.0
-    assert out["menor_intervalo_real"] >= 5.0
+    # Intervalo real entre os INÍCIOS das requisições >= 6.5 (margem segura).
+    assert instantes[1] - instantes[0] >= 6.5
+    # Espera calculada ANTES do envio (6.5 - 0.3s de duração).
+    assert clk.esperas == [6.2]
+    assert out["intervalo_minimo_aplicado"] == 6.5
+    assert out["menor_intervalo_real"] >= 6.5
     assert out["throttling_respeitado"] is True
     # A promoção alvo (slug/ID) foi capturada.
     ids = [i.get("id") for i in out["itens"]]
@@ -7198,8 +7198,8 @@ def test_promocoes_rate_limiter_429_retry_after_menor_que_5s_nao_reduz_piso(monk
     # A MESMA página (mesmo alterado_apos) é refeita após o 429.
     assert len(cursores) == 3
     assert cursores[1] == cursores[2] == "2026-07-15 10:00:00"
-    # Retry-After de 1s NUNCA antecipa o piso: 2ª→3ª chamada respeita >= 5s.
-    assert instantes[2] - instantes[1] >= 5.0
+    # Retry-After de 1s NUNCA antecipa o piso: 2ª→3ª chamada respeita >= 6.5s.
+    assert instantes[2] - instantes[1] >= 6.5
     # Apenas as 2 respostas válidas contam como requisições executadas.
     assert out["requisicoes_executadas"] == 2
     assert out["total"] == 2
@@ -7256,9 +7256,9 @@ def test_promocoes_rate_limiter_compartilhado_mesmo_company_token(monkeypatch):
     # Exatamente 1 + extras chamadas, todas dentro do limiter.
     assert len(marcas_pre_http) == 2
     assert all(lock_preso)
-    assert marcas_pre_http[1] - marcas_pre_http[0] >= 5.0
-    assert out["intervalo_minimo_aplicado"] == 5.0
-    assert out["menor_intervalo_real"] >= 5.0
+    assert marcas_pre_http[1] - marcas_pre_http[0] >= 6.5
+    assert out["intervalo_minimo_aplicado"] == 6.5
+    assert out["menor_intervalo_real"] >= 6.5
     assert out["throttling_respeitado"] is True
     # Mesma instância compartilhada por CompanyToken em todo o processo.
     assert svc._rate_limiter_pedidos() is limiter
@@ -7394,6 +7394,298 @@ def test_promocoes_localizar_slug_so_excluido_sem_ativo(client, monkeypatch):
     assert resp.status_code == 200
     assert "Nenhuma promoção ativa encontrada para este slug." in resp.text
     assert 'data-cursor-intacto="1"' in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Promoções GET — margem segura de 6.5s no throttling global por CompanyToken
+# ---------------------------------------------------------------------------
+
+
+def test_promocoes_intervalo_minimo_6_5s_entre_paginas(monkeypatch):
+    """Etapa 1 (1 + extras): a 2ª página só sai >= 6.5s após a 1ª (não 5.0)."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        PROMOCOES_INTERVALO_MINIMO_SEGUNDOS,
+        _RateLimiterMercos,
+        _reset_resume_clientes_para_testes,
+        listar_promocoes_paginado_seguro,
+    )
+
+    assert PROMOCOES_INTERVALO_MINIMO_SEGUNDOS == 6.5
+    _reset_resume_clientes_para_testes()
+    clk = _RelogioFake()
+    # Instância com piso padrão 5.0: o override de 6.5 deve prevalecer.
+    limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
+    instantes: list[float] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/promocoes"
+        assert limiter._lock.locked()
+        instantes.append(clk.t)
+        clk.t += 0.3
+        if len(instantes) == 1:
+            return (
+                [
+                    {
+                        "id": 110474,
+                        "slug": "55c218df0edd4bef",
+                        "nome": "ativa",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                    }
+                ],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "1"},
+            )
+        return (
+            [
+                {
+                    "id": 110600,
+                    "slug": "lote2slug",
+                    "ultima_alteracao": "2026-07-16 11:00:00",
+                }
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_promocoes_paginado_seguro(
+        rate_limiter=limiter, max_paginas=20, timeout_total=60
+    )
+    assert len(instantes) == 2
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    assert instantes[1] - instantes[0] >= 6.5
+    assert clk.esperas == [6.2]  # 6.5 - 0.3 de duração
+    assert out["intervalo_minimo_aplicado"] == 6.5
+    assert out["menor_intervalo_real"] >= 6.5
+    assert out["throttling_respeitado"] is True
+
+
+def test_promocoes_intervalo_6_5s_entre_etapa1_e_etapa2_mesmo_limiter(monkeypatch):
+    """O gap entre a última chamada da etapa 1 e a primeira da etapa 2 (mesmo
+    limiter global por CompanyToken) é medido e respeita >= 6.5s."""
+    from services import mercos_homolog_service as svc
+
+    svc._reset_resume_clientes_para_testes()
+    svc._reset_rate_limiters_para_testes()
+    monkeypatch.setenv("MERCOS_COMPANY_TOKEN", "empresa-promo-65")
+    limiter = svc._rate_limiter_pedidos()
+    clk = _RelogioFake()
+    limiter._relogio = clk.agora
+    limiter._dormir = clk.dormir
+
+    chamadas: list[tuple[float, str | None]] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/promocoes"
+        cursor = (params or {}).get("alterado_apos")
+        chamadas.append((clk.t, cursor))
+        clk.t += 0.3
+        if cursor is None:
+            # Etapa 1, 1º lote: extras=1 → haverá um 2º lote.
+            return (
+                [
+                    {
+                        "id": 110474,
+                        "slug": "55c218df0edd4bef",
+                        "nome": "ativa",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                    }
+                ],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "1"},
+            )
+        if cursor == "2026-07-15 10:00:00":
+            # Etapa 1, 2º (último) lote da busca completa.
+            return (
+                [
+                    {
+                        "id": 110600,
+                        "slug": "lote2",
+                        "ultima_alteracao": "2026-07-16 11:00:00",
+                    }
+                ],
+                {},
+            )
+        if cursor == "2026-07-16 11:00:00":
+            # Etapa 2 incremental: um lote e para.
+            return (
+                [
+                    {
+                        "id": 110700,
+                        "slug": "lote3",
+                        "ultima_alteracao": "2026-07-19 08:00:00",
+                    }
+                ],
+                {"MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "1"},
+            )
+        return ([], {})
+
+    monkeypatch.setattr(svc, "get_json_com_headers", fake_get)
+
+    etapa1 = svc.sincronizar_promocoes()
+    assert etapa1["intervalo_minimo_aplicado"] == 6.5
+    etapa2 = svc.sincronizar_promocoes("2026-07-16 11:00:00")
+    # A 1ª chamada da etapa 2 só ocorreu >= 6.5s após a última da etapa 1.
+    inicio_etapa2 = next(t for t, c in chamadas if c == "2026-07-16 11:00:00")
+    ultima_etapa1 = max(t for t, c in chamadas if c == "2026-07-15 10:00:00")
+    assert inicio_etapa2 - ultima_etapa1 >= 6.5
+    assert etapa2["intervalo_global_anterior"] >= 6.5
+    assert etapa2["throttling_respeitado"] is True
+    # Limiter compartilhado (mesma instância) entre as duas sincronizações.
+    assert svc._rate_limiter_pedidos() is limiter
+    assert len(svc._RATE_LIMITERS_MERCOS) == 1
+
+
+def test_promocoes_limiter_compartilhado_entre_rotas_mesmo_company_token(monkeypatch):
+    """Promoções e Pedidos usam a MESMA instância de limiter por CompanyToken;
+    o gap entre chamadas de rotas diferentes também é respeitado."""
+    from services import mercos_homolog_service as svc
+
+    svc._reset_resume_clientes_para_testes()
+    svc._reset_rate_limiters_para_testes()
+    monkeypatch.setenv("MERCOS_COMPANY_TOKEN", "empresa-compartilhada")
+    limiter = svc._rate_limiter_pedidos()
+    clk = _RelogioFake()
+    limiter._relogio = clk.agora
+    limiter._dormir = clk.dormir
+
+    def fake_promo(path, *, params=None, **_kw):
+        clk.t += 0.3
+        return (
+            [
+                {
+                    "id": 110474,
+                    "slug": "55c218df0edd4bef",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-07-15 10:00:00",
+                }
+            ],
+            {"MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "1"},
+        )
+
+    monkeypatch.setattr(svc, "get_json_com_headers", fake_promo)
+    svc.listar_promocoes_paginado_seguro(max_paginas=20, timeout_total=60)
+    inicio_pedidos_ref = limiter.ultimo_inicio()
+    assert inicio_pedidos_ref is not None
+
+    def fake_pedidos(path, *, params=None, **_kw):
+        assert path == "/v1/pedidos"
+        clk.t += 0.3
+        return (
+            [
+                {
+                    "id": 1,
+                    "cliente_id": 10,
+                    "total": 5.0,
+                    "ultima_alteracao": "2026-07-17 10:00:00",
+                }
+            ],
+            {"MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "1"},
+        )
+
+    monkeypatch.setattr(svc, "get_json_com_headers", fake_pedidos)
+    out = svc.listar_pedidos_paginado_seguro(max_paginas=20, timeout_total=60)
+    # A chamada de pedidos reutilizou o MESMO limiter (mesma instância) e viu o
+    # último início registrado pela chamada de promoções.
+    assert svc._rate_limiter_pedidos() is limiter
+    assert len(svc._RATE_LIMITERS_MERCOS) == 1
+    assert out["intervalo_global_anterior"] is not None
+    assert out["intervalo_global_anterior"] >= 5.0
+
+
+def test_promocoes_429_retry_after_menor_que_6_5_nao_reduz_piso(monkeypatch):
+    """429 com Retry-After 2s (< piso 6.5): o piso de 6.5s prevalece e a MESMA
+    página é refeita."""
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import (
+        _RateLimiterMercos,
+        _reset_resume_clientes_para_testes,
+        listar_promocoes_paginado_seguro,
+    )
+
+    _reset_resume_clientes_para_testes()
+    clk = _RelogioFake()
+    limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
+    instantes: list[float] = []
+    cursores: list[str | None] = []
+
+    def nao_dormir_local(_s):
+        raise AssertionError("Deve usar o rate limiter, não time.sleep local")
+
+    monkeypatch.setattr("services.mercos_homolog_service.time.sleep", nao_dormir_local)
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/promocoes"
+        assert limiter._lock.locked()
+        instantes.append(clk.t)
+        clk.t += 0.2
+        cursor = (params or {}).get("alterado_apos")
+        cursores.append(cursor)
+        if len(cursores) == 2:
+            raise MercosApiError("429", status_code=429, retry_after=2.0)
+        if len(cursores) == 1:
+            return (
+                [
+                    {
+                        "id": 110474,
+                        "slug": "55c218df0edd4bef",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                    }
+                ],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "1"},
+            )
+        return (
+            [
+                {
+                    "id": 110600,
+                    "slug": "lote2",
+                    "ultima_alteracao": "2026-07-16 11:00:00",
+                }
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_promocoes_paginado_seguro(
+        rate_limiter=limiter, max_paginas=20, timeout_total=60
+    )
+    # A MESMA página é refeita após o 429.
+    assert len(cursores) == 3
+    assert cursores[1] == cursores[2] == "2026-07-15 10:00:00"
+    # Retry-After de 2s NUNCA antecipa o piso de 6.5s.
+    assert instantes[2] - instantes[1] >= 6.5
+    assert out["requisicoes_executadas"] == 2
+    assert out["throttling_respeitado"] is True
+
+
+def test_promocoes_id_ativo_localizado_apos_margem_6_5(client, monkeypatch):
+    """Com a margem de 6.5s, a busca completa continua localizando o ID ativo."""
+    catg = _prep_promocoes(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_promocoes_sandbox(cursores),
+    )
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar promoção não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/promocoes-localizar",
+        data={"slug": "228d165932574cab"},
+    )
+    assert resp.status_code == 200
+    assert "Promoção ativa localizada" in resp.text
+    assert "110471" in resp.text
+    assert "Intervalo mínimo aplicado" in resp.text
 
 
 # ---------------------------------------------------------------------------

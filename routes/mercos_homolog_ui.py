@@ -1569,6 +1569,7 @@ def _linhas_ciclo_promocoes(
         ("Requisições executadas", _num("requisicoes_executadas")),
         ("Intervalo mínimo aplicado", _seg("intervalo_minimo_aplicado")),
         ("Menor intervalo real entre chamadas", _seg("menor_intervalo_real")),
+        ("Intervalo desde a chamada global anterior", _seg("intervalo_global_anterior")),
         ("Throttling respeitado", throttling_label),
         ("Total retornado em todas as páginas", sync.get("total_lote") or 0),
         ("Total no catálogo", len((estado or {}).get("promocoes") or {})),
@@ -6930,6 +6931,7 @@ def acao_promocoes_sincronizar(
             "requisicoes_executadas": data.get("requisicoes_executadas"),
             "intervalo_minimo_aplicado": data.get("intervalo_minimo_aplicado"),
             "menor_intervalo_real": data.get("menor_intervalo_real"),
+            "intervalo_global_anterior": data.get("intervalo_global_anterior"),
             "throttling_respeitado": data.get("throttling_respeitado"),
         }
         if tipo_real == "completa":

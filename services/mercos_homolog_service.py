@@ -543,6 +543,10 @@ _SYNC_CLIENTES_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
 # recebeu Retry-After 3 e a +3,5s recebeu Retry-After 1 (próxima permitida
 # ~5s após a requisição anterior).
 PEDIDOS_INTERVALO_MINIMO_SEGUNDOS = 5.0
+# Margem de segurança para Promoções GET: 5.0 fica no limite exato da medição
+# da Mercos (a janela real observada pode ser lida como < 5s por diferença de
+# relógio/latência). Usamos 6.5s de piso para folga confiável.
+PROMOCOES_INTERVALO_MINIMO_SEGUNDOS = 6.5
 
 
 class _RateLimiterMercos:
@@ -576,26 +580,43 @@ class _RateLimiterMercos:
         else:
             time.sleep(segundos)
 
-    def executar(self, chamada, instantes: list | None = None):
+    def ultimo_inicio(self) -> float | None:
+        """Instante monotônico do último INÍCIO real de requisição (global)."""
+        return self._ultimo_inicio
+
+    def executar(
+        self,
+        chamada,
+        instantes: list | None = None,
+        *,
+        intervalo_minimo: float | None = None,
+    ):
         """Adquire o lock, espera o restante do intervalo e só então chama.
 
         Fluxo (lock mantido da espera até o fim da resposta):
-        1. lê o instante monotônico do último INÍCIO real de requisição;
-        2. restante = intervalo_minimo - (agora - ultimo_inicio); um 429
-           anterior (Retry-After) só pode ADIAR esse alvo, nunca antecipar;
+        1. lê o instante monotônico do último INÍCIO real de requisição
+           (GLOBAL por CompanyToken — vale entre etapas, ciclos e funções GET
+           diferentes que compartilham este limiter);
+        2. restante = intervalo - (agora - ultimo_inicio); um 429 anterior
+           (Retry-After) só pode ADIAR esse alvo, nunca antecipar;
         3. aguarda todo o restante, reconferindo o relógio após dormir
            (sleep pode acordar antes do previsto);
         4. registra agora como novo ultimo_inicio — depois da espera e
            imediatamente antes do envio HTTP;
         5. executa a chamada HTTP ainda com o lock.
+
+        ``intervalo_minimo`` sobrepõe o piso desta chamada (ex.: 6.5s para
+        Promoções GET) sem recriar o limiter: o ``ultimo_inicio`` continua
+        compartilhado com as demais chamadas Mercos da mesma empresa.
         Retorna (resultado, segundos_esperados).
         """
+        piso = self.intervalo_minimo if intervalo_minimo is None else float(intervalo_minimo)
         self._lock.acquire()
         try:
             agora = self._agora()
             alvo = agora
             if self._ultimo_inicio is not None:
-                alvo = max(alvo, self._ultimo_inicio + self.intervalo_minimo)
+                alvo = max(alvo, self._ultimo_inicio + piso)
             if self._proximo_permitido is not None:
                 alvo = max(alvo, self._proximo_permitido)
             espera_total = 0.0
@@ -724,6 +745,7 @@ def _obter_lote_pagina_clientes(
     pagina: int,
     rate_limiter: "_RateLimiterMercos | None" = None,
     instantes: list | None = None,
+    intervalo_minimo: float | None = None,
 ) -> tuple[list[dict], float, dict]:
     """GET de uma página com até 3 tentativas e backoff/Retry-After.
 
@@ -734,6 +756,7 @@ def _obter_lote_pagina_clientes(
     Com rate_limiter, o intervalo mínimo é aguardado ANTES de cada request
     (lock adquirido durante espera+chamada) e o Retry-After de um 429
     reagenda o próximo horário permitido no limiter compartilhado.
+    ``intervalo_minimo`` sobrepõe o piso da chamada (ex.: 6.5s de Promoções).
     """
     espera_total = 0.0
     ultimo_retry: float | None = None
@@ -748,6 +771,7 @@ def _obter_lote_pagina_clientes(
                         max_retries_429=0,  # throttling tratado aqui
                     ),
                     instantes,
+                    intervalo_minimo=intervalo_minimo,
                 )
                 espera_total += esperado
             else:
@@ -852,6 +876,7 @@ def _listar_paginado_seguro(
     params_extra: dict | None = None,
     sessao_id: str | None = None,
     rate_limiter: "_RateLimiterMercos | None" = None,
+    intervalo_minimo: float | None = None,
 ) -> dict[str, Any]:
     """Paginação segura Mercos com paradas anti-travamento e respeito a 429.
 
@@ -863,6 +888,12 @@ def _listar_paginado_seguro(
     executamos exatamente 1 + extras requisições — sem chamada final para
     confirmar lote vazio. As paradas por lote vazio/página repetida/cursor sem
     avanço são fallback para quando o header não existir.
+
+    ``intervalo_minimo`` sobrepõe o piso do throttling desta sincronização
+    (ex.: 6.5s de Promoções GET) e também vira o limiar de "throttling
+    respeitado". O ``ultimo_inicio`` do limiter é global por CompanyToken, então
+    o intervalo entre a última chamada de uma etapa/sync e a primeira da
+    seguinte também é medido (``intervalo_global_anterior``).
     """
     pagina = max(1, int(pagina_inicial or 1))
     limite = max(1, min(int(max_paginas or CLIENTES_MAX_PAGINAS_SYNC), CLIENTES_MAX_PAGINAS_SYNC))
@@ -888,6 +919,17 @@ def _listar_paginado_seguro(
     qtde_total_header: int | None = None
     instantes_chamadas: list[float] = []
     inicio = time.monotonic()
+    # Intervalo efetivo desta sync e último início GLOBAL antes da 1ª chamada
+    # (captura o gap entre a última requisição da sync/etapa anterior — do mesmo
+    # CompanyToken — e a primeira desta).
+    intervalo_efetivo = (
+        float(intervalo_minimo)
+        if intervalo_minimo is not None
+        else (rate_limiter.intervalo_minimo if rate_limiter is not None else None)
+    )
+    inicio_global_anterior = (
+        rate_limiter.ultimo_inicio() if rate_limiter is not None else None
+    )
 
     resume = _carregar_resume_clientes(chave_resume) if sessao_id else None
     if resume:
@@ -923,6 +965,7 @@ def _listar_paginado_seguro(
                 pagina=pagina,
                 rate_limiter=rate_limiter,
                 instantes=instantes_chamadas,
+                intervalo_minimo=intervalo_minimo,
             )
             espera_429_total += espera_pag
         except MercosApiError as exc:
@@ -1051,19 +1094,30 @@ def _listar_paginado_seguro(
         "qtde_total_registros": qtde_total_header,
     }
     if rate_limiter is not None:
+        piso = (
+            intervalo_efetivo
+            if intervalo_efetivo is not None
+            else rate_limiter.intervalo_minimo
+        )
         menor_intervalo: float | None = None
         for a, b in zip(instantes_chamadas, instantes_chamadas[1:]):
             delta = b - a
             if menor_intervalo is None or delta < menor_intervalo:
                 menor_intervalo = delta
-        out["intervalo_minimo_aplicado"] = rate_limiter.intervalo_minimo
+        # Intervalo entre a chamada global anterior (última requisição de outra
+        # etapa/sync do mesmo CompanyToken) e a primeira requisição desta.
+        intervalo_global: float | None = None
+        if inicio_global_anterior is not None and instantes_chamadas:
+            intervalo_global = instantes_chamadas[0] - inicio_global_anterior
+        out["intervalo_minimo_aplicado"] = piso
         out["menor_intervalo_real"] = menor_intervalo
-        # "Sim" somente se TODOS os intervalos reais (medidos entre os inícios
-        # das requisições HTTP) forem >= intervalo mínimo — sem tolerância
-        # para baixo.
+        out["intervalo_global_anterior"] = intervalo_global
+        # "Sim" somente se TODOS os intervalos reais forem >= piso: tanto os
+        # intervalos internos (entre requisições desta sync) quanto o intervalo
+        # desde a chamada global anterior — sem tolerância para baixo.
         out["throttling_respeitado"] = (
-            menor_intervalo is None
-            or menor_intervalo >= rate_limiter.intervalo_minimo
+            (menor_intervalo is None or menor_intervalo >= piso)
+            and (intervalo_global is None or intervalo_global >= piso)
         )
     if alterado_apos_inicial:
         out["filtros"] = {"alterado_apos": alterado_apos_inicial}
@@ -1533,6 +1587,7 @@ def listar_promocoes_paginado_seguro(
         params_extra=params_extra,
         sessao_id=sessao_id,
         rate_limiter=rate_limiter if rate_limiter is not None else _rate_limiter_pedidos(),
+        intervalo_minimo=PROMOCOES_INTERVALO_MINIMO_SEGUNDOS,
     )
 
 
@@ -1602,6 +1657,7 @@ def sincronizar_promocoes(
             "qtde_total_registros": data.get("qtde_total_registros"),
             "intervalo_minimo_aplicado": data.get("intervalo_minimo_aplicado"),
             "menor_intervalo_real": data.get("menor_intervalo_real"),
+            "intervalo_global_anterior": data.get("intervalo_global_anterior"),
             "throttling_respeitado": data.get("throttling_respeitado"),
         }
     finally:
