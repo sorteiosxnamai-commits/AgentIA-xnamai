@@ -7060,6 +7060,254 @@ def test_demais_fluxos_intactos_apos_promocoes(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Promoções GET — throttling (rate limiter global por CompanyToken)
+# ---------------------------------------------------------------------------
+
+
+def test_promocoes_rate_limiter_intervalo_minimo_antes_de_cada_request(monkeypatch):
+    """Etapa 1 (1 + extras): a chamada extra passa pelo MESMO limiter e só sai
+    após o intervalo mínimo de 5s; a promoção alvo aparece no lote."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        PEDIDOS_INTERVALO_MINIMO_SEGUNDOS,
+        _RateLimiterMercos,
+        _reset_resume_clientes_para_testes,
+        listar_promocoes_paginado_seguro,
+    )
+
+    assert PEDIDOS_INTERVALO_MINIMO_SEGUNDOS == 5.0
+    _reset_resume_clientes_para_testes()
+    clk = _RelogioFake()
+    limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
+    instantes: list[float] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/promocoes"
+        assert "pagina" not in (params or {})
+        # Lock do limiter deve estar preso durante toda a chamada HTTP.
+        assert limiter._lock.locked()
+        instantes.append(clk.t)
+        clk.t += 0.3  # duração variável da requisição
+        if len(instantes) == 1:
+            return (
+                [
+                    {
+                        "id": 110471,
+                        "slug": "228d165932574cab",
+                        "nome": "4968442715c948da",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                    }
+                ],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "1"},
+            )
+        return (
+            [
+                {
+                    "id": 110600,
+                    "slug": "lote2slug",
+                    "excluido": True,
+                    "ultima_alteracao": "2026-07-16 11:00:00",
+                }
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_promocoes_paginado_seguro(
+        rate_limiter=limiter, max_paginas=20, timeout_total=60
+    )
+    # Exatamente 1 + extras respostas válidas.
+    assert len(instantes) == 2
+    assert out["requisicoes_executadas"] == 2
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    # Intervalo real entre os INÍCIOS das requisições >= 5.0.
+    assert instantes[1] - instantes[0] >= 5.0
+    # Espera calculada ANTES do envio (5.0 - 0.3s de duração).
+    assert clk.esperas == [4.7]
+    assert out["intervalo_minimo_aplicado"] == 5.0
+    assert out["menor_intervalo_real"] >= 5.0
+    assert out["throttling_respeitado"] is True
+    # A promoção alvo (slug/ID) foi capturada.
+    ids = [i.get("id") for i in out["itens"]]
+    assert 110471 in ids
+
+
+def test_promocoes_rate_limiter_429_retry_after_menor_que_5s_nao_reduz_piso(monkeypatch):
+    """429 com Retry-After 1s (< piso): o piso de 5s prevalece e a MESMA página
+    é refeita; apenas as respostas válidas contam."""
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import (
+        _RateLimiterMercos,
+        _reset_resume_clientes_para_testes,
+        listar_promocoes_paginado_seguro,
+    )
+
+    _reset_resume_clientes_para_testes()
+    clk = _RelogioFake()
+    limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
+    instantes: list[float] = []
+    cursores: list[str | None] = []
+
+    def nao_dormir_local(_s):
+        raise AssertionError("Deve usar o rate limiter, não time.sleep local")
+
+    monkeypatch.setattr("services.mercos_homolog_service.time.sleep", nao_dormir_local)
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/promocoes"
+        assert limiter._lock.locked()
+        instantes.append(clk.t)
+        clk.t += 0.2
+        cursor = (params or {}).get("alterado_apos")
+        cursores.append(cursor)
+        if len(cursores) == 2:
+            # Retry-After MENOR que o piso de 5s.
+            raise MercosApiError("429", status_code=429, retry_after=1.0)
+        if len(cursores) == 1:
+            return (
+                [
+                    {
+                        "id": 110471,
+                        "slug": "228d165932574cab",
+                        "nome": "4968442715c948da",
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                    }
+                ],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "1"},
+            )
+        return (
+            [
+                {
+                    "id": 110600,
+                    "slug": "lote2slug",
+                    "ultima_alteracao": "2026-07-16 11:00:00",
+                }
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_promocoes_paginado_seguro(
+        rate_limiter=limiter, max_paginas=20, timeout_total=60
+    )
+    # A MESMA página (mesmo alterado_apos) é refeita após o 429.
+    assert len(cursores) == 3
+    assert cursores[1] == cursores[2] == "2026-07-15 10:00:00"
+    # Retry-After de 1s NUNCA antecipa o piso: 2ª→3ª chamada respeita >= 5s.
+    assert instantes[2] - instantes[1] >= 5.0
+    # Apenas as 2 respostas válidas contam como requisições executadas.
+    assert out["requisicoes_executadas"] == 2
+    assert out["total"] == 2
+    assert out["throttling_respeitado"] is True
+
+
+def test_promocoes_rate_limiter_compartilhado_mesmo_company_token(monkeypatch):
+    """Reutiliza o limiter GLOBAL keyed por CompanyToken (mesma instância dos
+    demais GET); nenhuma chamada ocorre fora do limiter."""
+    from services import mercos_homolog_service as svc
+
+    svc._reset_resume_clientes_para_testes()
+    svc._reset_rate_limiters_para_testes()
+    monkeypatch.setenv("MERCOS_COMPANY_TOKEN", "empresa-promocoes")
+    limiter = svc._rate_limiter_pedidos()
+    clk = _RelogioFake()
+    limiter._relogio = clk.agora
+    limiter._dormir = clk.dormir
+
+    marcas_pre_http: list[float] = []
+    lock_preso: list[bool] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/promocoes"
+        marcas_pre_http.append(clk.agora())
+        lock_preso.append(limiter._lock.locked())
+        clk.t += 1.3  # duração real observada em produção
+        if len(marcas_pre_http) == 1:
+            return (
+                [
+                    {
+                        "id": 110471,
+                        "slug": "228d165932574cab",
+                        "nome": "4968442715c948da",
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                    }
+                ],
+                {"MEUSPEDIDOS_REQUISICOES_EXTRAS": "1"},
+            )
+        return (
+            [
+                {
+                    "id": 110600,
+                    "slug": "lote2slug",
+                    "ultima_alteracao": "2026-07-16 11:00:00",
+                }
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(svc, "get_json_com_headers", fake_get)
+    out = svc.sincronizar_promocoes()
+
+    # Exatamente 1 + extras chamadas, todas dentro do limiter.
+    assert len(marcas_pre_http) == 2
+    assert all(lock_preso)
+    assert marcas_pre_http[1] - marcas_pre_http[0] >= 5.0
+    assert out["intervalo_minimo_aplicado"] == 5.0
+    assert out["menor_intervalo_real"] >= 5.0
+    assert out["throttling_respeitado"] is True
+    # Mesma instância compartilhada por CompanyToken em todo o processo.
+    assert svc._rate_limiter_pedidos() is limiter
+    assert len(svc._RATE_LIMITERS_MERCOS) == 1
+
+
+def test_promocoes_rate_limiter_libera_lock_em_erro():
+    """Exceção na chamada HTTP não deixa o lock do limiter preso."""
+    from services.mercos_homolog_service import _RateLimiterMercos
+
+    clk = _RelogioFake()
+    limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
+
+    def explode():
+        raise RuntimeError("falha simulada")
+
+    with pytest.raises(RuntimeError):
+        limiter.executar(explode)
+    assert limiter._lock.locked() is False
+
+
+def test_promocoes_localiza_slug_alvo_como_id_apos_throttling(client, monkeypatch):
+    """Após a busca completa com throttling, localizar por slug retorna o ID."""
+    catg = _prep_promocoes(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_promocoes_sandbox(cursores),
+    )
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    sessao = client.cookies.get("mercos_promocoes_sessao")
+    client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar promoção não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    etapa_antes = catg.obter_ciclo(sessao)["etapa_interna"]
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/promocoes-localizar",
+        data={"slug": "228d165932574cab"},
+    )
+    assert resp.status_code == 200
+    assert "Promoção localizada" in resp.text
+    assert "110471" in resp.text
+    assert catg.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+
+# ---------------------------------------------------------------------------
 # Condição de Pagamento GET — ciclo de homologação em 3 etapas
 # ---------------------------------------------------------------------------
 

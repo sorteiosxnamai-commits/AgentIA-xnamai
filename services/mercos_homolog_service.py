@@ -1505,6 +1505,7 @@ def listar_promocoes_paginado_seguro(
     timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
     params_extra: dict | None = None,
     sessao_id: str | None = None,
+    rate_limiter: "_RateLimiterMercos | None" = None,
 ) -> dict[str, Any]:
     """Lista promoções com o contrato seguro de pagamentos/categorias.
 
@@ -1514,6 +1515,12 @@ def listar_promocoes_paginado_seguro(
     nome, slug, data_inicial, data_final, excluido, ultima_alteracao e regras.
     Headers MEUSPEDIDOS_QTDE_TOTAL_REGISTROS / LIMITOU_REGISTROS /
     REQUISICOES_EXTRAS seguem o padrão Mercos quando há paginação por lotes.
+
+    Throttling: reutiliza o rate limiter GLOBAL compartilhado por empresa
+    (CompanyToken), o mesmo dos demais GET. O intervalo mínimo é garantido
+    ANTES de cada requisição HTTP — primeira página, páginas extras e
+    retentativas após 429 — com o lock do limiter mantido durante a espera e
+    a chamada.
     """
     return _listar_paginado_seguro(
         path=_path("promocoes"),
@@ -1525,6 +1532,7 @@ def listar_promocoes_paginado_seguro(
         timeout_total=timeout_total,
         params_extra=params_extra,
         sessao_id=sessao_id,
+        rate_limiter=rate_limiter if rate_limiter is not None else _rate_limiter_pedidos(),
     )
 
 
@@ -1592,6 +1600,9 @@ def sincronizar_promocoes(
             "requisicoes_previstas": data.get("requisicoes_previstas"),
             "requisicoes_executadas": data.get("requisicoes_executadas"),
             "qtde_total_registros": data.get("qtde_total_registros"),
+            "intervalo_minimo_aplicado": data.get("intervalo_minimo_aplicado"),
+            "menor_intervalo_real": data.get("menor_intervalo_real"),
+            "throttling_respeitado": data.get("throttling_respeitado"),
         }
     finally:
         _SYNC_PROMOCOES_LOCK.release()
