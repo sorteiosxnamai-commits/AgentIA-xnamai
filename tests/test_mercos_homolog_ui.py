@@ -6879,9 +6879,10 @@ def test_promocoes_ciclo_2_etapas_completa_e_incremental(client, monkeypatch):
 
 
 def test_promocoes_extras_headers_limita_chamadas(monkeypatch):
-    """extras=1 → exatamente 2 chamadas na busca completa."""
+    """Paginação dinâmica: para quando o lote atual não indica mais registros
+    (headers sem extras/limitou) — aqui após 2 chamadas."""
     from services.mercos_homolog_service import (
-        MOTIVO_PARADA_EXTRAS,
+        MOTIVO_PARADA_FIM,
         listar_promocoes_paginado_seguro,
         _reset_resume_clientes_para_testes,
     )
@@ -6938,9 +6939,8 @@ def test_promocoes_extras_headers_limita_chamadas(monkeypatch):
     assert chamadas[1] == "2026-07-15 10:00:00"
     assert out["total"] == 3
     assert out["requisicoes_extras"] == 1
-    assert out["requisicoes_previstas"] == 2
     assert out["requisicoes_executadas"] == 2
-    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    assert out["motivo_parada"] == MOTIVO_PARADA_FIM
     ids = [i.get("id") for i in out["itens"]]
     assert 110471 in ids
 
@@ -7068,7 +7068,7 @@ def test_promocoes_rate_limiter_intervalo_minimo_antes_de_cada_request(monkeypat
     """Etapa 1 (1 + extras): a chamada extra passa pelo MESMO limiter e só sai
     após o intervalo mínimo de 6.5s; a promoção alvo aparece no lote."""
     from services.mercos_homolog_service import (
-        MOTIVO_PARADA_EXTRAS,
+        MOTIVO_PARADA_FIM,
         PEDIDOS_INTERVALO_MINIMO_SEGUNDOS,
         _RateLimiterMercos,
         _reset_resume_clientes_para_testes,
@@ -7119,10 +7119,10 @@ def test_promocoes_rate_limiter_intervalo_minimo_antes_de_cada_request(monkeypat
     out = listar_promocoes_paginado_seguro(
         rate_limiter=limiter, max_paginas=20, timeout_total=60
     )
-    # Exatamente 1 + extras respostas válidas.
+    # Duas respostas válidas: o 2º lote sem headers de continuação encerra.
     assert len(instantes) == 2
     assert out["requisicoes_executadas"] == 2
-    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    assert out["motivo_parada"] == MOTIVO_PARADA_FIM
     # Intervalo real entre os INÍCIOS das requisições >= 6.5 (margem segura).
     assert instantes[1] - instantes[0] >= 6.5
     # Espera calculada ANTES do envio (6.5 - 0.3s de duração).
@@ -7404,7 +7404,7 @@ def test_promocoes_localizar_slug_so_excluido_sem_ativo(client, monkeypatch):
 def test_promocoes_intervalo_minimo_6_5s_entre_paginas(monkeypatch):
     """Etapa 1 (1 + extras): a 2ª página só sai >= 6.5s após a 1ª (não 5.0)."""
     from services.mercos_homolog_service import (
-        MOTIVO_PARADA_EXTRAS,
+        MOTIVO_PARADA_FIM,
         PROMOCOES_INTERVALO_MINIMO_SEGUNDOS,
         _RateLimiterMercos,
         _reset_resume_clientes_para_testes,
@@ -7454,7 +7454,7 @@ def test_promocoes_intervalo_minimo_6_5s_entre_paginas(monkeypatch):
         rate_limiter=limiter, max_paginas=20, timeout_total=60
     )
     assert len(instantes) == 2
-    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    assert out["motivo_parada"] == MOTIVO_PARADA_FIM
     assert instantes[1] - instantes[0] >= 6.5
     assert clk.esperas == [6.2]  # 6.5 - 0.3 de duração
     assert out["intervalo_minimo_aplicado"] == 6.5
@@ -7686,6 +7686,247 @@ def test_promocoes_id_ativo_localizado_apos_margem_6_5(client, monkeypatch):
     assert "Promoção ativa localizada" in resp.text
     assert "110471" in resp.text
     assert "Intervalo mínimo aplicado" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Promoções GET — paginação dinâmica (continua enquanto houver lotes)
+# ---------------------------------------------------------------------------
+
+
+def _fake_promocoes_tres_lotes(chamadas, *, com_429=False):
+    """3 lotes: cada um dos dois primeiros informa extras=1/limitou=1; o 3º
+    (sem headers de continuação) traz o slug d55f7ed60b424563 e encerra."""
+    estado = {"quatro_zero_dois_ja_429": False}
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/promocoes"
+        assert "pagina" not in (params or {})
+        cursor = (params or {}).get("alterado_apos")
+        chamadas.append(cursor)
+        if cursor is None:
+            # Lote 1: ainda há mais (extras=1, limitou=1).
+            return (
+                [
+                    {
+                        "id": 110471,
+                        "slug": "228d165932574cab",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-20 16:41:42",
+                    },
+                    {
+                        "id": 110472,
+                        "slug": "4301603538cd4803",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-21 09:57:35",
+                    },
+                ],
+                {
+                    "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+                    "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "6",
+                    "MEUSPEDIDOS_REQUISICOES_EXTRAS": "1",
+                },
+            )
+        if cursor == "2026-07-21 09:57:35":
+            if com_429 and not estado["quatro_zero_dois_ja_429"]:
+                estado["quatro_zero_dois_ja_429"] = True
+                from services.mercos_api_client import MercosApiError
+
+                raise MercosApiError("429", status_code=429, retry_after=2.0)
+            # Lote 2: continua indicando mais lotes (extras=1, limitou=1).
+            return (
+                [
+                    {
+                        "id": 110473,
+                        "slug": "55c218df0edd4bef",
+                        "excluido": True,
+                        "ultima_alteracao": "2026-07-21 10:02:04",
+                    },
+                    {
+                        "id": 110474,
+                        "slug": "55c218df0edd4bef",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-21 10:05:00",
+                    },
+                ],
+                {
+                    "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+                    "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "4",
+                    "MEUSPEDIDOS_REQUISICOES_EXTRAS": "1",
+                },
+            )
+        if cursor == "2026-07-21 10:05:00":
+            # Lote 3 (último): sem headers de continuação → encerra aqui.
+            return (
+                [
+                    {
+                        "id": 110480,
+                        "slug": "d55f7ed60b424563",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-21 10:30:00",
+                    }
+                ],
+                {"MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "1"},
+            )
+        return ([], {})
+
+    return fake_get
+
+
+def test_promocoes_paginacao_dinamica_tres_lotes_traz_slug(monkeypatch):
+    """Reproduz o bug: 3 lotes; extras=1 nos dois primeiros; o slug alvo vem no
+    3º. A paginação dinâmica consulta os três e não fixa em 2 chamadas."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_FIM,
+        _reset_resume_clientes_para_testes,
+        listar_promocoes_paginado_seguro,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    chamadas: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_promocoes_tres_lotes(chamadas),
+    )
+    out = listar_promocoes_paginado_seguro(max_paginas=20, timeout_total=60)
+    # Os TRÊS lotes foram consultados e o cursor avançou corretamente.
+    assert chamadas == [None, "2026-07-21 09:57:35", "2026-07-21 10:05:00"]
+    assert out["requisicoes_executadas"] == 3
+    assert out["motivo_parada"] == MOTIVO_PARADA_FIM
+    assert out["total"] == 5
+    slugs = [i.get("slug") for i in out["itens"]]
+    assert "d55f7ed60b424563" in slugs
+    ids = [i.get("id") for i in out["itens"]]
+    assert 110480 in ids
+
+
+def test_promocoes_paginacao_dinamica_protege_cursor_parado(monkeypatch):
+    """Servidor indica mais lotes (extras=1) mas o cursor não avança: erro
+    amigável, sem loop infinito."""
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import (
+        _reset_resume_clientes_para_testes,
+        listar_promocoes_paginado_seguro,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    chamadas: list[str | None] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        chamadas.append((params or {}).get("alterado_apos"))
+        assert len(chamadas) <= 5, "cursor parado deveria interromper sem loop"
+        # Sempre a MESMA ultima_alteracao e sempre indicando mais lotes.
+        return (
+            [
+                {
+                    "id": 110471,
+                    "slug": "228d165932574cab",
+                    "excluido": False,
+                    "ultima_alteracao": "2026-07-20 16:41:42",
+                }
+            ],
+            {
+                "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+                "MEUSPEDIDOS_REQUISICOES_EXTRAS": "1",
+            },
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    with pytest.raises(MercosApiError) as exc:
+        listar_promocoes_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert "cursor" in str(exc.value).lower()
+
+
+def test_promocoes_paginacao_dinamica_429_repete_mesmo_lote(monkeypatch):
+    """429 no 2º lote: repete o MESMO lote (mesmo cursor), não avança e não
+    conta como lote válido; ao final os 3 lotes são obtidos."""
+    from services.mercos_homolog_service import (
+        _RateLimiterMercos,
+        _reset_resume_clientes_para_testes,
+        listar_promocoes_paginado_seguro,
+    )
+
+    _reset_resume_clientes_para_testes()
+    clk = _RelogioFake()
+    limiter = _RateLimiterMercos(5.0, relogio=clk.agora, dormir=clk.dormir)
+
+    def nao_dormir_local(_s):
+        raise AssertionError("Deve usar o rate limiter, não time.sleep local")
+
+    monkeypatch.setattr("services.mercos_homolog_service.time.sleep", nao_dormir_local)
+    chamadas: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_promocoes_tres_lotes(chamadas, com_429=True),
+    )
+    out = listar_promocoes_paginado_seguro(
+        rate_limiter=limiter, max_paginas=20, timeout_total=60
+    )
+    # O cursor do 2º lote aparece duas vezes (429 + repetição do MESMO lote).
+    assert chamadas.count("2026-07-21 09:57:35") == 2
+    # A ordem preserva: lote1, lote2(429), lote2(ok), lote3.
+    assert chamadas == [
+        None,
+        "2026-07-21 09:57:35",
+        "2026-07-21 09:57:35",
+        "2026-07-21 10:05:00",
+    ]
+    # Só os lotes válidos contam (3), o 429 não conta.
+    assert out["requisicoes_executadas"] == 3
+    assert out["total"] == 5
+    assert out["throttling_respeitado"] is True
+    slugs = [i.get("slug") for i in out["itens"]]
+    assert "d55f7ed60b424563" in slugs
+
+
+def test_promocoes_paginacao_dinamica_localiza_ativo_no_catalogo_final(client, monkeypatch):
+    """Fluxo UI completo: após a busca completa (3 lotes), localizar o slug alvo
+    retorna a promoção ATIVA no catálogo final."""
+    catg = _prep_promocoes(client, monkeypatch)
+    chamadas: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_promocoes_tres_lotes(chamadas),
+    )
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    sessao = client.cookies.get("mercos_promocoes_sessao")
+    r1 = client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")
+    assert r1.status_code == 200
+    # Os três lotes foram consultados e o catálogo substituído com os 5 itens.
+    assert len(chamadas) == 3
+    assert catg.total(sessao) == 5
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar promoção não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    # Slug d55f... (recém-criado) agora está no catálogo final.
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/promocoes-localizar",
+        data={"slug": "d55f7ed60b424563"},
+    )
+    assert resp.status_code == 200
+    assert "Promoção ativa localizada" in resp.text
+    assert "110480" in resp.text
+
+    # Slug com dois registros (55c218...): prioriza o ATIVO (110474), não o
+    # excluído (110473).
+    resp2 = client.post(
+        "/mercos/homologacao-ui/acoes/promocoes-localizar",
+        data={"slug": "55c218df0edd4bef"},
+    )
+    assert resp2.status_code == 200
+    assert "Promoção ativa localizada" in resp2.text
+    card_ativo = resp2.text.split("Promoção ativa localizada")[1].split("</ul>")[0]
+    assert "110474" in card_ativo
+    assert "110473" not in card_ativo
 
 
 # ---------------------------------------------------------------------------

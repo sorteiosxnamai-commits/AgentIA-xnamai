@@ -877,6 +877,7 @@ def _listar_paginado_seguro(
     sessao_id: str | None = None,
     rate_limiter: "_RateLimiterMercos | None" = None,
     intervalo_minimo: float | None = None,
+    paginacao_dinamica: bool = False,
 ) -> dict[str, Any]:
     """Paginação segura Mercos com paradas anti-travamento e respeito a 429.
 
@@ -894,6 +895,15 @@ def _listar_paginado_seguro(
     respeitado". O ``ultimo_inicio`` do limiter é global por CompanyToken, então
     o intervalo entre a última chamada de uma etapa/sync e a primeira da
     seguinte também é medido (``intervalo_global_anterior``).
+
+    ``paginacao_dinamica`` (usado por Promoções GET): em vez de fixar o número
+    de chamadas em ``1 + REQUISICOES_EXTRAS`` do PRIMEIRO lote, reavalia os
+    headers de CADA resposta válida e continua enquanto o lote atual indicar
+    que ainda há registros (``REQUISICOES_EXTRAS > 0`` ou ``LIMITOU_REGISTROS
+    == 1``). Para somente quando a resposta atual indicar que não há mais
+    lotes. O cursor precisa avançar entre lotes; se não avançar (anomalia),
+    interrompe com erro amigável sem descartar o que já foi recebido. O limite
+    ``max_paginas`` é a trava de segurança contra loop infinito.
     """
     pagina = max(1, int(pagina_inicial or 1))
     limite = max(1, min(int(max_paginas or CLIENTES_MAX_PAGINAS_SYNC), CLIENTES_MAX_PAGINAS_SYNC))
@@ -1001,7 +1011,9 @@ def _listar_paginado_seguro(
             extras_lido = True
             requisicoes_extras = _header_int(headers_resp, HEADER_REQUISICOES_EXTRAS)
             qtde_total_header = _header_int(headers_resp, HEADER_QTDE_TOTAL_REGISTROS)
-            if requisicoes_extras is not None:
+            # No modo dinâmico NÃO fixamos a previsão pelo 1º lote: a decisão de
+            # continuar é reavaliada a cada resposta (mais abaixo).
+            if requisicoes_extras is not None and not paginacao_dinamica:
                 requisicoes_previstas = paginas_lidas + max(0, requisicoes_extras)
 
         # Acumula clientes do lote (dedupe por id)
@@ -1013,6 +1025,42 @@ def _listar_paginado_seguro(
             ids_vistos.add(chave)
             itens_brutos.append(item)
             novos += 1
+
+        if paginacao_dinamica:
+            # Reavalia os headers da resposta ATUAL. Continua enquanto o lote
+            # atual indicar mais registros; para só quando não houver mais.
+            extras_atual = _header_int(headers_resp, HEADER_REQUISICOES_EXTRAS)
+            limitou_atual = _header_int(headers_resp, HEADER_LIMITOU_REGISTROS)
+            qtde_total_header = _header_int(headers_resp, HEADER_QTDE_TOTAL_REGISTROS)
+            mais_lotes = (extras_atual is not None and extras_atual > 0) or (
+                limitou_atual == 1
+            )
+            if not mais_lotes:
+                motivo = MOTIVO_PARADA_FIM
+                break
+            if not lote:
+                motivo = MOTIVO_PARADA_LOTE_VAZIO
+                break
+            if paginas_lidas >= limite:
+                # Trava de segurança: não descarta o que já foi recebido.
+                motivo = MOTIVO_PARADA_LIMITE
+                break
+            novo_cursor = maior_ultima_alteracao(lote)
+            if not novo_cursor or (cursor_atual and novo_cursor <= cursor_atual):
+                # Servidor indica mais lotes mas o cursor não avança: anomalia.
+                # Interrompe com erro amigável (o lock é liberado no chamador).
+                raise MercosApiError(
+                    "Não foi possível avançar a paginação de promoções: o cursor "
+                    "não progrediu entre os lotes. Tente sincronizar novamente em "
+                    "instantes.",
+                    status_code=409,
+                    pagina=pagina,
+                )
+            cursor_atual = novo_cursor
+            pagina += 1
+            if rate_limiter is None:
+                time.sleep(CLIENTES_INTERVALO_ENTRE_PAGINAS)
+            continue
 
         if requisicoes_previstas is not None:
             # Modo dirigido pelo header: exatamente 1 + extras requisições,
@@ -1588,6 +1636,7 @@ def listar_promocoes_paginado_seguro(
         sessao_id=sessao_id,
         rate_limiter=rate_limiter if rate_limiter is not None else _rate_limiter_pedidos(),
         intervalo_minimo=PROMOCOES_INTERVALO_MINIMO_SEGUNDOS,
+        paginacao_dinamica=True,
     )
 
 
