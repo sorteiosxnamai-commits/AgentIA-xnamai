@@ -6691,6 +6691,375 @@ def test_pagamentos_etapa_2_incremental_preserva_transacoes(client, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# Promoções GET — ciclo de homologação em 2 etapas
+# ---------------------------------------------------------------------------
+
+
+def _prep_promocoes(client, monkeypatch):
+    from services import mercos_promocoes_catalogo as catg
+    from services.mercos_homolog_service import _reset_resume_clientes_para_testes
+
+    catg._reset_todos_para_testes()
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    return catg
+
+
+def test_ui_secao_promocoes_buscar_presente(client):
+    resp = client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    html = resp.text
+    secao = html.split('id="sec-promocoes-buscar"')[1].split("</section>")[0]
+    assert 'id="btn-promocoes-reiniciar"' in secao
+    assert 'id="btn-promocoes-sincronizar"' in secao
+    assert 'id="input-promocoes-slug"' in secao
+    assert 'id="btn-promocoes-localizar"' in secao
+    assert "Reiniciar ciclo de sincronização" in secao
+    assert "Localizar promoção pelo slug" in secao
+    assert "Promoções — Buscar" in secao
+    assert "mercos_promocoes_cursor" in html
+    assert "mercos_promocoes_catalogo" in html
+    assert 'id="sec-pagamentos-buscar"' in html
+    assert 'id="sec-produtos"' in html
+
+
+def test_promocoes_botoes_rotas_registradas_sem_404(client, monkeypatch):
+    _prep_promocoes(client, monkeypatch)
+    for rota in (
+        "/mercos/homologacao-ui/acoes/promocoes-reiniciar",
+        "/mercos/homologacao-ui/acoes/promocoes-sincronizar",
+        "/mercos/homologacao-ui/acoes/promocoes-localizar",
+    ):
+        resp = client.post(rota)
+        assert resp.status_code != 404, rota
+
+
+def test_promocoes_reiniciar_nao_chama_mercos(client, monkeypatch):
+    catg = _prep_promocoes(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", called
+    )
+    resp = client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    assert resp.status_code == 200
+    assert "Ciclo de sincronização reiniciado" in resp.text
+    assert "0/2" in resp.text
+    assert 'data-ciclo-ativo="1"' in resp.text
+    called.assert_not_called()
+    sessao = client.cookies.get("mercos_promocoes_sessao")
+    assert catg.total(sessao) == 0
+    assert catg.obter_ciclo(sessao)["etapa_interna"] == 0
+
+
+def _fake_promocoes_sandbox(cursores_vistos):
+    """Contrato real: completa sem alterado_apos; incremental com cursor exato."""
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/promocoes"
+        params = params or {}
+        assert "pagina" not in params
+        cursor = params.get("alterado_apos")
+        cursores_vistos.append(cursor)
+        headers_base = {
+            "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+            "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "3",
+            "MEUSPEDIDOS_REQUISICOES_EXTRAS": "1",
+        }
+        if cursor is None:
+            return (
+                [
+                    {
+                        "id": 110471,
+                        "representada_id": 1,
+                        "nome": "4968442715c948da",
+                        "slug": "228d165932574cab",
+                        "data_inicial": "2026-01-01",
+                        "data_final": "2026-12-31",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                        "regras": [{"tipo": "desconto"}],
+                    },
+                    {
+                        "id": 110500,
+                        "nome": "promo-excluida",
+                        "slug": "abc123excluida",
+                        "data_inicial": "2026-02-01",
+                        "data_final": "2026-06-30",
+                        "excluido": True,
+                        "ultima_alteracao": "2026-07-14 09:00:00",
+                    },
+                ],
+                headers_base,
+            )
+        if cursor == "2026-07-15 10:00:00":
+            return (
+                [
+                    {
+                        "id": 110600,
+                        "nome": "promo-lote2",
+                        "slug": "lote2slug",
+                        "data_inicial": "2026-03-01",
+                        "data_final": "2026-09-30",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-16 11:00:00",
+                    }
+                ],
+                {},
+            )
+        if cursor == "2026-07-16 11:00:00":
+            return (
+                [
+                    {
+                        "id": 110700,
+                        "nome": "promo-incremental",
+                        "slug": "incslug99",
+                        "data_inicial": "2026-04-01",
+                        "data_final": "2026-10-31",
+                        "excluido": False,
+                        "ultima_alteracao": "2026-07-19 08:00:00",
+                    }
+                ],
+                {
+                    "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "1",
+                },
+            )
+        return ([], {})
+
+    return fake_get
+
+
+def test_promocoes_ciclo_2_etapas_completa_e_incremental(client, monkeypatch):
+    """Etapa 1 completa percorre lotes com extras; etapa 2 incremental com cursor exato."""
+    catg = _prep_promocoes(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_promocoes_sandbox(cursores),
+    )
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    sessao = client.cookies.get("mercos_promocoes_sessao")
+
+    r1 = client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")
+    assert r1.status_code == 200
+    assert cursores[0] is None
+    assert cursores[1] == "2026-07-15 10:00:00"
+    assert len(cursores) == 2
+    assert "1/2" in r1.text
+    assert 'data-tipo-busca="completa"' in r1.text
+    assert "228d165932574cab" in r1.text
+    assert "110471" in r1.text
+    assert catg.total(sessao) == 3
+    assert catg.obter(sessao)["promocoes"]["110500"]["excluido"] is True
+    assert catg.obter_ciclo(sessao)["chamadas_completas"] == 1
+
+    r2 = client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")
+    assert r2.status_code == 200
+    assert cursores[2] == "2026-07-16 11:00:00"
+    assert "2/2" in r2.text
+    assert 'data-tipo-busca="incremental"' in r2.text
+    assert 'data-cursor-base="2026-07-16 11:00:00"' in r2.text
+    assert 'data-alterado-apos-enviado="2026-07-16 11:00:00"' in r2.text
+    assert "2026-07-16 11:00:59" not in r2.text
+    assert catg.total(sessao) == 4
+    estado = catg.obter(sessao)
+    assert "110471" in estado["promocoes"]
+    assert "110700" in estado["promocoes"]
+    ciclo = catg.obter_ciclo(sessao)
+    assert ciclo["chamadas_completas"] == 1
+    assert ciclo["chamadas_incrementais"] == 1
+    assert ciclo["etapa_interna"] == 2
+    assert "Requisições previstas" in r2.text
+    assert "Requisições executadas" in r2.text
+
+
+def test_promocoes_extras_headers_limita_chamadas(monkeypatch):
+    """extras=1 → exatamente 2 chamadas na busca completa."""
+    from services.mercos_homolog_service import (
+        MOTIVO_PARADA_EXTRAS,
+        listar_promocoes_paginado_seguro,
+        _reset_resume_clientes_para_testes,
+    )
+
+    _reset_resume_clientes_para_testes()
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.time.sleep", lambda *_a, **_k: None
+    )
+    chamadas: list[str | None] = []
+
+    def fake_get(path, *, params=None, **_kw):
+        assert path == "/v1/promocoes"
+        chamadas.append((params or {}).get("alterado_apos"))
+        assert len(chamadas) <= 2, "não pode existir 3ª chamada"
+        if len(chamadas) == 1:
+            return (
+                [
+                    {
+                        "id": 110471,
+                        "slug": "228d165932574cab",
+                        "nome": "4968442715c948da",
+                        "ultima_alteracao": "2026-07-15 10:00:00",
+                    },
+                    {
+                        "id": 110500,
+                        "slug": "abc123excluida",
+                        "excluido": True,
+                        "ultima_alteracao": "2026-07-14 09:00:00",
+                    },
+                ],
+                {
+                    "MEUSPEDIDOS_LIMITOU_REGISTROS": "1",
+                    "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "3",
+                    "MEUSPEDIDOS_REQUISICOES_EXTRAS": "1",
+                },
+            )
+        return (
+            [
+                {
+                    "id": 110600,
+                    "slug": "lote2slug",
+                    "ultima_alteracao": "2026-07-16 11:00:00",
+                }
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", fake_get
+    )
+    out = listar_promocoes_paginado_seguro(max_paginas=20, timeout_total=60)
+    assert len(chamadas) == 2
+    assert chamadas[0] is None
+    assert chamadas[1] == "2026-07-15 10:00:00"
+    assert out["total"] == 3
+    assert out["requisicoes_extras"] == 1
+    assert out["requisicoes_previstas"] == 2
+    assert out["requisicoes_executadas"] == 2
+    assert out["motivo_parada"] == MOTIVO_PARADA_EXTRAS
+    ids = [i.get("id") for i in out["itens"]]
+    assert 110471 in ids
+
+
+def test_promocoes_localizar_slug_sem_http(client, monkeypatch):
+    """Localiza pelo slug só no catálogo local; não chama Mercos nem altera cursor."""
+    catg = _prep_promocoes(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar promoção não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", explode)
+    monkeypatch.setattr("services.mercos_api_client.request_mercos", explode)
+
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    sessao = client.cookies.get("mercos_promocoes_sessao")
+    catg.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 110471,
+                "nome": "4968442715c948da",
+                "slug": "228d165932574cab",
+                "data_inicial": "2026-01-01",
+                "data_final": "2026-12-31",
+                "excluido": False,
+                "ultima_alteracao": "2026-07-15 10:00:00",
+            }
+        ],
+    )
+    etapa_antes = catg.obter_ciclo(sessao)["etapa_interna"]
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/promocoes-localizar",
+        data={"slug": "228d165932574cab"},
+    )
+    assert resp.status_code == 200
+    assert "Promoção localizada" in resp.text
+    assert "110471" in resp.text
+    assert "228d165932574cab" in resp.text
+    assert "4968442715c948da" in resp.text
+    assert 'data-cursor-intacto="1"' in resp.text
+    assert resp.cookies.get("mercos_promocoes_cursor") is None
+    assert catg.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+
+def test_promocoes_incremental_envia_cursor_exato(monkeypatch):
+    from services.mercos_homolog_service import sincronizar_promocoes
+
+    capt: dict = {}
+
+    def fake_listar(alterado_apos=None, **_kw):
+        capt["alterado_apos"] = alterado_apos
+        return {"itens": [], "paginas_lidas": 1}
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.listar_promocoes_paginado_seguro",
+        fake_listar,
+    )
+    out = sincronizar_promocoes("2026-07-16 11:00:00")
+    assert capt["alterado_apos"] == "2026-07-16 11:00:00"
+    assert out["cursor_base"] == "2026-07-16 11:00:00"
+    assert out["alterado_apos_enviado"] == "2026-07-16 11:00:00"
+    assert out["tipo"] == "incremental"
+
+
+def test_promocoes_429_retorna_retry_after_e_libera_lock(client, monkeypatch):
+    from services.mercos_api_client import MercosApiError
+    from services.mercos_homolog_service import _SYNC_PROMOCOES_LOCK
+
+    _prep_promocoes(client, monkeypatch)
+
+    def sempre_429(path, *, params=None, **_kw):
+        raise MercosApiError("429", status_code=429, retry_after=12.0)
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers", sempre_429
+    )
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    resp = client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")
+    assert resp.status_code == 429
+    assert resp.headers.get("Retry-After") == "12"
+    assert "Aguardando limite da Mercos" in resp.text
+    assert _SYNC_PROMOCOES_LOCK.acquire(blocking=False) is True
+    _SYNC_PROMOCOES_LOCK.release()
+
+
+def test_promocoes_sincronizar_bloqueia_concorrencia(client, monkeypatch):
+    from services.mercos_homolog_service import _SYNC_PROMOCOES_LOCK
+
+    _prep_promocoes(client, monkeypatch)
+    assert _SYNC_PROMOCOES_LOCK.acquire(blocking=False) is True
+    try:
+        client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+        resp = client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")
+        assert resp.status_code == 409
+        assert "já em andamento" in resp.text
+    finally:
+        _SYNC_PROMOCOES_LOCK.release()
+
+
+def test_demais_fluxos_intactos_apos_promocoes(client, monkeypatch):
+    """Produtos, condições e tabelas permanecem intactos após promoções."""
+    _prep_promocoes(client, monkeypatch)
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+
+    for rota in (
+        "/mercos/homologacao-ui/acoes/produtos-reiniciar",
+        "/mercos/homologacao-ui/acoes/condicoes-reiniciar",
+        "/mercos/homologacao-ui/acoes/tabelas-preco-reiniciar",
+        "/mercos/homologacao-ui/acoes/pagamentos-reiniciar",
+    ):
+        resp = client.post(rota)
+        assert resp.status_code == 200, rota
+        assert "Ciclo de sincronização reiniciado" in resp.text
+
+
+# ---------------------------------------------------------------------------
 # Condição de Pagamento GET — ciclo de homologação em 3 etapas
 # ---------------------------------------------------------------------------
 

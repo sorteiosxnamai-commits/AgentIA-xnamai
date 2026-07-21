@@ -32,6 +32,9 @@ PATHS = {
     # Doc oficial Mercos: GET /v1/pagamentos (Mercos Pay) — distinta de
     # condições, formas, faturamento e títulos
     "pagamentos": "/v1/pagamentos",
+    # Doc oficial Mercos: GET /v1/promocoes — distinta de produto, tabela preço,
+    # cupom e condição de pagamento
+    "promocoes": "/v1/promocoes",
     "produtos": "/v1/produtos",
     "segmentos": "/v1/segmentos",
     "tabelas_preco": "/v1/tabelas_preco",
@@ -90,6 +93,7 @@ def inventario_homologacao() -> dict[str, Any]:
             {"entidade": "Formas de Pagamento", "metodo": "POST", "path": _path("formas_pagamento"), "status": "pronto"},
             {"entidade": "Formas de Pagamento", "metodo": "PUT", "path": _path("formas_pagamento") + "/{id}", "status": "pronto"},
             {"entidade": "Pagamentos", "metodo": "GET", "path": _path("pagamentos"), "status": "pronto"},
+            {"entidade": "Promoções", "metodo": "GET", "path": _path("promocoes"), "status": "pronto"},
             {"entidade": "Produtos", "metodo": "GET", "path": _path("produtos"), "status": "pronto"},
             {"entidade": "Segmentos de Clientes", "metodo": "GET", "path": _path("segmentos"), "status": "pronto"},
             {"entidade": "Tabelas de Preço", "metodo": "GET", "path": _path("tabelas_preco"), "status": "pronto"},
@@ -1492,6 +1496,107 @@ def sincronizar_pagamentos(
         _SYNC_PAGAMENTOS_LOCK.release()
 
 
+def listar_promocoes_paginado_seguro(
+    *,
+    alterado_apos: str | None = None,
+    pagina_inicial: int = 1,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    params_extra: dict | None = None,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Lista promoções com o contrato seguro de pagamentos/categorias.
+
+    Diagnóstico sandbox 2026-07-20: GET /v1/promocoes aceita listagem sem
+    alterado_apos (busca completa) e com alterado_apos (filtro estritamente
+    maior sobre ultima_alteracao — cursor exato). Retorna id, representada_id,
+    nome, slug, data_inicial, data_final, excluido, ultima_alteracao e regras.
+    Headers MEUSPEDIDOS_QTDE_TOTAL_REGISTROS / LIMITOU_REGISTROS /
+    REQUISICOES_EXTRAS seguem o padrão Mercos quando há paginação por lotes.
+    """
+    return _listar_paginado_seguro(
+        path=_path("promocoes"),
+        resume_ns="promocoes",
+        alterado_apos=alterado_apos,
+        pagina_inicial=pagina_inicial,
+        max_paginas=max_paginas,
+        timeout_request=timeout_request,
+        timeout_total=timeout_total,
+        params_extra=params_extra,
+        sessao_id=sessao_id,
+    )
+
+
+def listar_promocoes(**kw) -> dict:
+    return listar_promocoes_paginado_seguro(**kw)
+
+
+_SYNC_PROMOCOES_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
+
+
+def sincronizar_promocoes(
+    cursor: str | None = None,
+    *,
+    max_paginas: int = CLIENTES_MAX_PAGINAS_SYNC,
+    timeout_request: float = CLIENTES_TIMEOUT_REQUEST_SEGUNDOS,
+    timeout_total: float = CLIENTES_TIMEOUT_SYNC_SEGUNDOS,
+    sessao_id: str | None = None,
+) -> dict[str, Any]:
+    """Uma sincronização Promoções GET (ciclo de 2 etapas).
+
+    Completa (sem cursor) percorre todos os lotes via 1 + REQUISICOES_EXTRAS
+    quando o header existir. Incremental envia o cursor EXATO (alterado_apos
+    estritamente maior). Respeita Retry-After/backoff e libera o lock no
+    finally. Entidade distinta de produto, tabela preço, cupom e condição.
+    """
+    if not _SYNC_PROMOCOES_LOCK.acquire(blocking=False):
+        raise MercosApiError(
+            "Sincronização de promoções já em andamento. Aguarde a conclusão.",
+            status_code=409,
+        )
+    try:
+        cursor_base = (cursor or "").strip() or None
+        tipo = "incremental" if cursor_base else "completa"
+        alterado_apos = cursor_base
+        data = listar_promocoes_paginado_seguro(
+            alterado_apos=alterado_apos,
+            pagina_inicial=1,
+            max_paginas=max_paginas,
+            timeout_request=timeout_request,
+            timeout_total=timeout_total,
+            sessao_id=sessao_id,
+        )
+        itens = deduplicar_por_id_alteracao(data.get("itens") or [])
+        total = len(itens)
+        maior = maior_ultima_alteracao(itens)
+        novo_cursor = maior if maior else cursor_base
+        status = data.get("status") or "concluida"
+        return {
+            "ok": True,
+            "tipo": tipo,
+            "cursor_base": cursor_base,
+            "alterado_apos_enviado": alterado_apos,
+            "cursor_anterior": cursor_base,
+            "novo_cursor": novo_cursor,
+            "total": total,
+            "itens": itens,
+            "path": data.get("path"),
+            "paginas_lidas": data.get("paginas_lidas"),
+            "filtros": data.get("filtros") or {},
+            "status": status,
+            "motivo_parada": data.get("motivo_parada") or MOTIVO_PARADA_FIM,
+            "espera_429_segundos": data.get("espera_429_segundos") or 0,
+            "pagina_atual": data.get("pagina_atual"),
+            "requisicoes_extras": data.get("requisicoes_extras"),
+            "requisicoes_previstas": data.get("requisicoes_previstas"),
+            "requisicoes_executadas": data.get("requisicoes_executadas"),
+            "qtde_total_registros": data.get("qtde_total_registros"),
+        }
+    finally:
+        _SYNC_PROMOCOES_LOCK.release()
+
+
 def listar_segmentos(**kw) -> dict:
     return listar_paginado(_path("segmentos"), **kw)
 
@@ -2708,6 +2813,9 @@ __all__ = [
     "sincronizar_pedidos",
     "listar_pagamentos_paginado_seguro",
     "sincronizar_pagamentos",
+    "listar_promocoes_paginado_seguro",
+    "listar_promocoes",
+    "sincronizar_promocoes",
     "criar_cliente",
     "alterar_cliente",
     "criar_forma_pagamento",

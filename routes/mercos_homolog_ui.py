@@ -27,6 +27,7 @@ from services import mercos_usuarios_catalogo as catalogo_usuarios
 from services import mercos_pedidos_catalogo as catalogo_pedidos
 from services import mercos_tipos_pedido_catalogo as catalogo_tipos_pedido
 from services import mercos_pagamentos_catalogo as catalogo_pagamentos
+from services import mercos_promocoes_catalogo as catalogo_promocoes
 from services import mercos_condicoes_pagamento_catalogo as catalogo_condicoes
 from services import mercos_categorias_catalogo as catalogo_categorias
 from services import mercos_tabelas_preco_catalogo as catalogo_tabelas_preco
@@ -52,6 +53,8 @@ _COOKIE_TIPOS_CURSOR = "mercos_tipos_pedido_cursor"
 _COOKIE_TIPOS_SESSAO = "mercos_tipos_pedido_sessao"
 _COOKIE_PAGAMENTOS_CURSOR = "mercos_pagamentos_cursor"
 _COOKIE_PAGAMENTOS_SESSAO = "mercos_pagamentos_sessao"
+_COOKIE_PROMOCOES_CURSOR = "mercos_promocoes_cursor"
+_COOKIE_PROMOCOES_SESSAO = "mercos_promocoes_sessao"
 _COOKIE_CONDICOES_CURSOR = "mercos_condicoes_pagamento_cursor"
 _COOKIE_CONDICOES_SESSAO = "mercos_condicoes_pagamento_sessao"
 _COOKIE_CATEGORIAS_CURSOR = "mercos_categorias_cursor"
@@ -1461,6 +1464,149 @@ def _html_tabela_pagamentos(itens: list) -> str:
         )
     return _table(
         ["ID", "Valor", "Relacionado", "Data", "Excluído", "Última alteração"],
+        rows,
+    )
+
+
+def _cursor_promocoes(request: Request, cursor_form: str = "") -> str:
+    form = (cursor_form or "").strip()
+    if form:
+        return form
+    raw = (request.cookies.get(_COOKIE_PROMOCOES_CURSOR) or "").strip().strip('"')
+    if not raw:
+        return ""
+    try:
+        return unquote(raw)
+    except Exception:
+        return raw
+
+
+def _set_cursor_promocoes_cookie(resp: HTMLResponse, cursor: str | None) -> HTMLResponse:
+    valor = (cursor or "").strip()
+    if valor:
+        resp.set_cookie(
+            key=_COOKIE_PROMOCOES_CURSOR,
+            value=quote(valor, safe=""),
+            httponly=False,
+            max_age=_CURSOR_MAX_AGE,
+            samesite="lax",
+        )
+    else:
+        resp.delete_cookie(_COOKIE_PROMOCOES_CURSOR)
+    return resp
+
+
+def _obter_ou_criar_sessao_promocoes(request: Request) -> str:
+    existente = (request.cookies.get(_COOKIE_PROMOCOES_SESSAO) or "").strip()
+    if existente:
+        return existente
+    return uuid.uuid4().hex
+
+
+def _garantir_sessao_promocoes_cookie(resp: HTMLResponse, sessao_id: str) -> HTMLResponse:
+    resp.set_cookie(
+        key=_COOKIE_PROMOCOES_SESSAO,
+        value=sessao_id,
+        httponly=False,
+        max_age=_SESSAO_MAX_AGE,
+        samesite="lax",
+    )
+    return resp
+
+
+def _hidratar_catalogo_promocoes_form(sessao_id: str, catalogo_json: str = "") -> None:
+    catalogo_promocoes.hidratar_se_vazio(sessao_id, catalogo_json or "")
+
+
+def _html_patch_catalogo_promocoes(sessao_id: str) -> str:
+    snap = catalogo_promocoes.snapshot_sessao(sessao_id)
+    blob = html.escape(json.dumps(snap, ensure_ascii=False, separators=(",", ":")))
+    return (
+        f'<textarea class="mercos-promocoes-catalogo-blob" hidden readonly '
+        f'aria-hidden="true">{blob}</textarea>'
+    )
+
+
+def _linhas_ciclo_promocoes(
+    sessao_id: str, estado: dict[str, Any] | None = None
+) -> list[tuple[str, Any]]:
+    estado = estado or catalogo_promocoes.obter(sessao_id)
+    ciclo = catalogo_promocoes.obter_ciclo(sessao_id)
+    sync = (estado or {}).get("ultima_sync") or {}
+    tipo = sync.get("tipo")
+    tipo_label = (
+        "Completa"
+        if tipo == "completa"
+        else ("Incremental" if tipo == "incremental" else (tipo or "—"))
+    )
+    etapa = int(ciclo.get("etapa_interna") or 0)
+
+    def _num(chave: str) -> Any:
+        valor = sync.get(chave)
+        return valor if valor is not None else "—"
+
+    return [
+        ("Etapa interna", f"{etapa}/2"),
+        ("Tipo da última busca", tipo_label),
+        ("Cursor base", sync.get("cursor_base") or "—"),
+        ("alterado_apos enviado", sync.get("alterado_apos_enviado") or "—"),
+        ("Novo cursor", sync.get("novo_cursor") or "—"),
+        ("Total de páginas consultadas", sync.get("paginas_lidas") or "—"),
+        ("Requisições extras informadas pela Mercos", _num("requisicoes_extras")),
+        ("Requisições previstas", _num("requisicoes_previstas")),
+        ("Requisições executadas", _num("requisicoes_executadas")),
+        ("Total retornado em todas as páginas", sync.get("total_lote") or 0),
+        ("Total no catálogo", len((estado or {}).get("promocoes") or {})),
+        ("Motivo da parada", sync.get("motivo_parada") or "—"),
+        ("Status da sincronização", sync.get("status_sync") or "—"),
+        ("Chamadas completas no ciclo", ciclo.get("chamadas_completas") or 0),
+        ("Chamadas incrementais no ciclo", ciclo.get("chamadas_incrementais") or 0),
+    ]
+
+
+def _attrs_ciclo_promocoes(sessao_id: str) -> dict[str, str]:
+    ciclo = catalogo_promocoes.obter_ciclo(sessao_id)
+    return {
+        "ciclo-ativo": "1" if ciclo.get("ativo") else "0",
+        "etapa-interna": str(ciclo.get("etapa_interna") or 0),
+        "chamadas-completas": str(ciclo.get("chamadas_completas") or 0),
+        "chamadas-incrementais": str(ciclo.get("chamadas_incrementais") or 0),
+        "bloquear-busca-completa": "1" if ciclo.get("ativo") else "0",
+    }
+
+
+def _html_tabela_promocoes(itens: list) -> str:
+    rows = []
+    for item in itens or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            [
+                _campo(item, "id"),
+                _campo(item, "slug"),
+                _campo(item, "nome"),
+                item.get("data_inicial")
+                if item.get("data_inicial") not in (None, "")
+                else "—",
+                item.get("data_final")
+                if item.get("data_final") not in (None, "")
+                else "—",
+                _fmt_bool(item.get("excluido", False)),
+                item.get("ultima_alteracao")
+                if item.get("ultima_alteracao") not in (None, "")
+                else "—",
+            ]
+        )
+    return _table(
+        [
+            "ID",
+            "Slug",
+            "Nome",
+            "Data inicial",
+            "Data final",
+            "Excluído",
+            "Última alteração",
+        ],
         rows,
     )
 
@@ -6599,6 +6745,341 @@ def acao_pagamentos_localizar_vencimento(
         },
     )
     return _garantir_sessao_pagamentos_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/promocoes-reiniciar", response_class=HTMLResponse)
+def acao_promocoes_reiniciar(
+    request: Request,
+    token: str = Form(""),
+):
+    """Apaga cursor/catálogo de promoções, ciclo volta a 0/2 — sem chamar a Mercos."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_promocoes(request)
+    catalogo_promocoes.iniciar_ciclo(sessao)
+    homolog._limpar_resumes_da_sessao(sessao)
+    estado = catalogo_promocoes.obter(sessao)
+    mensagem = (
+        '<div class="result-card ok">'
+        "<h4>Ciclo de sincronização reiniciado</h4>"
+        "<p>Cursor e catálogo anteriores apagados. Novo ciclo ativo na etapa 0/2. "
+        "Use «Sincronizar próxima etapa» para a busca completa.</p>"
+        "</div>"
+    )
+    resumo = _card(
+        "Estado do ciclo",
+        _linhas_ciclo_promocoes(sessao, estado),
+        status_label="Ciclo ativo",
+        css="ok",
+    )
+    resp = _wrap_result(
+        mensagem + resumo + _html_patch_catalogo_promocoes(sessao),
+        extra_attrs={
+            "novo-cursor": "",
+            "cursor-limpo": "1",
+            "catalogo-limpo": "1",
+            "status-sync": "reiniciado",
+            "catalogo-total": "0",
+            **_attrs_ciclo_promocoes(sessao),
+        },
+    )
+    resp = _set_cursor_promocoes_cookie(resp, None)
+    return _garantir_sessao_promocoes_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/promocoes-sincronizar", response_class=HTMLResponse)
+def acao_promocoes_sincronizar(
+    request: Request,
+    token: str = Form(""),
+    cursor: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Única ação que chama a Mercos no ciclo: etapa 0 completa; etapa 1 incremental."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_promocoes(request)
+    _hidratar_catalogo_promocoes_form(sessao, catalogo_json)
+    ciclo = catalogo_promocoes.obter_ciclo(sessao)
+    if not ciclo.get("ativo"):
+        catalogo_promocoes.iniciar_ciclo(sessao)
+        ciclo = catalogo_promocoes.obter_ciclo(sessao)
+
+    etapa = int(ciclo.get("etapa_interna") or 0)
+    cursor_form = _cursor_promocoes(request, cursor)
+
+    if etapa == 0:
+        cursor_para_sync = None
+        tipo_esperado = "completa"
+    else:
+        if not cursor_form:
+            resp = _wrap_result(
+                _card(
+                    "Cursor ausente",
+                    [
+                        (
+                            "Mensagem",
+                            "Etapa incremental exige cursor salvo. Reinicie o ciclo se necessário.",
+                        )
+                    ]
+                    + _linhas_ciclo_promocoes(sessao),
+                    status_label="Erro",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "erro", **_attrs_ciclo_promocoes(sessao)},
+            )
+            return _garantir_sessao_promocoes_cookie(resp, sessao)
+        cursor_para_sync = cursor_form
+        tipo_esperado = "incremental"
+
+    try:
+        data = homolog.sincronizar_promocoes(
+            cursor_para_sync, max_paginas=20, sessao_id=sessao
+        )
+        tipo_real = data.get("tipo") or tipo_esperado
+        if etapa >= 1 and (
+            tipo_real == "completa" or not data.get("alterado_apos_enviado")
+        ):
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [
+                        (
+                            "Mensagem",
+                            "A etapa atual exige busca incremental com alterado_apos.",
+                        )
+                    ]
+                    + _linhas_ciclo_promocoes(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo_promocoes(sessao)},
+            )
+            return _garantir_sessao_promocoes_cookie(resp, sessao)
+
+        status_sync = data.get("status") or "concluida"
+        motivo = data.get("motivo_parada") or ""
+        status_label = "Timeout" if status_sync == "timeout" else "Concluída"
+        meta = {
+            "tipo": tipo_real,
+            "cursor_base": data.get("cursor_base"),
+            "alterado_apos_enviado": data.get("alterado_apos_enviado"),
+            "novo_cursor": data.get("novo_cursor"),
+            "total_lote": data.get("total", 0),
+            "paginas_lidas": data.get("paginas_lidas") or 0,
+            "motivo_parada": motivo,
+            "status_sync": status_label,
+            "requisicoes_extras": data.get("requisicoes_extras"),
+            "requisicoes_previstas": data.get("requisicoes_previstas"),
+            "requisicoes_executadas": data.get("requisicoes_executadas"),
+        }
+        if tipo_real == "completa":
+            catalogo_promocoes.substituir_completo(
+                sessao, data.get("itens") or [], meta=meta
+            )
+        else:
+            catalogo_promocoes.upsert_incremental(
+                sessao, data.get("itens") or [], meta=meta
+            )
+        try:
+            catalogo_promocoes.registrar_sync_ciclo(sessao, tipo=tipo_real)
+        except ValueError as exc:
+            resp = _wrap_result(
+                _card(
+                    "Busca completa bloqueada durante a homologação",
+                    [("Mensagem", str(exc))] + _linhas_ciclo_promocoes(sessao),
+                    status_label="Bloqueado",
+                    css="erro",
+                ),
+                extra_attrs={"status-sync": "bloqueado", **_attrs_ciclo_promocoes(sessao)},
+            )
+            return _garantir_sessao_promocoes_cookie(resp, sessao)
+
+        estado = catalogo_promocoes.obter(sessao)
+        total = data.get("total", 0)
+        paginas = data.get("paginas_lidas") or 0
+        css = "pendente" if status_sync == "timeout" else "ok"
+        resumo = _card(
+            "Sincronização de promoções",
+            [
+                ("Status da sincronização", status_label),
+                ("Motivo da parada", motivo or "—"),
+            ]
+            + _linhas_ciclo_promocoes(sessao, estado),
+            status_label=status_label,
+            css=css,
+        )
+        table = _html_tabela_promocoes(data.get("itens") or [])
+        resp = _wrap_result(
+            resumo + table + _html_patch_catalogo_promocoes(sessao),
+            extra_attrs={
+                "novo-cursor": data.get("novo_cursor") or "",
+                "cursor-anterior": data.get("cursor_anterior") or "",
+                "cursor-base": data.get("cursor_base") or "",
+                "alterado-apos-enviado": data.get("alterado_apos_enviado") or "",
+                "tipo-busca": tipo_real,
+                "total": str(total),
+                "paginas-lidas": str(paginas),
+                "requisicoes-extras": str(
+                    data.get("requisicoes_extras")
+                    if data.get("requisicoes_extras") is not None
+                    else ""
+                ),
+                "requisicoes-previstas": str(
+                    data.get("requisicoes_previstas")
+                    if data.get("requisicoes_previstas") is not None
+                    else ""
+                ),
+                "requisicoes-executadas": str(data.get("requisicoes_executadas") or 0),
+                "motivo-parada": motivo,
+                "catalogo-total": str(len(estado.get("promocoes") or {})),
+                "catalogo-modo": "replace" if tipo_real == "completa" else "upsert",
+                "status-sync": status_sync,
+                **_attrs_ciclo_promocoes(sessao),
+            },
+        )
+        resp = _set_cursor_promocoes_cookie(resp, data.get("novo_cursor"))
+        return _garantir_sessao_promocoes_cookie(resp, sessao)
+    except MercosApiError as exc:
+        if exc.status_code == 429:
+            segundos = exc.retry_after if exc.retry_after is not None else 10
+            try:
+                segundos = max(0, int(float(segundos)))
+            except (TypeError, ValueError):
+                segundos = 10
+            pagina_atual = exc.pagina if exc.pagina is not None else "—"
+            resp = _wrap_result(
+                _card(
+                    "Aguardando limite da Mercos",
+                    [
+                        ("Mensagem", "Aguardando limite da Mercos"),
+                        ("Segundos restantes", segundos),
+                        ("Página atual", pagina_atual),
+                    ],
+                    status_label="Aguardando",
+                    css="pendente",
+                ),
+                extra_attrs={
+                    "status-sync": "aguardando-429",
+                    "aguardando-mercos": "1",
+                    "segundos-espera": str(segundos),
+                    "pagina-atual": str(pagina_atual),
+                    "http-status": "429",
+                    **_attrs_ciclo_promocoes(sessao),
+                },
+            )
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(segundos)
+            resp.headers["X-Mercos-Pagina"] = str(pagina_atual)
+            return _garantir_sessao_promocoes_cookie(resp, sessao)
+        resp = _wrap_result(
+            _erro_html(exc),
+            extra_attrs={
+                "status-sync": "erro",
+                "http-status": str(exc.status_code or ""),
+                **_attrs_ciclo_promocoes(sessao),
+            },
+        )
+        if exc.status_code in (409, 504):
+            resp.status_code = exc.status_code
+        return _garantir_sessao_promocoes_cookie(resp, sessao)
+    except Exception as exc:
+        resp = _wrap_result(
+            _erro_html(exc),
+            extra_attrs={"status-sync": "erro", **_attrs_ciclo_promocoes(sessao)},
+        )
+        return _garantir_sessao_promocoes_cookie(resp, sessao)
+
+
+@router.post("/homologacao-ui/acoes/promocoes-localizar", response_class=HTMLResponse)
+def acao_promocoes_localizar(
+    request: Request,
+    token: str = Form(""),
+    slug: str = Form(""),
+    catalogo_json: str = Form(""),
+):
+    """Localiza promoção pelo slug no catálogo local. Não chama Mercos nem altera cursor."""
+    _auth(request, token)
+    sessao = _obter_ou_criar_sessao_promocoes(request)
+    _hidratar_catalogo_promocoes_form(sessao, catalogo_json)
+    ciclo_antes = catalogo_promocoes.obter_ciclo(sessao)
+    busca = (slug or "").strip()
+    if not busca:
+        return _garantir_sessao_promocoes_cookie(
+            _wrap_result(
+                _card(
+                    "Localizar promoção",
+                    [("Mensagem", "Informe o slug da promoção.")],
+                    status_label="Atenção",
+                    css="erro",
+                )
+            ),
+            sessao,
+        )
+
+    encontrado, no_ultimo_lote, estado = catalogo_promocoes.buscar_por_slug(sessao, busca)
+    if not encontrado:
+        return _garantir_sessao_promocoes_cookie(
+            _wrap_result(
+                _card(
+                    "Promoção não encontrada",
+                    [
+                        ("Slug buscado", busca),
+                        (
+                            "Promoções no catálogo local",
+                            catalogo_promocoes.total(sessao),
+                        ),
+                    ]
+                    + _linhas_ciclo_promocoes(sessao, estado),
+                    status_label="Não encontrado",
+                    css="erro",
+                ),
+                extra_attrs={"cursor-fixo": "1", **_attrs_ciclo_promocoes(sessao)},
+            ),
+            sessao,
+        )
+
+    data_inicial = encontrado.get("data_inicial")
+    if data_inicial in (None, ""):
+        data_inicial = "—"
+    data_final = encontrado.get("data_final")
+    if data_final in (None, ""):
+        data_final = "—"
+    ultima = encontrado.get("ultima_alteracao")
+    if ultima is None or ultima == "":
+        ultima = "—"
+    linhas: list[tuple[str, Any]] = [
+        ("ID", encontrado.get("id")),
+        ("Slug", encontrado.get("slug")),
+        ("Nome", encontrado.get("nome")),
+        ("Data inicial", data_inicial),
+        ("Data final", data_final),
+        ("Excluído", _fmt_bool(encontrado.get("excluido", False))),
+        ("Última alteração", ultima),
+        ("Origem", "Catálogo local sincronizado"),
+    ]
+    linhas.extend(_linhas_ciclo_promocoes(sessao, estado))
+    nota = ""
+    if not no_ultimo_lote:
+        nota = (
+            '<p class="hint">Promoção localizada no catálogo do ERP; '
+            "não veio no último lote incremental.</p>"
+        )
+    card = _card(
+        "Promoção localizada",
+        linhas,
+        status_label="Encontrado",
+        css="ok",
+    )
+    ciclo_depois = catalogo_promocoes.obter_ciclo(sessao)
+    if ciclo_antes.get("etapa_interna") != ciclo_depois.get("etapa_interna"):
+        catalogo_promocoes._salvar_ciclo(sessao, ciclo_antes)
+    resp = _wrap_result(
+        nota + card + _html_patch_catalogo_promocoes(sessao),
+        extra_attrs={
+            "status-sync": "localizado",
+            "cursor-intacto": "1",
+            **_attrs_ciclo_promocoes(sessao),
+        },
+    )
+    return _garantir_sessao_promocoes_cookie(resp, sessao)
 
 
 def _sem_acentos_minusculo(texto: str) -> str:

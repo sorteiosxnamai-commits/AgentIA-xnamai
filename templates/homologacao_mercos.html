@@ -228,6 +228,7 @@
       <a href="#sec-usuarios">Usuários</a>
       <a href="#sec-pedidos-buscar">Pedidos</a>
       <a href="#sec-pagamentos-buscar">Pagamentos</a>
+      <a href="#sec-promocoes-buscar">Promoções</a>
       <a href="#sec-titulos-criar">Títulos</a>
     </aside>
 
@@ -1105,6 +1106,29 @@
           <div class="resultado" id="res-pagamentos-buscar"></div>
         </section>
 
+        <!-- 12a2 -->
+        <section class="panel" id="sec-promocoes-buscar" data-homolog-sec="promocoes-buscar">
+          <h2>Promoções — Buscar</h2>
+          <p class="hint">Ciclo de homologação em 2 etapas: 1/2 busca completa e 2/2 incremental com alterado_apos (cursor exato). Entidade distinta de produto, tabela preço, cupom e condição de pagamento. Use «Localizar promoção pelo slug» para informar o slug solicitado pela Mercos.</p>
+          <div class="toolbar">
+            <button type="button" id="btn-promocoes-reiniciar" class="secondary">
+              Reiniciar ciclo de sincronização
+            </button>
+            <button type="button" id="btn-promocoes-sincronizar">
+              Sincronizar próxima etapa
+            </button>
+          </div>
+          <div class="toolbar">
+            <label class="field">Localizar promoção pelo slug
+              <input type="text" id="input-promocoes-slug" placeholder="228d165932574cab" value="228d165932574cab" />
+            </label>
+            <button type="button" id="btn-promocoes-localizar" class="secondary">
+              Localizar promoção
+            </button>
+          </div>
+          <div class="resultado" id="res-promocoes-buscar"></div>
+        </section>
+
         <!-- 12b -->
         <section class="panel" id="sec-pedidos-criar" data-homolog-sec="pedido-incluir">
           <h2>Pedido — Incluir</h2>
@@ -1344,6 +1368,9 @@
       var PAGAMENTOS_CURSOR_KEY = "mercos_pagamentos_cursor";
       var PAGAMENTOS_CATALOGO_KEY = "mercos_pagamentos_catalogo";
       var PAGAMENTOS_CICLO_KEY = "mercos_pagamentos_ciclo_ativo";
+      var PROMOCOES_CURSOR_KEY = "mercos_promocoes_cursor";
+      var PROMOCOES_CATALOGO_KEY = "mercos_promocoes_catalogo";
+      var PROMOCOES_CICLO_KEY = "mercos_promocoes_ciclo_ativo";
       var CONDICOES_CURSOR_KEY = "mercos_condicoes_pagamento_cursor";
       var CONDICOES_CATALOGO_KEY = "mercos_condicoes_pagamento_catalogo";
       var CONDICOES_CICLO_KEY = "mercos_condicoes_pagamento_ciclo_ativo";
@@ -1359,6 +1386,7 @@
       var pedidosSyncBusy = false;
       var tiposSyncBusy = false;
       var pagamentosSyncBusy = false;
+      var promocoesSyncBusy = false;
       var condicoesSyncBusy = false;
       var categoriasSyncBusy = false;
       var tabelasPrecoSyncBusy = false;
@@ -1742,6 +1770,27 @@
       function setCicloPagamentosAtivoLocal(ativo) {
         if (ativo) localStorage.setItem(PAGAMENTOS_CICLO_KEY, "1");
         else localStorage.removeItem(PAGAMENTOS_CICLO_KEY);
+      }
+
+      function getPromocoesCursor() {
+        return localStorage.getItem(PROMOCOES_CURSOR_KEY) || "";
+      }
+
+      function setPromocoesCursor(valor) {
+        if (valor) {
+          localStorage.setItem(PROMOCOES_CURSOR_KEY, valor);
+        } else {
+          localStorage.removeItem(PROMOCOES_CURSOR_KEY);
+        }
+      }
+
+      function getPromocoesCatalogoJson() {
+        return localStorage.getItem(PROMOCOES_CATALOGO_KEY) || "";
+      }
+
+      function setCicloPromocoesAtivoLocal(ativo) {
+        if (ativo) localStorage.setItem(PROMOCOES_CICLO_KEY, "1");
+        else localStorage.removeItem(PROMOCOES_CICLO_KEY);
       }
 
       function setCatalogoFromBlob(target) {
@@ -2207,6 +2256,61 @@
         }
       }
 
+      function setPromocoesCatalogoFromBlob(target) {
+        var blob = target.querySelector(".mercos-promocoes-catalogo-blob");
+        if (!blob) return;
+        var texto = (blob.value || blob.textContent || "").trim();
+        if (!texto) return;
+        try {
+          var snap = JSON.parse(texto);
+          localStorage.setItem(PROMOCOES_CATALOGO_KEY, texto);
+          if (snap && snap.ciclo) {
+            setCicloPromocoesAtivoLocal(!!snap.ciclo.ativo);
+          }
+        } catch (e) { /* ignora blob inválido */ }
+        blob.parentNode && blob.parentNode.removeChild(blob);
+      }
+
+      function applyCicloPromocoesFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-catalogo-limpo") === "1") {
+          localStorage.setItem(
+            PROMOCOES_CATALOGO_KEY,
+            JSON.stringify({
+              promocoes: {},
+              ids_ultimo_lote: [],
+              ultima_sync: {},
+              ciclo: {
+                ativo: true,
+                etapa_interna: 0,
+                chamadas_completas: 0,
+                chamadas_incrementais: 0
+              },
+              total: 0
+            })
+          );
+        }
+        if (wrap.hasAttribute("data-ciclo-ativo")) {
+          setCicloPromocoesAtivoLocal(wrap.getAttribute("data-ciclo-ativo") === "1");
+        }
+      }
+
+      function applyPromocoesCursorFromResult(target) {
+        var wrap = target.querySelector(".acao-resultado");
+        if (!wrap) return;
+        if (wrap.getAttribute("data-cursor-intacto") === "1") {
+          return;
+        }
+        if (wrap.getAttribute("data-cursor-limpo") === "1") {
+          setPromocoesCursor("");
+          return;
+        }
+        if (wrap.hasAttribute("data-novo-cursor")) {
+          setPromocoesCursor(wrap.getAttribute("data-novo-cursor") || "");
+        }
+      }
+
       function applyPedidosCursorFromResult(target) {
         var wrap = target.querySelector(".acao-resultado");
         if (!wrap) return;
@@ -2273,7 +2377,7 @@
 
       async function postAcao(url, fields, target, btn, opts) {
         opts = opts || {};
-        var entSync = opts.entidade === "clientes" || opts.entidade === "usuarios" || opts.entidade === "pedidos" || opts.entidade === "tipos" || opts.entidade === "pagamentos";
+        var entSync = opts.entidade === "clientes" || opts.entidade === "usuarios" || opts.entidade === "pedidos" || opts.entidade === "tipos" || opts.entidade === "pagamentos" || opts.entidade === "promocoes";
         var fd = new FormData();
         Object.keys(fields || {}).forEach(function (k) {
           fd.append(k, fields[k] == null ? "" : String(fields[k]));
@@ -2372,6 +2476,10 @@
             applyPagamentosCursorFromResult(target);
             setPagamentosCatalogoFromBlob(target);
             applyCicloPagamentosFromResult(target);
+          } else if (opts.entidade === "promocoes") {
+            applyPromocoesCursorFromResult(target);
+            setPromocoesCatalogoFromBlob(target);
+            applyCicloPromocoesFromResult(target);
           } else if (opts.entidade === "condicoes") {
             applyCondicoesCursorFromResult(target);
             setCondicoesCatalogoFromBlob(target);
@@ -3170,6 +3278,80 @@
           );
           if (getPagamentosCursor() !== cursorAntes) {
             setPagamentosCursor(cursorAntes);
+          }
+        });
+      }
+
+      var btnPromReiniciar = document.getElementById("btn-promocoes-reiniciar");
+      var btnPromSincronizar = document.getElementById("btn-promocoes-sincronizar");
+      var btnPromLocalizar = document.getElementById("btn-promocoes-localizar");
+      var resPromocoes = document.getElementById("res-promocoes-buscar");
+
+      if (btnPromReiniciar && resPromocoes) {
+        btnPromReiniciar.addEventListener("click", async function () {
+          if (promocoesSyncBusy) return;
+          promocoesSyncBusy = true;
+          setPromocoesCursor("");
+          localStorage.removeItem(PROMOCOES_CATALOGO_KEY);
+          setCicloPromocoesAtivoLocal(true);
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/promocoes-reiniciar",
+              {},
+              resPromocoes,
+              btnPromReiniciar,
+              { entidade: "promocoes", semRetry: true, timeoutMs: 65000 }
+            );
+          } finally {
+            promocoesSyncBusy = false;
+            btnPromReiniciar.disabled = false;
+            if (btnPromSincronizar) btnPromSincronizar.disabled = false;
+          }
+        });
+      }
+
+      if (btnPromSincronizar && resPromocoes) {
+        btnPromSincronizar.addEventListener("click", async function () {
+          if (promocoesSyncBusy) return;
+          promocoesSyncBusy = true;
+          btnPromSincronizar.disabled = true;
+          if (btnPromReiniciar) btnPromReiniciar.disabled = true;
+          try {
+            await postAcao(
+              "/mercos/homologacao-ui/acoes/promocoes-sincronizar",
+              {
+                cursor: getPromocoesCursor(),
+                catalogo_json: getPromocoesCatalogoJson()
+              },
+              resPromocoes,
+              btnPromSincronizar,
+              { entidade: "promocoes", syncThrottle: true, timeoutMs: 180000 }
+            );
+          } finally {
+            promocoesSyncBusy = false;
+            btnPromSincronizar.disabled = false;
+            if (btnPromReiniciar) btnPromReiniciar.disabled = false;
+          }
+        });
+      }
+
+      if (btnPromLocalizar && resPromocoes) {
+        btnPromLocalizar.addEventListener("click", async function () {
+          if (promocoesSyncBusy) return;
+          var slugEl = document.getElementById("input-promocoes-slug");
+          var cursorAntes = getPromocoesCursor();
+          await postAcao(
+            "/mercos/homologacao-ui/acoes/promocoes-localizar",
+            {
+              slug: slugEl ? slugEl.value : "",
+              catalogo_json: getPromocoesCatalogoJson()
+            },
+            resPromocoes,
+            btnPromLocalizar,
+            { entidade: "promocoes", semRetry: true, timeoutMs: 30000 }
+          );
+          if (getPromocoesCursor() !== cursorAntes) {
+            setPromocoesCursor(cursorAntes);
           }
         });
       }
