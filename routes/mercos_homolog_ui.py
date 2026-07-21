@@ -7370,6 +7370,100 @@ def acao_promocoes_localizar(
     return _garantir_sessao_promocoes_cookie(resp, sessao)
 
 
+@router.post("/homologacao-ui/acoes/promocoes-criar", response_class=HTMLResponse)
+def acao_promocoes_criar(
+    request: Request,
+    token: str = Form(""),
+    nome: str = Form(""),
+    slug: str = Form(""),
+    produto_id: str = Form(""),
+    produto_nome: str = Form(""),
+    desconto: str = Form(""),
+    data_inicial: str = Form(""),
+    data_final: str = Form(""),
+):
+    """POST único /v1/promocoes — uma promoção referenciando um produto existente.
+
+    Um clique = um POST. Não cria produto. Passa OBRIGATORIAMENTE pelo
+    throttling global persistente (10 s) via post_json → request_mercos.
+    Enquanto executa, ativa o modo exclusivo (bloqueia outras ações Mercos
+    locais; buscas de catálogo local seguem liberadas).
+    """
+    _auth(request, token)
+    nome_txt = (nome or "").strip()
+    pid_txt = (produto_id or "").strip()
+    if not nome_txt or not pid_txt:
+        return _wrap_result(
+            _card(
+                "Dados incompletos",
+                [
+                    (
+                        "Mensagem",
+                        "Informe o nome da promoção e o ID do produto (obrigatórios).",
+                    ),
+                ],
+                status_label="Validação",
+                css="erro",
+            )
+        )
+    desc_val = _float_form(desconto)
+    regra: dict[str, Any] = {"produto_id": pid_txt}
+    if desc_val is not None:
+        regra["desconto"] = desc_val
+    body: dict[str, Any] = {
+        "nome": nome_txt[:300],
+        "regras": [regra],
+    }
+    slug_txt = (slug or "").strip()
+    if slug_txt:
+        body["slug"] = slug_txt
+    if (data_inicial or "").strip():
+        body["data_inicial"] = (data_inicial or "").strip()
+    if (data_final or "").strip():
+        body["data_final"] = (data_final or "").strip()
+
+    try:
+        catalogo_promocoes.iniciar_modo_exclusivo("POST Promoção")
+        out = homolog.criar_promocao(body)
+        dados = out.get("dados") if isinstance(out.get("dados"), dict) else {}
+        pid_criado = out.get("id") or dados.get("id")
+        slug_final = dados.get("slug") if dados.get("slug") not in (None, "") else (
+            slug_txt or "(gerado pela Mercos)"
+        )
+        produto_label = pid_txt
+        if (produto_nome or "").strip():
+            produto_label = f"{pid_txt} — {(produto_nome or '').strip()}"
+        desconto_label = (
+            f"{desc_val:g}%" if desc_val is not None else "—"
+        )
+        linhas: list[tuple[str, Any]] = [
+            ("Status HTTP", out.get("status_code") or 201),
+            ("ID criado", pid_criado),
+            (
+                "Nome",
+                dados.get("nome") if dados.get("nome") not in (None, "") else nome_txt,
+            ),
+            ("Slug", slug_final),
+            ("Produto", produto_label),
+            ("Desconto", desconto_label),
+        ]
+        linhas += _linhas_throttling_global("POST Promoção")
+        linhas.append(
+            ("Origem", "Mercos Sandbox" if out.get("sandbox") else "Mercos")
+        )
+        card = _card(
+            "Promoção cadastrada",
+            linhas,
+            status_label=f"Status {out.get('status_code') or 201}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="promocao", entity_id=str(pid_criado or ""))
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+    finally:
+        catalogo_promocoes.finalizar_modo_exclusivo()
+
+
 def _sem_acentos_minusculo(texto: str) -> str:
     import unicodedata
 

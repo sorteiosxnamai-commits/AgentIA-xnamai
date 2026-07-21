@@ -229,6 +229,7 @@
       <a href="#sec-pedidos-buscar">Pedidos</a>
       <a href="#sec-pagamentos-buscar">Pagamentos</a>
       <a href="#sec-promocoes-buscar">Promoções</a>
+      <a href="#sec-promocoes-criar">Incluir promoção</a>
       <a href="#sec-titulos-criar">Títulos</a>
     </aside>
 
@@ -1128,6 +1129,55 @@
           </div>
           <div class="resultado" id="res-promocoes-buscar"></div>
         </section>
+
+        <!-- 12a3 -->
+        <section class="panel" id="sec-promocoes-criar" data-homolog-sec="promocao-incluir">
+          <h2>Promoção — Incluir</h2>
+          <p class="hint">Cadastra UMA promoção (POST /v1/promocoes) referenciando um produto já existente. Não cria produto. Entidade distinta de produto, tabela de preço, cupom e condição de pagamento. Passa pelo throttling global persistente de 10 s.</p>
+          <div class="toolbar">
+            <label class="field">Nome
+              <input type="text" id="input-promocao-nome" value="2f9bdb1b4a8a4d81" placeholder="Nome da promoção" />
+            </label>
+            <label class="field">Slug
+              <input type="text" id="input-promocao-slug" value="4ad6facaaf3e419d" placeholder="slug-da-promocao" />
+            </label>
+            <label class="field">Produto ID
+              <input type="text" id="input-promocao-produto-id" value="20405073" placeholder="Ex.: 20405073" />
+            </label>
+            <label class="field">Nome do produto
+              <input type="text" id="input-promocao-produto-nome" value="fad3fccd6b3245cf" placeholder="Nome do produto (referência)" />
+            </label>
+            <label class="field">Desconto (%)
+              <input type="text" id="input-promocao-desconto" value="21" placeholder="Ex.: 21" />
+            </label>
+            <label class="field">Data inicial
+              <input type="date" id="input-promocao-data-inicial" />
+            </label>
+            <label class="field">Data final
+              <input type="date" id="input-promocao-data-final" />
+            </label>
+            <button type="button"
+              data-action="/mercos/homologacao-ui/acoes/promocoes-criar"
+              data-target="res-promocoes-criar"
+              data-store="promocao"
+              data-fields="nome:input-promocao-nome,slug:input-promocao-slug,produto_id:input-promocao-produto-id,produto_nome:input-promocao-produto-nome,desconto:input-promocao-desconto,data_inicial:input-promocao-data-inicial,data_final:input-promocao-data-final">
+              Incluir promoção
+            </button>
+          </div>
+          <div class="resultado" id="res-promocoes-criar"></div>
+        </section>
+        <script>
+          (function () {
+            function iso(d) { return d.toISOString().slice(0, 10); }
+            var ini = document.getElementById("input-promocao-data-inicial");
+            var fim = document.getElementById("input-promocao-data-final");
+            var hoje = new Date();
+            var trintaDias = new Date();
+            trintaDias.setDate(hoje.getDate() + 30);
+            if (ini && !ini.value) ini.value = iso(hoje);
+            if (fim && !fim.value) fim.value = iso(trintaDias);
+          })();
+        </script>
 
         <!-- 12b -->
         <section class="panel" id="sec-pedidos-criar" data-homolog-sec="pedido-incluir">

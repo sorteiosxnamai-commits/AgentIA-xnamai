@@ -148,7 +148,20 @@ class _LockArquivo:
                     self._quebrar_se_expirado(forcar=True)
                     try:
                         os.mkdir(self._caminho)
-                    except FileExistsError:
+                    except (FileExistsError, PermissionError):
+                        return self
+                    return self
+                time.sleep(_LOCK_SPIN_SEGUNDOS)
+            except PermissionError:
+                # Windows pode devolver WinError 5 (acesso negado) enquanto o
+                # diretório do lock está em disputa/uso por outro processo: o
+                # mkdir NÃO adquiriu o lock, então tratamos como "ainda preso"
+                # e continuamos aguardando dentro do mesmo timeout.
+                if time.monotonic() - inicio >= self._timeout:
+                    self._quebrar_se_expirado(forcar=True)
+                    try:
+                        os.mkdir(self._caminho)
+                    except (FileExistsError, PermissionError):
                         return self
                     return self
                 time.sleep(_LOCK_SPIN_SEGUNDOS)

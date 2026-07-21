@@ -1646,6 +1646,108 @@ def listar_promocoes(**kw) -> dict:
     return listar_promocoes_paginado_seguro(**kw)
 
 
+def montar_payload_promocao(body: dict) -> dict[str, Any]:
+    """Monta o payload EXATO de POST /v1/promocoes conforme contrato oficial.
+
+    Contrato oficial (docs.mercos.com/reference/v1promocoes — Envio POST/PUT):
+    - ``nome`` (obrigatório, String);
+    - ``slug`` (opcional; se ausente a Mercos gera um UUID) — só minúsculas,
+      números, ``-`` ou ``_`` e sem espaços;
+    - ``data_inicial`` (obrigatório, Date YYYY-MM-DD);
+    - ``data_final`` (obrigatório, Date YYYY-MM-DD);
+    - ``regras`` (obrigatório): lista de ``{"produto_id": Integer,
+      "desconto": Decimal}``. O ``regra_id`` NÃO é enviado na criação (é
+      atribuído pela Mercos);
+    - ``representada_id`` e ``excluido`` só entram quando informados.
+    Nenhuma outra propriedade é inventada.
+    """
+    dados = dict(body or {})
+    payload: dict[str, Any] = {}
+
+    nome = str(dados.get("nome") or "").strip()
+    if nome:
+        payload["nome"] = nome
+    slug = str(dados.get("slug") or "").strip()
+    if slug:
+        payload["slug"] = slug
+    for campo in ("data_inicial", "data_final"):
+        valor = str(dados.get(campo) or "").strip()
+        if valor:
+            payload[campo] = valor
+
+    regras_in = dados.get("regras")
+    regras_out: list[dict[str, Any]] = []
+    if isinstance(regras_in, list):
+        for regra in regras_in:
+            if not isinstance(regra, dict):
+                continue
+            item: dict[str, Any] = {}
+            if regra.get("produto_id") not in (None, ""):
+                try:
+                    item["produto_id"] = int(regra["produto_id"])
+                except (TypeError, ValueError) as exc:
+                    raise MercosApiError(
+                        "produto_id inválido na regra da promoção.",
+                        status_code=422,
+                    ) from exc
+            if regra.get("desconto") not in (None, ""):
+                try:
+                    item["desconto"] = float(
+                        str(regra["desconto"]).replace(",", ".")
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise MercosApiError(
+                        "desconto inválido na regra da promoção.",
+                        status_code=422,
+                    ) from exc
+            if regra.get("regra_id") not in (None, ""):
+                try:
+                    item["regra_id"] = int(regra["regra_id"])
+                except (TypeError, ValueError):
+                    pass
+            if item:
+                regras_out.append(item)
+    if regras_out:
+        payload["regras"] = regras_out
+
+    if dados.get("representada_id") not in (None, ""):
+        try:
+            payload["representada_id"] = int(dados["representada_id"])
+        except (TypeError, ValueError) as exc:
+            raise MercosApiError(
+                "representada_id inválido para promoção.", status_code=422
+            ) from exc
+    if dados.get("excluido") is not None:
+        payload["excluido"] = bool(dados["excluido"])
+    return payload
+
+
+def criar_promocao(body: dict) -> dict:
+    """POST /v1/promocoes — cadastro de promoção (política) na Mercos.
+
+    Contrato oficial: ``nome``, ``data_inicial``, ``data_final`` e ``regras``
+    são obrigatórios; cada regra é ``{"produto_id": Integer, "desconto":
+    Decimal (percentual)}``. Sucesso 201; ID no header MeusPedidosID
+    (capturado por post_json). 404 quando o ``produto_id`` não existe; 412 em
+    validação de negócio. NÃO cria produto — apenas referencia um existente.
+    Entidade distinta de Produto, Tabela de Preço, Cupom e Condição.
+    """
+    payload = montar_payload_promocao(body)
+    faltando = [
+        campo
+        for campo in ("nome", "data_inicial", "data_final", "regras")
+        if not payload.get(campo)
+    ]
+    if faltando:
+        raise MercosApiError(
+            "Campos obrigatórios ausentes para promoção: "
+            + ", ".join(faltando)
+            + ".",
+            status_code=422,
+        )
+    return post_json(_path("promocoes"), payload)
+
+
 _SYNC_PROMOCOES_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
 
 
@@ -2933,6 +3035,8 @@ __all__ = [
     "sincronizar_pagamentos",
     "listar_promocoes_paginado_seguro",
     "listar_promocoes",
+    "montar_payload_promocao",
+    "criar_promocao",
     "sincronizar_promocoes",
     "criar_cliente",
     "alterar_cliente",

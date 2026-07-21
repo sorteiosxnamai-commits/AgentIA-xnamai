@@ -823,3 +823,88 @@ def test_request_nao_loga_token(monkeypatch, capsys):
     assert "SEGREDO_APP" not in out
     # headers existem na chamada, mas não foram impressos
     assert captured["headers"]["CompanyToken"] == "SEGREDO_COMPANY"
+
+
+def test_montar_payload_promocao_estrutura_oficial():
+    """Payload de POST /v1/promocoes segue o contrato oficial, sem inventar campos.
+
+    Contrato oficial (docs.mercos.com/reference/v1promocoes): nome, slug,
+    data_inicial, data_final, regras=[{produto_id, desconto}]. regra_id não é
+    enviado na criação (é atribuído pela Mercos).
+    """
+    from services.mercos_homolog_service import montar_payload_promocao
+
+    payload = montar_payload_promocao(
+        {
+            "nome": "2f9bdb1b4a8a4d81",
+            "slug": "4ad6facaaf3e419d",
+            "data_inicial": "2026-07-21",
+            "data_final": "2026-08-20",
+            "regras": [{"produto_id": "20405073", "desconto": "21"}],
+        }
+    )
+    assert payload["nome"] == "2f9bdb1b4a8a4d81"
+    assert payload["slug"] == "4ad6facaaf3e419d"
+    assert payload["data_inicial"] == "2026-07-21"
+    assert payload["data_final"] == "2026-08-20"
+    assert payload["regras"] == [{"produto_id": 20405073, "desconto": 21.0}]
+    # Nenhuma propriedade inventada além das do contrato.
+    assert set(payload.keys()) <= {
+        "nome",
+        "slug",
+        "data_inicial",
+        "data_final",
+        "regras",
+        "representada_id",
+        "excluido",
+    }
+
+
+def test_criar_promocao_exige_campos_obrigatorios():
+    """nome, data_inicial, data_final e regras são obrigatórios (422 local)."""
+    from services.mercos_homolog_service import criar_promocao
+
+    with pytest.raises(MercosApiError) as ei:
+        criar_promocao({"slug": "4ad6facaaf3e419d"})
+    assert ei.value.status_code == 422
+
+
+def test_criar_promocao_faz_post_no_endpoint_de_promocoes(monkeypatch):
+    """criar_promocao envia UM POST para /v1/promocoes (não cria produto) e
+    retorna o ID (MeusPedidosID). Não referencia /v1/produtos."""
+    from services import mercos_homolog_service as svc
+
+    monkeypatch.setattr("services.mercos_api_client.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "services.mercos_api_client._application_tokens", lambda: ["app-token"]
+    )
+    monkeypatch.setenv("MERCOS_COMPANY_TOKEN", "empresa-promo-svc")
+    chamadas: list[tuple[str, str]] = []
+
+    def _req(method, url, **_kw):
+        chamadas.append((method, url))
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.text = "{}"
+        resp.headers = {"MeusPedidosID": "77003"}
+        resp.json.return_value = {"id": 77003, "slug": "4ad6facaaf3e419d"}
+        return resp
+
+    monkeypatch.setattr("services.mercos_api_client.requests.request", _req)
+
+    out = svc.criar_promocao(
+        {
+            "nome": "2f9bdb1b4a8a4d81",
+            "slug": "4ad6facaaf3e419d",
+            "data_inicial": "2026-07-21",
+            "data_final": "2026-08-20",
+            "regras": [{"produto_id": 20405073, "desconto": 21}],
+        }
+    )
+    assert out["status_code"] == 201
+    assert str(out["id"]) == "77003"
+    assert len(chamadas) == 1
+    metodo, url = chamadas[0]
+    assert metodo == "POST"
+    assert url.endswith("/v1/promocoes")
+    assert "/v1/produtos" not in url

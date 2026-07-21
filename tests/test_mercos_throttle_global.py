@@ -288,3 +288,53 @@ def test_cliente_direto_do_mercos_service_passa_pelo_limiter(monkeypatch):
     assert any(
         r["metodo"] == "POST" and r["endpoint"] == "/v1/clientes" for r in registros
     )
+
+
+def test_promocao_post_passa_pelo_throttler_e_considera_chamada_anterior(monkeypatch):
+    """Promoção POST (criar_promocao → post_json → request_mercos) passa pelo
+    throttler global: audita POST /v1/promocoes, considera a chamada anterior de
+    outra entidade (>= 10s), retorna 201 e NÃO cria produto."""
+    from services import mercos_homolog_service as svc
+
+    _prep_request(monkeypatch)
+    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "10")
+    wall = _Wall(t=1000.0)
+    mercos_throttle.configurar_para_testes(relogio=wall.agora, dormir=wall.dormir)
+
+    urls: list[tuple[str, str]] = []
+
+    def _req(method, url, **_kw):
+        urls.append((method, url))
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.text = "{}"
+        resp.headers = {"MeusPedidosID": "77004"}
+        resp.json.return_value = {"id": 77004, "slug": "4ad6facaaf3e419d"}
+        return resp
+
+    monkeypatch.setattr("services.mercos_api_client.requests.request", _req)
+
+    # Chamada anterior de OUTRA entidade fixa o início global.
+    svc.get_json("/v1/produtos")
+    ts_produtos = wall.t
+
+    out = svc.criar_promocao(
+        {
+            "nome": "2f9bdb1b4a8a4d81",
+            "slug": "4ad6facaaf3e419d",
+            "data_inicial": "2026-07-21",
+            "data_final": "2026-08-20",
+            "regras": [{"produto_id": 20405073, "desconto": 21}],
+        }
+    )
+    assert out["status_code"] == 201
+
+    registros = mercos_throttle.auditoria(limite=10)
+    post_promo = [
+        r for r in registros if r["metodo"] == "POST" and r["endpoint"] == "/v1/promocoes"
+    ]
+    assert post_promo, "Promoção POST não gerou auditoria (fora do limiter)"
+    assert post_promo[0]["intervalo_desde_anterior"] >= 10.0
+    assert wall.t - ts_produtos >= 10.0
+    # Não cria produto: nenhum POST para /v1/produtos.
+    assert not any(m == "POST" and u.endswith("/v1/produtos") for m, u in urls)

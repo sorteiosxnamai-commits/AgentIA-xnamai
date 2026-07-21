@@ -6939,6 +6939,135 @@ class _WallUI:
             self.t += float(segundos)
 
 
+def test_promocao_post_single_shot_throttler_e_cartao(client, monkeypatch):
+    """Promoção POST via UI: um clique = um POST /v1/promocoes, passa pelo
+    throttler (>= 10s), não cria produto, e o cartão mostra os campos exigidos
+    (Status, ID, Nome, Slug, Produto, Desconto, intervalo global, throttling e
+    origem Sandbox) — sem token nem JSON cru."""
+    from services import mercos_promocoes_catalogo as catg
+    from services import mercos_throttle
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr(
+        "services.mercos_api_client.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr("services.mercos_api_client.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "services.mercos_api_client._application_tokens", lambda: ["app-token"]
+    )
+    monkeypatch.setenv("MERCOS_COMPANY_TOKEN", "empresa-promo-ui")
+    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "10")
+    wall = _WallUI()
+    mercos_throttle.configurar_para_testes(relogio=wall.agora, dormir=wall.dormir)
+
+    chamadas: list[tuple[str, str, object]] = []
+
+    def _req(method, url, **kw):
+        chamadas.append((method, url, kw.get("json")))
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.text = "{}"
+        resp.headers = {"MeusPedidosID": "77001"}
+        resp.json.return_value = {"id": 77001, "slug": "4ad6facaaf3e419d"}
+        return resp
+
+    monkeypatch.setattr("services.mercos_api_client.requests.request", _req)
+
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    form = {
+        "token": "segredo-ui-homolog",
+        "nome": "2f9bdb1b4a8a4d81",
+        "slug": "4ad6facaaf3e419d",
+        "produto_id": "20405073",
+        "produto_nome": "fad3fccd6b3245cf",
+        "desconto": "21",
+        "data_inicial": "2026-07-21",
+        "data_final": "2026-08-20",
+    }
+    # 1º POST fixa o início global; 2º POST deve aguardar >= 10s.
+    primeiro = client.post("/mercos/homologacao-ui/acoes/promocoes-criar", data=form)
+    assert primeiro.status_code == 200
+    segundo = client.post("/mercos/homologacao-ui/acoes/promocoes-criar", data=form)
+    assert segundo.status_code == 200
+    html = segundo.text
+
+    assert "Promoção cadastrada" in html
+    assert "Status 201" in html
+    assert "77001" in html
+    assert "4ad6facaaf3e419d" in html
+    assert "20405073" in html
+    assert "fad3fccd6b3245cf" in html
+    assert "21%" in html
+    assert "POST Promoção" in html
+    assert "Throttling global respeitado" in html
+    assert "10.0s" in html
+    assert "Mercos Sandbox" in html
+    # Sem segredos nem JSON cru.
+    assert "empresa-promo-ui" not in html
+    assert '"dados"' not in html
+
+    # Single-shot: exatamente um POST /v1/promocoes por clique (2 cliques).
+    assert len(chamadas) == 2
+    assert all(m == "POST" and u.endswith("/v1/promocoes") for m, u, _ in chamadas)
+    # Não cria produto.
+    assert not any("/v1/produtos" in u for _, u, _ in chamadas)
+    # Payload segue o contrato (regras com produto_id + desconto).
+    _, _, corpo = chamadas[-1]
+    assert corpo["nome"] == "2f9bdb1b4a8a4d81"
+    assert corpo["slug"] == "4ad6facaaf3e419d"
+    assert corpo["regras"] == [{"produto_id": 20405073, "desconto": 21.0}]
+    assert corpo["data_inicial"] == "2026-07-21"
+    assert corpo["data_final"] == "2026-08-20"
+    # Modo exclusivo liberado após concluir.
+    assert catg.modo_exclusivo_ativo() is False
+
+
+def test_promocao_post_erro_412_mostra_cartao_de_erro(client, monkeypatch):
+    """Erro 412 (validação de negócio) da Mercos vira cartão de erro amigável."""
+    from services import mercos_throttle
+
+    monkeypatch.setattr("routes.mercos_homolog_ui.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "routes.mercos_homolog_ui.mercos_ambiente_sandbox", lambda: True
+    )
+    monkeypatch.setattr("services.mercos_api_client.mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        "services.mercos_api_client._application_tokens", lambda: ["app-token"]
+    )
+    monkeypatch.setenv("MERCOS_COMPANY_TOKEN", "empresa-promo-erro")
+    monkeypatch.setenv("MERCOS_THROTTLE_INTERVALO_SEGUNDOS", "0")
+    wall = _WallUI()
+    mercos_throttle.configurar_para_testes(relogio=wall.agora, dormir=wall.dormir)
+
+    def _req(method, url, **_kw):
+        resp = MagicMock()
+        resp.status_code = 412
+        resp.text = '{"erro": "regra invalida"}'
+        resp.headers = {}
+        resp.json.return_value = {"erro": "regra invalida"}
+        return resp
+
+    monkeypatch.setattr("services.mercos_api_client.requests.request", _req)
+
+    client.get("/mercos/homologacao-ui?token=segredo-ui-homolog")
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/promocoes-criar",
+        data={
+            "token": "segredo-ui-homolog",
+            "nome": "2f9bdb1b4a8a4d81",
+            "produto_id": "20405073",
+            "desconto": "21",
+            "data_inicial": "2026-07-21",
+            "data_final": "2026-08-20",
+        },
+    )
+    assert resp.status_code == 200
+    assert "empresa-promo-erro" not in resp.text
+
+
 def test_produto_post_cartao_mostra_throttling_global_maior_igual_10(client, monkeypatch):
     """Produto POST passa pelo throttler (10s), retorna 201 e o cartão mostra o
     intervalo global >= 10s e 'Throttling global respeitado: Sim' — sem segredos."""
