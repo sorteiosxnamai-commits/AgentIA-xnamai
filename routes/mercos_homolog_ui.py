@@ -1581,6 +1581,12 @@ def _linhas_ciclo_promocoes(
     )
     externas_bloqueadas = mercos_throttle.chamadas_externas() + mercos_throttle.bloqueios()
 
+    exclusivo = catalogo_promocoes.modo_exclusivo_estado()
+    exclusivo_ativo = bool(exclusivo.get("ativo"))
+    exclusivo_label = "Ativo" if exclusivo_ativo else "Inativo"
+    exclusivo_motivo = exclusivo.get("motivo") or ("—" if not exclusivo_ativo else "")
+    exclusivo_etapa = exclusivo.get("etapa") or "—"
+
     return [
         ("Etapa interna", f"{etapa}/2"),
         ("Tipo da última busca", tipo_label),
@@ -1602,6 +1608,9 @@ def _linhas_ciclo_promocoes(
         ("Menor intervalo entre chamadas (global)", menor_global_label),
         ("Chamadas externas/bloqueadas", externas_bloqueadas),
         ("Throttling global respeitado", throttling_global_label),
+        ("Modo exclusivo", exclusivo_label),
+        ("Modo exclusivo — motivo", exclusivo_motivo or "—"),
+        ("Modo exclusivo — etapa que mantém o bloqueio", exclusivo_etapa),
         ("Total retornado em todas as páginas", sync.get("total_lote") or 0),
         ("Total no catálogo", len((estado or {}).get("promocoes") or {})),
         ("Motivo da parada", sync.get("motivo_parada") or "—"),
@@ -1670,27 +1679,33 @@ def _acao_permitida_no_modo_exclusivo(path: str) -> bool:
 
 
 def modo_exclusivo_bloqueio(request: Request) -> HTMLResponse | None:
-    """Modo exclusivo: enquanto o ciclo de Promoções está ativo, bloqueia com 409
-    amigável as demais chamadas Mercos pela UI. Não bloqueia buscas locais."""
-    sessao = (request.cookies.get(_COOKIE_PROMOCOES_SESSAO) or "").strip()
-    if not sessao or not catalogo_promocoes.ciclo_ativo(sessao):
+    """Modo exclusivo: bloqueia com 409 amigável as demais chamadas Mercos da UI
+    SOMENTE enquanto uma sincronização GET de Promoções está realmente em
+    andamento. Não considera catálogo, cursor nem histórico — apenas o flag de
+    execução, ligado no início do sync e desligado no finally."""
+    del request  # o modo exclusivo é global por processo (não por sessão)
+    estado = catalogo_promocoes.modo_exclusivo_estado()
+    if not estado.get("ativo"):
         return None
     mercos_throttle.registrar_bloqueio()
+    etapa = estado.get("etapa") or "—"
     card = _card(
         "Homologação de Promoções em andamento",
         [
             (
                 "Mensagem",
-                "Modo exclusivo ativo: enquanto o ciclo de Promoções estiver em "
-                "andamento, as demais chamadas Mercos ficam bloqueadas.",
+                "Modo exclusivo ativo: uma sincronização GET de Promoções está em "
+                "andamento; as demais chamadas Mercos ficam bloqueadas até concluir.",
             ),
+            ("Etapa em execução", etapa),
+            ("Motivo", estado.get("motivo") or "—"),
             (
                 "Permitido agora",
                 "Localizar promoções no catálogo local e reiniciar o ciclo.",
             ),
             (
                 "Como liberar",
-                "Conclua o ciclo de Promoções (etapa 2/2) ou reinicie-o.",
+                "Aguarde a sincronização terminar ou reinicie o ciclo.",
             ),
         ],
         status_label="Bloqueado (409)",
@@ -6935,6 +6950,9 @@ def acao_promocoes_reiniciar(
     _auth(request, token)
     sessao = _obter_ou_criar_sessao_promocoes(request)
     catalogo_promocoes.iniciar_ciclo(sessao)
+    # Limpa também o modo exclusivo: reiniciar nunca deixa outras rotas bloqueadas
+    # e não chama a Mercos.
+    catalogo_promocoes.finalizar_modo_exclusivo()
     homolog._limpar_resumes_da_sessao(sessao)
     estado = catalogo_promocoes.obter(sessao)
     mensagem = (
@@ -7008,7 +7026,11 @@ def acao_promocoes_sincronizar(
         cursor_para_sync = cursor_form
         tipo_esperado = "incremental"
 
+    etapa_label = "1/2" if etapa == 0 else "2/2"
     try:
+        # Modo exclusivo ATIVO só durante a execução real do sync GET (liberado
+        # no finally, inclusive em erro/429/exceção).
+        catalogo_promocoes.iniciar_modo_exclusivo(etapa_label)
         data = homolog.sincronizar_promocoes(
             cursor_para_sync, max_paginas=20, sessao_id=sessao
         )
@@ -7172,6 +7194,9 @@ def acao_promocoes_sincronizar(
             extra_attrs={"status-sync": "erro", **_attrs_ciclo_promocoes(sessao)},
         )
         return _garantir_sessao_promocoes_cookie(resp, sessao)
+    finally:
+        # Libera o modo exclusivo em QUALQUER saída (sucesso, 429, erro, exceção).
+        catalogo_promocoes.finalizar_modo_exclusivo()
 
 
 @router.post("/homologacao-ui/acoes/promocoes-localizar", response_class=HTMLResponse)

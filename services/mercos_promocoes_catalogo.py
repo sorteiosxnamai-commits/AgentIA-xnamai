@@ -17,6 +17,40 @@ _CATALOGOS: dict[str, dict[str, Any]] = {}
 
 ETAPA_MAXIMA = 2
 
+# Modo exclusivo de homologação: ativo SOMENTE durante a execução real de uma
+# sincronização GET de Promoções (etapa 1/2 ou 2/2). Não depende de catálogo,
+# cursor ou histórico — é ligado no início do sync e desligado no finally.
+_MODO_EXCLUSIVO_LOCK = threading.Lock()
+_MODO_EXCLUSIVO: dict[str, Any] = {"ativo": False, "etapa": None, "motivo": None}
+
+
+def iniciar_modo_exclusivo(etapa: str, motivo: str | None = None) -> None:
+    """Liga o modo exclusivo enquanto uma sincronização GET está em andamento."""
+    with _MODO_EXCLUSIVO_LOCK:
+        _MODO_EXCLUSIVO["ativo"] = True
+        _MODO_EXCLUSIVO["etapa"] = etapa
+        _MODO_EXCLUSIVO["motivo"] = (
+            motivo or "Sincronização GET de Promoções em andamento"
+        )
+
+
+def finalizar_modo_exclusivo() -> None:
+    """Desliga o modo exclusivo (chamar sempre no finally do sync e no reiniciar)."""
+    with _MODO_EXCLUSIVO_LOCK:
+        _MODO_EXCLUSIVO["ativo"] = False
+        _MODO_EXCLUSIVO["etapa"] = None
+        _MODO_EXCLUSIVO["motivo"] = None
+
+
+def modo_exclusivo_ativo() -> bool:
+    with _MODO_EXCLUSIVO_LOCK:
+        return bool(_MODO_EXCLUSIVO["ativo"])
+
+
+def modo_exclusivo_estado() -> dict[str, Any]:
+    with _MODO_EXCLUSIVO_LOCK:
+        return dict(_MODO_EXCLUSIVO)
+
 
 def _ciclo_vazio() -> dict[str, Any]:
     return {
@@ -382,6 +416,7 @@ def total(sessao_id: str) -> int:
 def _reset_todos_para_testes() -> None:
     with _LOCK:
         _CATALOGOS.clear()
+    finalizar_modo_exclusivo()
 
 
 __all__ = [
@@ -390,6 +425,10 @@ __all__ = [
     "obter_ciclo",
     "ciclo_ativo",
     "iniciar_ciclo",
+    "iniciar_modo_exclusivo",
+    "finalizar_modo_exclusivo",
+    "modo_exclusivo_ativo",
+    "modo_exclusivo_estado",
     "registrar_sync_ciclo",
     "substituir_completo",
     "upsert_incremental",

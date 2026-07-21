@@ -6757,33 +6757,174 @@ def test_promocoes_reiniciar_nao_chama_mercos(client, monkeypatch):
     assert catg.obter_ciclo(sessao)["etapa_interna"] == 0
 
 
-def test_modo_exclusivo_bloqueia_outras_entidades_com_409(client, monkeypatch):
-    """Com o ciclo de Promoções ativo, outras chamadas Mercos da UI recebem 409
-    amigável; localizar no catálogo local e reiniciar continuam permitidos."""
-    _prep_promocoes(client, monkeypatch)
-    outra_chamada = MagicMock()
-    monkeypatch.setattr(
-        "services.mercos_homolog_service.listar_categorias", outra_chamada
-    )
-    # Ativa o ciclo de Promoções (sem chamar a Mercos).
-    reinit = client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
-    assert reinit.status_code == 200
+def _form_produto_homolog() -> dict:
+    return {
+        "nome": "Produto Homolog",
+        "codigo": "HOM-P-01",
+        "preco_tabela": "19.90",
+        "saldo_estoque": "5",
+        "ativo": "true",
+        "unidade": "UN",
+    }
 
-    # Outra entidade (categorias) é bloqueada com 409 e NÃO chama a Mercos.
-    bloqueada = client.post(
-        "/mercos/homologacao-ui/acoes/categorias",
-        data={"token": "segredo-ui-homolog"},
-    )
+
+def _fake_criar_produto_ok():
+    def fake_criar(body):
+        return {
+            "ok": True,
+            "status_code": 201,
+            "id": 555,
+            "dados": {"id": 555, "nome": body["nome"], "codigo": body["codigo"]},
+        }
+
+    return fake_criar
+
+
+def test_modo_exclusivo_bloqueia_produto_post_durante_sincronizacao(client, monkeypatch):
+    """Enquanto uma sincronização GET de Promoções está em andamento, o Produto
+    POST recebe 409 amigável e NÃO chama a Mercos."""
+    from services import mercos_promocoes_catalogo as catg
+
+    _prep_promocoes(client, monkeypatch)
+    criar = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.criar_produto", criar)
+
+    # Simula o sync GET realmente em execução (etapa 1/2).
+    catg.iniciar_modo_exclusivo("1/2")
+    try:
+        bloqueada = client.post(
+            "/mercos/homologacao-ui/acoes/produtos-criar",
+            data=_form_produto_homolog(),
+        )
+    finally:
+        catg.finalizar_modo_exclusivo()
     assert bloqueada.status_code == 409
     assert "Homologação de Promoções em andamento" in bloqueada.text
-    outra_chamada.assert_not_called()
+    criar.assert_not_called()
 
-    # Localizar no catálogo local continua permitido (não chama a Mercos).
-    local = client.post(
-        "/mercos/homologacao-ui/acoes/promocoes-localizar",
-        data={"token": "segredo-ui-homolog", "slug": "inexistente"},
-    )
+    # Localizar no catálogo local continua permitido durante o sync.
+    catg.iniciar_modo_exclusivo("2/2")
+    try:
+        local = client.post(
+            "/mercos/homologacao-ui/acoes/promocoes-localizar",
+            data={"token": "segredo-ui-homolog", "slug": "inexistente"},
+        )
+    finally:
+        catg.finalizar_modo_exclusivo()
     assert local.status_code == 200
+
+
+def test_modo_exclusivo_liberado_apos_etapa_2_2(client, monkeypatch):
+    """Concluída a etapa 2/2 do GET, o modo exclusivo fica inativo e o Produto
+    POST volta a funcionar."""
+    from services import mercos_promocoes_catalogo as catg
+
+    _prep_promocoes(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_promocoes_sandbox(cursores),
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_produto", _fake_criar_produto_ok()
+    )
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")  # etapa 1/2
+    resp2 = client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")  # 2/2
+    assert resp2.status_code == 200
+    assert catg.modo_exclusivo_ativo() is False
+
+    criado = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-criar",
+        data=_form_produto_homolog(),
+    )
+    assert criado.status_code == 200
+    assert "Produto cadastrado" in criado.text
+
+
+def test_reiniciar_ciclo_libera_produto_post(client, monkeypatch):
+    """Reiniciar o ciclo limpa o modo exclusivo; Produto POST não é bloqueado."""
+    from services import mercos_promocoes_catalogo as catg
+
+    _prep_promocoes(client, monkeypatch)
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_produto", _fake_criar_produto_ok()
+    )
+    # Deixa o modo exclusivo "preso" (como no bug relatado) e reinicia.
+    catg.iniciar_modo_exclusivo("2/2")
+    reinit = client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    assert reinit.status_code == 200
+    assert catg.modo_exclusivo_ativo() is False
+
+    criado = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-criar",
+        data=_form_produto_homolog(),
+    )
+    assert criado.status_code == 200
+    assert "Produto cadastrado" in criado.text
+
+
+def test_erro_durante_sincronizacao_libera_lock_no_finally(client, monkeypatch):
+    """Se a sincronização falhar, o modo exclusivo é liberado no finally."""
+    from services import mercos_promocoes_catalogo as catg
+
+    _prep_promocoes(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise RuntimeError("falha simulada no sync")
+
+    monkeypatch.setattr("services.mercos_homolog_service.sincronizar_promocoes", explode)
+    resp = client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")
+    assert resp.status_code == 200  # cartão de erro amigável
+    assert catg.modo_exclusivo_ativo() is False
+
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_produto", _fake_criar_produto_ok()
+    )
+    criado = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-criar",
+        data=_form_produto_homolog(),
+    )
+    assert criado.status_code == 200
+
+
+def test_catalogo_e_cursor_nao_ativam_modo_exclusivo(client, monkeypatch):
+    """Catálogo/cursor existentes (sem sync em execução) não bloqueiam Produto POST."""
+    from services import mercos_promocoes_catalogo as catg
+
+    _prep_promocoes(client, monkeypatch)
+    cursores: list[str | None] = []
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.get_json_com_headers",
+        _fake_promocoes_sandbox(cursores),
+    )
+    monkeypatch.setattr(
+        "services.mercos_homolog_service.criar_produto", _fake_criar_produto_ok()
+    )
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    client.post("/mercos/homologacao-ui/acoes/promocoes-sincronizar")
+    # Há catálogo e cursor, mas nenhum sync em execução.
+    assert catg.modo_exclusivo_ativo() is False
+
+    criado = client.post(
+        "/mercos/homologacao-ui/acoes/produtos-criar",
+        data=_form_produto_homolog(),
+    )
+    assert criado.status_code == 200
+
+
+def test_reiniciar_nao_chama_mercos_e_limpa_exclusivo(client, monkeypatch):
+    """Reiniciar não chama a Mercos e desliga o modo exclusivo."""
+    from services import mercos_promocoes_catalogo as catg
+
+    _prep_promocoes(client, monkeypatch)
+    called = MagicMock()
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", called)
+    catg.iniciar_modo_exclusivo("1/2")
+    resp = client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    assert resp.status_code == 200
+    called.assert_not_called()
+    assert catg.modo_exclusivo_ativo() is False
 
 
 def _fake_promocoes_sandbox(cursores_vistos):
