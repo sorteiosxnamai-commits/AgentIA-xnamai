@@ -1626,6 +1626,50 @@ def _html_tabela_promocoes(itens: list) -> str:
     )
 
 
+def _html_tabela_promocoes_localizacao(
+    itens: list, row_classes: list[str] | None = None
+) -> str:
+    """Tabela de correspondências do slug com coluna Situação e destaque do ativo."""
+    rows = []
+    for item in itens or []:
+        if not isinstance(item, dict):
+            continue
+        excluido = _fmt_bool(item.get("excluido", False))
+        situacao = "Excluído" if excluido == "Sim" else "Ativo"
+        rows.append(
+            [
+                _campo(item, "id"),
+                _campo(item, "slug"),
+                _campo(item, "nome"),
+                item.get("data_inicial")
+                if item.get("data_inicial") not in (None, "")
+                else "—",
+                item.get("data_final")
+                if item.get("data_final") not in (None, "")
+                else "—",
+                excluido,
+                situacao,
+                item.get("ultima_alteracao")
+                if item.get("ultima_alteracao") not in (None, "")
+                else "—",
+            ]
+        )
+    return _table(
+        [
+            "ID",
+            "Slug",
+            "Nome",
+            "Data inicial",
+            "Data final",
+            "Excluído",
+            "Situação",
+            "Última alteração",
+        ],
+        rows,
+        row_classes=row_classes,
+    )
+
+
 def _fmt_total_pedido(valor: Any) -> str:
     if valor in (None, ""):
         return "—"
@@ -7032,8 +7076,10 @@ def acao_promocoes_localizar(
             sessao,
         )
 
-    encontrado, no_ultimo_lote, estado = catalogo_promocoes.buscar_por_slug(sessao, busca)
-    if not encontrado:
+    ativo, correspondentes, no_ultimo_lote, estado = catalogo_promocoes.buscar_por_slug(
+        sessao, busca
+    )
+    if not correspondentes:
         return _garantir_sessao_promocoes_cookie(
             _wrap_result(
                 _card(
@@ -7054,23 +7100,61 @@ def acao_promocoes_localizar(
             sessao,
         )
 
-    data_inicial = encontrado.get("data_inicial")
+    # Tabela com TODOS os registros do slug (o registro ativo é destacado).
+    id_ativo = str(ativo.get("id")) if ativo else None
+    row_classes = [
+        "ativo" if str(p.get("id")) == id_ativo and id_ativo is not None else ""
+        for p in correspondentes
+    ]
+    tabela = ""
+    if len(correspondentes) > 1:
+        tabela = _html_tabela_promocoes_localizacao(correspondentes, row_classes)
+
+    if ativo is None:
+        # Existe o slug, mas só registros excluídos: nunca servem como ativo.
+        linhas_inativas: list[tuple[str, Any]] = [
+            ("Slug buscado", busca),
+            ("Registros encontrados", len(correspondentes)),
+            ("Registros ativos", 0),
+        ]
+        linhas_inativas.extend(_linhas_ciclo_promocoes(sessao, estado))
+        card = _card(
+            "Nenhuma promoção ativa encontrada para este slug.",
+            linhas_inativas,
+            status_label="Sem promoção ativa",
+            css="erro",
+        )
+        ciclo_depois = catalogo_promocoes.obter_ciclo(sessao)
+        if ciclo_antes.get("etapa_interna") != ciclo_depois.get("etapa_interna"):
+            catalogo_promocoes._salvar_ciclo(sessao, ciclo_antes)
+        resp = _wrap_result(
+            card + tabela + _html_patch_catalogo_promocoes(sessao),
+            extra_attrs={
+                "status-sync": "sem-ativo",
+                "cursor-intacto": "1",
+                **_attrs_ciclo_promocoes(sessao),
+            },
+        )
+        return _garantir_sessao_promocoes_cookie(resp, sessao)
+
+    data_inicial = ativo.get("data_inicial")
     if data_inicial in (None, ""):
         data_inicial = "—"
-    data_final = encontrado.get("data_final")
+    data_final = ativo.get("data_final")
     if data_final in (None, ""):
         data_final = "—"
-    ultima = encontrado.get("ultima_alteracao")
+    ultima = ativo.get("ultima_alteracao")
     if ultima is None or ultima == "":
         ultima = "—"
     linhas: list[tuple[str, Any]] = [
-        ("ID", encontrado.get("id")),
-        ("Slug", encontrado.get("slug")),
-        ("Nome", encontrado.get("nome")),
+        ("ID ativo", ativo.get("id")),
+        ("Slug", ativo.get("slug")),
+        ("Nome", ativo.get("nome")),
         ("Data inicial", data_inicial),
         ("Data final", data_final),
-        ("Excluído", _fmt_bool(encontrado.get("excluido", False))),
+        ("Excluído", _fmt_bool(ativo.get("excluido", False))),
         ("Última alteração", ultima),
+        ("Registros com este slug", len(correspondentes)),
         ("Origem", "Catálogo local sincronizado"),
     ]
     linhas.extend(_linhas_ciclo_promocoes(sessao, estado))
@@ -7081,7 +7165,7 @@ def acao_promocoes_localizar(
             "não veio no último lote incremental.</p>"
         )
     card = _card(
-        "Promoção localizada",
+        "Promoção ativa localizada",
         linhas,
         status_label="Encontrado",
         css="ok",
@@ -7090,7 +7174,7 @@ def acao_promocoes_localizar(
     if ciclo_antes.get("etapa_interna") != ciclo_depois.get("etapa_interna"):
         catalogo_promocoes._salvar_ciclo(sessao, ciclo_antes)
     resp = _wrap_result(
-        nota + card + _html_patch_catalogo_promocoes(sessao),
+        nota + card + tabela + _html_patch_catalogo_promocoes(sessao),
         extra_attrs={
             "status-sync": "localizado",
             "cursor-intacto": "1",

@@ -310,32 +310,56 @@ def hidratar_se_vazio(sessao_id: str, payload: Any) -> dict[str, Any]:
     return obter(sid)
 
 
+def _e_excluido(promo: dict[str, Any]) -> bool:
+    """True quando a promoção está excluída (inativa). Default: ativa."""
+    valor = promo.get("excluido", False)
+    if isinstance(valor, bool):
+        return valor
+    return str(valor).strip().lower() in ("1", "true", "sim", "s")
+
+
 def buscar_por_slug(
     sessao_id: str,
     slug: str,
-) -> tuple[dict[str, Any] | None, bool, dict[str, Any]]:
-    """Busca no catálogo local pelo slug (exato ou case-insensitive). Não chama a Mercos."""
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool, dict[str, Any]]:
+    """Busca no catálogo local pelo slug (exato ou case-insensitive). Não chama a Mercos.
+
+    A Mercos pede a promoção ATIVA do slug: priorizamos obrigatoriamente
+    ``excluido == false``. Nunca devolvemos um registro excluído como ativo.
+    Retorna ``(ativo, correspondentes, ativo_no_ultimo_lote, estado)``:
+    - ``ativo``: a promoção ativa escolhida (mais recente por ultima_alteracao)
+      ou ``None`` se todas as correspondentes estiverem excluídas;
+    - ``correspondentes``: todos os registros do slug (ativos e excluídos).
+    """
     estado = obter(sessao_id)
     busca = (slug or "").strip()
     if not busca:
-        return None, False, estado
+        return None, [], False, estado
     busca_l = busca.lower()
-    exato = None
-    case_insensitive = None
+    exatos: list[dict[str, Any]] = []
+    case_insensitive: list[dict[str, Any]] = []
     for promo in (estado.get("promocoes") or {}).values():
         if not isinstance(promo, dict):
             continue
         slug_promo = str(promo.get("slug") or "")
         if slug_promo == busca:
-            exato = promo
-            break
-        if case_insensitive is None and slug_promo.lower() == busca_l:
-            case_insensitive = promo
-    encontrado = exato or case_insensitive
-    if not encontrado:
-        return None, False, estado
-    no_lote = str(encontrado.get("id")) in set(estado.get("ids_ultimo_lote") or [])
-    return deepcopy(encontrado), no_lote, estado
+            exatos.append(promo)
+        elif slug_promo.lower() == busca_l:
+            case_insensitive.append(promo)
+    correspondentes = exatos if exatos else case_insensitive
+    if not correspondentes:
+        return None, [], False, estado
+    # Prioriza obrigatoriamente registros ativos (excluido == false); entre os
+    # ativos, o mais recente por ultima_alteracao.
+    ativos = [p for p in correspondentes if not _e_excluido(p)]
+    ativo = None
+    if ativos:
+        ativo = max(ativos, key=lambda p: str(p.get("ultima_alteracao") or ""))
+    correspondentes_cp = [deepcopy(p) for p in correspondentes]
+    ativo_cp = deepcopy(ativo) if ativo is not None else None
+    ids_lote = set(estado.get("ids_ultimo_lote") or [])
+    no_lote = ativo_cp is not None and str(ativo_cp.get("id")) in ids_lote
+    return ativo_cp, correspondentes_cp, no_lote, estado
 
 
 def snapshot_sessao(sessao_id: str) -> dict[str, Any]:

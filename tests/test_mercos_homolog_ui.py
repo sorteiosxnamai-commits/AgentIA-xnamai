@@ -6979,7 +6979,7 @@ def test_promocoes_localizar_slug_sem_http(client, monkeypatch):
         data={"slug": "228d165932574cab"},
     )
     assert resp.status_code == 200
-    assert "Promoção localizada" in resp.text
+    assert "Promoção ativa localizada" in resp.text
     assert "110471" in resp.text
     assert "228d165932574cab" in resp.text
     assert "4968442715c948da" in resp.text
@@ -7302,9 +7302,98 @@ def test_promocoes_localiza_slug_alvo_como_id_apos_throttling(client, monkeypatc
         data={"slug": "228d165932574cab"},
     )
     assert resp.status_code == 200
-    assert "Promoção localizada" in resp.text
+    assert "Promoção ativa localizada" in resp.text
     assert "110471" in resp.text
     assert catg.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+
+def test_promocoes_localizar_prioriza_ativo_ignorando_excluido(client, monkeypatch):
+    """Dois registros do mesmo slug (um excluído, um ativo): retorna o ATIVO."""
+    catg = _prep_promocoes(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar promoção não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+    monkeypatch.setattr("services.mercos_homolog_service.get_json", explode)
+
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    sessao = client.cookies.get("mercos_promocoes_sessao")
+    catg.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 110473,
+                "nome": "promo-excluida",
+                "slug": "55c218df0edd4bef",
+                "data_inicial": "2026-02-01",
+                "data_final": "2026-06-30",
+                "excluido": True,
+                "ultima_alteracao": "2026-07-18 09:00:00",
+            },
+            {
+                "id": 110480,
+                "nome": "promo-ativa",
+                "slug": "55c218df0edd4bef",
+                "data_inicial": "2026-03-01",
+                "data_final": "2026-12-31",
+                "excluido": False,
+                "ultima_alteracao": "2026-07-19 10:00:00",
+            },
+        ],
+    )
+    etapa_antes = catg.obter_ciclo(sessao)["etapa_interna"]
+
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/promocoes-localizar",
+        data={"slug": "55c218df0edd4bef"},
+    )
+    assert resp.status_code == 200
+    # Retorna o registro ATIVO; nunca o excluído como ativo.
+    assert "Promoção ativa localizada" in resp.text
+    assert "110480" in resp.text
+    # O card principal exibe o ID ativo, não o excluído.
+    card_ativo = resp.text.split("Promoção ativa localizada")[1].split("</ul>")[0]
+    assert "110480" in card_ativo
+    assert "110473" not in card_ativo
+    # Ambos os registros aparecem na tabela de correspondências.
+    assert "promo-excluida" in resp.text
+    assert "promo-ativa" in resp.text
+    # Localização não altera cursor nem etapa e não chama HTTP.
+    assert 'data-cursor-intacto="1"' in resp.text
+    assert catg.obter_ciclo(sessao)["etapa_interna"] == etapa_antes
+
+
+def test_promocoes_localizar_slug_so_excluido_sem_ativo(client, monkeypatch):
+    """Slug só com registro excluído: mostra mensagem de nenhuma promoção ativa."""
+    catg = _prep_promocoes(client, monkeypatch)
+
+    def explode(*_a, **_k):
+        raise AssertionError("Localizar promoção não pode chamar a API Mercos")
+
+    monkeypatch.setattr("services.mercos_homolog_service.get_json_com_headers", explode)
+
+    client.post("/mercos/homologacao-ui/acoes/promocoes-reiniciar")
+    sessao = client.cookies.get("mercos_promocoes_sessao")
+    catg.upsert_incremental(
+        sessao,
+        [
+            {
+                "id": 110473,
+                "nome": "promo-excluida",
+                "slug": "55c218df0edd4bef",
+                "excluido": True,
+                "ultima_alteracao": "2026-07-18 09:00:00",
+            }
+        ],
+    )
+    resp = client.post(
+        "/mercos/homologacao-ui/acoes/promocoes-localizar",
+        data={"slug": "55c218df0edd4bef"},
+    )
+    assert resp.status_code == 200
+    assert "Nenhuma promoção ativa encontrada para este slug." in resp.text
+    assert 'data-cursor-intacto="1"' in resp.text
 
 
 # ---------------------------------------------------------------------------
