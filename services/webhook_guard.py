@@ -15,6 +15,8 @@ from services.webhook_service import (
 
 # msg_id -> "processing" | "done"
 _IDS_ESTADO: dict[str, str] = {}
+# IDs cujo WhatsApp já foi enviado com sucesso — nunca liberar para retry
+_IDS_ENVIADOS: set[str] = set()
 _IDS_LOCK = threading.Lock()
 
 # telefone -> lock
@@ -26,7 +28,7 @@ def reclamar_mensagem(data: dict) -> tuple[bool, str]:
     """
     Tenta 'claim' do ID da mensagem antes de processar.
     Retorna (ok, motivo). ok=False => duplicado ou já em processamento.
-    Memória + banco (message_id em conversas) como fonte final.
+    Memória + banco (message_id em conversas/historico) como fonte final.
     """
     evento = data.get("data") or {}
     msg_id = extrair_id_mensagem(data, evento)
@@ -35,6 +37,8 @@ def reclamar_mensagem(data: dict) -> tuple[bool, str]:
 
     with _IDS_LOCK:
         _limpar_ids_antigos()
+        if msg_id in _IDS_ENVIADOS:
+            return False, f"ja_enviado id={msg_id}"
         estado = _IDS_ESTADO.get(msg_id)
         if estado == "done" or msg_id in _IDS_PROCESSADOS:
             return False, f"duplicado id={msg_id}"
@@ -48,12 +52,15 @@ def reclamar_mensagem(data: dict) -> tuple[bool, str]:
         if mensagem_ja_existe(msg_id):
             with _IDS_LOCK:
                 _IDS_ESTADO[msg_id] = "done"
+                _IDS_ENVIADOS.add(msg_id)
                 _IDS_PROCESSADOS[msg_id] = time.time()
             return False, f"duplicado_banco id={msg_id}"
     except Exception as exc:
         log_seguro("checagem_banco_falhou", message_id=msg_id, erro=type(exc).__name__)
 
     with _IDS_LOCK:
+        if msg_id in _IDS_ENVIADOS:
+            return False, f"ja_enviado id={msg_id}"
         estado = _IDS_ESTADO.get(msg_id)
         if estado == "done" or msg_id in _IDS_PROCESSADOS:
             return False, f"duplicado id={msg_id}"
@@ -64,17 +71,37 @@ def reclamar_mensagem(data: dict) -> tuple[bool, str]:
     return True, f"claim id={msg_id}"
 
 
+def marcar_envio_concluido(data: dict | None = None, message_id: str | None = None) -> None:
+    """Marca message_id como já enviado — nunca libera em finalizar_mensagem."""
+    msg_id = (message_id or "").strip()
+    if not msg_id and isinstance(data, dict):
+        evento = data.get("data") or {}
+        msg_id = extrair_id_mensagem(data, evento)
+    if not msg_id:
+        return
+    with _IDS_LOCK:
+        _IDS_ENVIADOS.add(msg_id)
+        _IDS_ESTADO[msg_id] = "done"
+        _IDS_PROCESSADOS[msg_id] = time.time()
+    log_seguro("message_id_enviado", message_id=msg_id)
+
+
 def finalizar_mensagem(data: dict, sucesso: bool = True) -> None:
     evento = data.get("data") or {}
     msg_id = extrair_id_mensagem(data, evento)
     if not msg_id:
         return
     with _IDS_LOCK:
+        if msg_id in _IDS_ENVIADOS:
+            # Já enviou WhatsApp: nunca liberar para retry (evita resposta duplicada)
+            _IDS_ESTADO[msg_id] = "done"
+            _IDS_PROCESSADOS[msg_id] = time.time()
+            return
         if sucesso:
             _IDS_ESTADO[msg_id] = "done"
             _IDS_PROCESSADOS[msg_id] = time.time()
         else:
-            # Libera para retry em caso de falha dura
+            # Libera para retry apenas se ainda não houve envio
             _IDS_ESTADO.pop(msg_id, None)
             _IDS_PROCESSADOS.pop(msg_id, None)
 

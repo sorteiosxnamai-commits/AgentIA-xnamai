@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Header, Request
 import asyncio
 import os
 import traceback
@@ -252,9 +252,48 @@ def processar_mensagem(data: dict, dry_run: bool = False, persistir: bool = True
 
         mensagem = reparar_mojibake((evento.get("body") or "").strip())
         nome_cliente = reparar_mojibake(evento.get("pushname") or "")
+        tipo_evento_msg = str(evento.get("type") or "chat").strip().lower()
+        input_modality = str(evento.get("input_modality") or "text").strip().lower() or "text"
+        audio_url = str(evento.get("audio_url") or "").strip()
 
-        if evento.get("type") and evento.get("type") != "chat":
-            log_seguro("tipo_ignorado", tipo=evento.get("type"), message_id=msg_id or "-")
+        # Áudio: transcreve ANTES do filtro de texto vazio (fora do agente).
+        if tipo_evento_msg == "audio" or input_modality == "audio" or audio_url:
+            input_modality = "audio"
+            if not mensagem and audio_url:
+                from services.audio_service import mensagem_falha_audio, transcrever_audio_url
+
+                tr = transcrever_audio_url(audio_url)
+                if tr.get("ok") and (tr.get("data") or {}).get("text"):
+                    mensagem = reparar_mojibake(str(tr["data"]["text"]).strip())
+                    log_seguro(
+                        "audio_ok",
+                        telefone=numero,
+                        message_id=msg_id or "-",
+                        chars=len(mensagem),
+                    )
+                else:
+                    log_seguro(
+                        "audio_falha_atendimento",
+                        telefone=numero,
+                        message_id=msg_id or "-",
+                        erro=tr.get("error_code") or "transcricao",
+                    )
+                    with lock_telefone(numero):
+                        from services.whatsapp_service import enviar_mensagem
+                        from services.webhook_guard import marcar_envio_concluido
+
+                        if (not dry_run) and persistir:
+                            enviar_mensagem(numero, mensagem_falha_audio())
+                            marcar_envio_concluido(data, message_id=msg_id)
+                        finalizar_mensagem(data, sucesso=True)
+                        return {
+                            "resposta": mensagem_falha_audio(),
+                            "origem": "audio_fallback",
+                        }
+            tipo_evento_msg = "chat"  # segue o fluxo textual com o transcript
+
+        if tipo_evento_msg and tipo_evento_msg not in ("chat", "text", ""):
+            log_seguro("tipo_ignorado", tipo=tipo_evento_msg, message_id=msg_id or "-")
             finalizar_mensagem(data, sucesso=True)
             return None
 
@@ -278,6 +317,7 @@ def processar_mensagem(data: dict, dry_run: bool = False, persistir: bool = True
                 nome_cliente=nome_cliente,
                 msg_id=msg_id,
                 inicio=inicio,
+                input_modality=input_modality,
             )
 
     except Exception as e:
@@ -299,6 +339,7 @@ def _processar_mensagem_locked(
     nome_cliente: str,
     msg_id: str,
     inicio: float,
+    input_modality: str = "text",
 ):
     persistencia_ok = True
     resposta_ia = None
@@ -981,6 +1022,9 @@ def _processar_mensagem_locked(
             )
         )
 
+        # ns_agent / legacy_agent → xnamai_sales_agent / legacy_agent em perguntar_ia().
+        origem_resposta = "deterministic_rule"
+
         if resposta_pos_venda is not None:
             resposta_ia = resposta_pos_venda
         elif fechamento or alteracao_pagamento:
@@ -1172,6 +1216,7 @@ def _processar_mensagem_locked(
                 nome_conversa
             )
             handoff_debug = handoff_out.get("debug")
+            origem_resposta = "human_handoff"
             log_seguro(
                 "fluxo_handoff",
                 intent="ATENDIMENTO_HUMANO",
@@ -1260,6 +1305,7 @@ def _processar_mensagem_locked(
                 if nova_venda_explicita or historico_venda != historico_texto
                 else ultima_resposta_ia
             )
+            origem_resposta = None  # perguntar_ia registra xnamai_sales_agent|legacy_agent
             resposta_ia = perguntar_ia(
                 mensagem=mensagem,
                 catalogo=catalogo,
@@ -1268,7 +1314,12 @@ def _processar_mensagem_locked(
                 ultima_resposta_ia=ultima_para_ia,
                 foto_automatica=bool(com_foto and pediu_foto),
                 contexto_venda=contexto_venda,
-                memoria_sessao=sessao,
+                memoria_sessao={
+                    **(sessao or {}),
+                    "telefone": numero,
+                    "message_id": msg_id,
+                    "input_modality": input_modality,
+                },
                 temperature=TEMPERATURE_CONVERSA,
                 mcp_enrichment=mcp_bloco,
             )
@@ -1302,6 +1353,7 @@ def _processar_mensagem_locked(
                 if nova_venda_explicita or historico_venda != historico_texto
                 else ultima_resposta_ia
             )
+            origem_resposta = None  # perguntar_ia registra xnamai_sales_agent|legacy_agent
             resposta_ia = perguntar_ia(
                 mensagem=mensagem,
                 catalogo=catalogo,
@@ -1310,8 +1362,21 @@ def _processar_mensagem_locked(
                 ultima_resposta_ia=ultima_para_ia,
                 foto_automatica=bool(com_foto and pediu_foto),
                 contexto_venda=contexto_venda,
-                memoria_sessao=sessao,
+                memoria_sessao={
+                    **(sessao or {}),
+                    "telefone": numero,
+                    "message_id": msg_id,
+                    "input_modality": input_modality,
+                },
                 mcp_enrichment=mcp_bloco,
+            )
+
+        if origem_resposta:
+            log_seguro(
+                "resposta_origem",
+                origem=origem_resposta,
+                message_id=msg_id or "-",
+                telefone=numero,
             )
 
         resposta_ia, motivos_evitados = sanitizar_resposta_anti_repeticao(
@@ -1592,6 +1657,10 @@ def _processar_mensagem_locked(
             numero,
             resposta_ia
         )
+        # Idempotência: após envio bem-sucedido, NUNCA liberar o message_id.
+        from services.webhook_guard import marcar_envio_concluido
+
+        marcar_envio_concluido(data, message_id=msg_id)
         if isinstance(envio, dict) and not envio.get("ok"):
             print("FALHA ENVIO WHATSAPP:", {k: v for k, v in envio.items() if k != "token"})
         elif envio is None:
@@ -1758,6 +1827,154 @@ async def webhook_info():
 @router.post("/webhook")
 async def webhook(data: dict, background_tasks: BackgroundTasks):
     return await receber_webhook(data, background_tasks)
+
+
+@router.get("/webhooks/brevo/chat")
+@router.get("/webhooks/brevo/whatsapp")
+def brevo_whatsapp_info():
+    """Brevo como provedor WhatsApp (persona = xNamai)."""
+    from services.brevo_service import (
+        brevo_configurado_envio,
+        brevo_reply_mode,
+        brevo_sender_number,
+    )
+
+    sender = brevo_sender_number()
+    return {
+        "status": "ok",
+        "canal": "brevo_whatsapp",
+        "persona": "Agente de Vendas da xNamai",
+        "urls_post": ["/webhooks/brevo/whatsapp", "/webhooks/brevo/chat"],
+        "auth": "Header X-Webhook-Token = BREVO_WEBHOOK_SECRET (ou ?token=)",
+        "reply_mode": brevo_reply_mode(),
+        "modo_whatsapp_recomendado": "whatsapp",
+        "sender_number_configurado": bool(sender),
+        "sender_sufixo": sender[-4:] if sender else None,
+        "envio_configurado": brevo_configurado_envio(),
+        "fluxo": "WhatsApp → Brevo → webhook → agents.vendas → Brevo WhatsApp API → cliente",
+        "nao_usa": ["ultramsg", "zapi"],
+        "code_version": CODE_VERSION,
+    }
+
+
+@router.post("/webhooks/brevo/chat")
+@router.post("/webhooks/brevo/whatsapp")
+async def brevo_whatsapp_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_webhook_token: str | None = Header(default=None, alias="X-Webhook-Token"),
+):
+    """Recebe mensagens WhatsApp via Brevo e responde pelo WhatsApp (mesmo canal).
+
+    Processa em background para ACK rápido (evita retry/duplicata por timeout).
+    Nunca envia UltraMsg/Z-API neste fluxo (processar_mensagem com dry_run=True).
+    """
+    from services.brevo_parser import (
+        normalizar_para_webhook_interno,
+        should_skip_auto_reply,
+    )
+    from services.brevo_service import verificar_webhook_token
+    from services.webhook_guard import log_seguro
+
+    ok_auth, motivo_auth = verificar_webhook_token(
+        x_webhook_token, request.query_params.get("token")
+    )
+    if not ok_auth:
+        log_seguro("brevo_webhook_auth_falhou", motivo=motivo_auth)
+        return {"status": "erro", "motivo": motivo_auth}
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "erro", "motivo": "json_invalido"}
+
+    if not isinstance(payload, dict):
+        return {"status": "erro", "motivo": "payload_invalido"}
+
+    if should_skip_auto_reply(payload):
+        log_seguro("brevo_eco_agente_ignorado")
+        return {"status": "ignored", "motivo": "not_visitor_or_agent_echo"}
+
+    normalized = normalizar_para_webhook_interno(payload)
+    meta = normalized.get("brevo_meta") or {}
+    log_seguro(
+        "brevo_whatsapp_webhook_recebido",
+        message_id=str(meta.get("message_id") or "-")[:40],
+        conversation_id=str(meta.get("conversation_id") or "-")[:40],
+        contact_id=str(meta.get("contact_id") or "-")[:40],
+        visitor_id=bool(meta.get("visitor_id")),
+        telefone=str((normalized.get("data") or {}).get("from") or "-"),
+        modality=(normalized.get("data") or {}).get("input_modality") or "text",
+    )
+
+    background_tasks.add_task(_processar_e_responder_brevo, normalized)
+    return {
+        "status": "accepted",
+        "message_id": meta.get("message_id"),
+        "conversation_id": meta.get("conversation_id"),
+        "contact_id": meta.get("contact_id"),
+        "channel": "brevo_whatsapp",
+    }
+
+
+def _processar_e_responder_brevo(normalized: dict) -> None:
+    """WhatsApp→Brevo→agents.vendas→Brevo WhatsApp (1 resposta; sem UltraMsg/Z-API)."""
+    from services.brevo_service import enviar_resposta
+    from services.webhook_guard import log_seguro, marcar_envio_concluido, finalizar_mensagem
+
+    evento = normalized.get("data") or {}
+    meta = normalized.get("brevo_meta") or {}
+    msg_id = str(evento.get("id") or meta.get("message_id") or "")
+
+    try:
+        # dry_run=True: NÃO chama UltraMsg/Z-API; persiste e usa agents.vendas
+        resultado = processar_mensagem(normalized, dry_run=True, persistir=True)
+        if not resultado:
+            log_seguro("brevo_sem_resultado", message_id=msg_id or "-")
+            finalizar_mensagem(normalized, sucesso=True)
+            return
+
+        texto = ""
+        if isinstance(resultado, dict):
+            texto = str(resultado.get("resposta") or "").strip()
+        if not texto:
+            log_seguro("brevo_resposta_vazia", message_id=msg_id or "-")
+            finalizar_mensagem(normalized, sucesso=True)
+            return
+
+        envio = enviar_resposta(
+            texto,
+            visitor_id=str(evento.get("visitor_id") or meta.get("visitor_id") or ""),
+            conversation_id=str(
+                evento.get("conversation_id") or meta.get("conversation_id") or ""
+            )
+            or None,
+            contact_id=str(evento.get("contact_id") or meta.get("contact_id") or "")
+            or None,
+            telefone=str(evento.get("from") or ""),
+        )
+        if envio.get("ok"):
+            marcar_envio_concluido(normalized, message_id=msg_id)
+            finalizar_mensagem(normalized, sucesso=True)
+            log_seguro(
+                "brevo_resposta_enviada",
+                message_id=msg_id or "-",
+                channel=envio.get("channel") or "-",
+                dry_run=bool(envio.get("dry_run")),
+                conversation_id=str(meta.get("conversation_id") or "-")[:40],
+            )
+        else:
+            erro = str(envio.get("error") or "brevo_erro")
+            if erro == "brevo_timeout":
+                marcar_envio_concluido(normalized, message_id=msg_id)
+                finalizar_mensagem(normalized, sucesso=True)
+                log_seguro("brevo_timeout_sem_retry", message_id=msg_id or "-")
+            else:
+                finalizar_mensagem(normalized, sucesso=False)
+                log_seguro("brevo_envio_falhou_retry", message_id=msg_id or "-", erro=erro)
+    except Exception as exc:
+        log_seguro("brevo_processamento_erro", erro=type(exc).__name__)
+        finalizar_mensagem(normalized, sucesso=False)
 
 
 @router.post("/chat")

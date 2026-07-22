@@ -29,20 +29,20 @@ def _leads_indisponivel(erro: Exception) -> bool:
                 return True
     return "leads" in str(erro).lower()
 
-# Tabelas explícitas (CLIENTES_TABLE / CONVERSAS_TABLE) — sem fallback silencioso
+# Tabelas expl├¡citas (CLIENTES_TABLE / CONVERSAS_TABLE) ÔÇö sem fallback silencioso
 TABELA_CLIENTES = CLIENTES_TABLE
 TABELA_HISTORICO = CONVERSAS_TABLE
-# Alias legado (não usar em código novo)
+# Alias legado (n├úo usar em c├│digo novo)
 TABELA_CONVERSAS = CONVERSAS_TABLE
 
 _RETRIES = 3
 _RETRY_ERRORS = (ReadError, ConnectError, TimeoutException, OSError)
 
-# Cache de schema (None = ainda não detectado)
+# Cache de schema (None = ainda n├úo detectado)
 _SCHEMA_FLAGS: dict[str, bool | None] = {
     "message_id": None,
     "contexto_venda": None,
-    # True = tabela CONVERSAS é thread/atendimento (PulseDesk)
+    # True = tabela CONVERSAS ├® thread/atendimento (PulseDesk)
     # False = tabela legada de mensagens (cliente_id/tipo/mensagem)
     "conversas_thread": None,
     # True = conversas.cliente_id uuid (FK clientes.id) existe
@@ -51,7 +51,7 @@ _SCHEMA_FLAGS: dict[str, bool | None] = {
     "clientes_historico": None,
 }
 
-# Último erro seguro de busca/criação (para dry_run / debug)
+# ├Ültimo erro seguro de busca/cria├º├úo (para dry_run / debug)
 _ULTIMO_ERRO_CLIENTE: dict | None = None
 
 # Colunas conhecidas que o agente pode usar em clientes
@@ -70,10 +70,10 @@ _COLS_CLIENTES_CONHECIDAS = (
     "cnpj",
 )
 
-# Sentinel no JSON historico quando a coluna contexto_venda ainda não existe
+# Sentinel no JSON historico quando a coluna contexto_venda ainda n├úo existe
 _HIST_CTX_ROLE = "_contexto_venda"
 
-# Colunas típicas de thread PulseDesk vs mensagens do agente
+# Colunas t├¡picas de thread PulseDesk vs mensagens do agente
 _COLS_THREAD = frozenset({
     "contact_phone", "last_message", "external_thread_id", "canal_id", "channel",
 })
@@ -86,7 +86,7 @@ def _executar(comando, rotulo: str = "supabase"):
             return comando()
         except _RETRY_ERRORS as erro:
             if tentativa >= _RETRIES:
-                print(f"ERRO {rotulo} após {_RETRIES} tentativas:", erro)
+                print(f"ERRO {rotulo} ap├│s {_RETRIES} tentativas:", erro)
                 raise
             espera = 0.4 * tentativa
             print(f"RETRY {rotulo} ({tentativa}/{_RETRIES}) em {espera:.1f}s:", erro)
@@ -110,7 +110,7 @@ def _payload_api_error(exc: Exception) -> dict:
 
 
 def classificar_erro_supabase(exc: Exception) -> tuple[str, str, str]:
-    """Retorna (codigo, tipo, resumo) sem dados sensíveis."""
+    """Retorna (codigo, tipo, resumo) sem dados sens├¡veis."""
     payload = _payload_api_error(exc)
     code = str(payload.get("code") or "").strip()
     message = str(payload.get("message") or exc)[:160]
@@ -126,26 +126,26 @@ def classificar_erro_supabase(exc: Exception) -> tuple[str, str, str]:
         return (
             code or "42501",
             "RLS",
-            "RLS/permissão bloqueou clientes — use SUPABASE_SERVICE_ROLE_KEY no Render",
+            "RLS/permiss├úo bloqueou clientes ÔÇö use SUPABASE_SERVICE_ROLE_KEY no Render",
         )
     if code.upper() == "PGRST204" or "pgrst204" in text or "schema cache" in text:
         return code or "PGRST204", "SCHEMA", message[:120]
     if code.upper() == "PGRST116" or "pgrst116" in text:
         return code or "PGRST116", "NOT_FOUND", message[:120]
     if "23505" in text or "duplicate" in text or "unique" in text:
-        return code or "23505", "DUPLICATE", "telefone/celular já existe"
+        return code or "23505", "DUPLICATE", "telefone/celular j├í existe"
     if "23502" in text or ("null value" in text and "column" in text):
         if "mercos_id" in text:
             return (
                 code or "23502",
                 "NOT_NULL",
-                "mercos_id NOT NULL — rode supabase/017_clientes_mercos_id_nullable.sql",
+                "mercos_id NOT NULL ÔÇö rode supabase/017_clientes_mercos_id_nullable.sql",
             )
         if "mercos_cliente_id" in text:
             return (
                 code or "23502",
                 "NOT_NULL",
-                "mercos_cliente_id NOT NULL — torne a coluna nullable (não inventar id fake)",
+                "mercos_cliente_id NOT NULL ÔÇö torne a coluna nullable (n├úo inventar id fake)",
             )
         return code or "23502", "NOT_NULL", message[:120]
     if isinstance(exc, _RETRY_ERRORS):
@@ -210,7 +210,7 @@ def erro_cliente_para_debug(fallback_etapa: str = "criar_cliente") -> dict:
         "etapa": fallback_etapa,
         "erro_codigo": "EPHEMERAL",
         "erro_tipo": "FALLBACK",
-        "erro_resumido": "busca/criação falhou sem detalhe — verifique SUPABASE_SERVICE_ROLE_KEY e RLS",
+        "erro_resumido": "busca/cria├º├úo falhou sem detalhe ÔÇö verifique SUPABASE_SERVICE_ROLE_KEY e RLS",
     }
 
 
@@ -240,14 +240,14 @@ def diagnosticar_supabase_status() -> dict:
 
 
 def diagnosticar_persistencia_cliente(telefone: str = "") -> dict:
-    """Probe seguro: select / insert mínimo / update historico|contexto.
+    """Probe seguro: select / insert m├¡nimo / update historico|contexto.
 
-    Usa telefone de teste se vazio. Remove o registro de probe ao final quando possível.
+    Usa telefone de teste se vazio. Remove o registro de probe ao final quando poss├¡vel.
     """
     from services.config_tabelas import normalizar_telefone as _norm
 
     tel = _norm(telefone) or "5500000000000"
-    # evita colidir com números reais de teste do usuário
+    # evita colidir com n├║meros reais de teste do usu├írio
     if tel.endswith("9993") or len(tel) < 10:
         tel = "5500000000099"
 
@@ -293,7 +293,7 @@ def diagnosticar_persistencia_cliente(telefone: str = "") -> dict:
                 criado_probe = True
                 out["insert_ok"] = True
             else:
-                # insert sem return — rebusca
+                # insert sem return ÔÇö rebusca
                 r2 = (
                     supabase.table(TABELA_CLIENTES)
                     .select("id")
@@ -310,7 +310,7 @@ def diagnosticar_persistencia_cliente(telefone: str = "") -> dict:
                         "etapa": "insert",
                         "erro_codigo": "SEM_RETORNO",
                         "erro_tipo": "INSERT_EMPTY",
-                        "erro_resumido": "insert sem data e sem rebusca — possível RLS no SELECT",
+                        "erro_resumido": "insert sem data e sem rebusca ÔÇö poss├¡vel RLS no SELECT",
                     }
                     registrar_erro_cliente(
                         "probe_insert",
@@ -325,7 +325,7 @@ def diagnosticar_persistencia_cliente(telefone: str = "") -> dict:
             registrar_erro_cliente("probe_insert", exc)
             return out
     else:
-        out["insert_ok"] = True  # já existia / select ok
+        out["insert_ok"] = True  # j├í existia / select ok
 
     if cliente_id and "historico" in cols:
         try:
@@ -359,9 +359,9 @@ def diagnosticar_persistencia_cliente(telefone: str = "") -> dict:
             }
             registrar_erro_cliente("probe_contexto", exc)
     elif cliente_id and "historico" in cols:
-        out["contexto_ok"] = out["historico_ok"]  # fallback disponível
+        out["contexto_ok"] = out["historico_ok"]  # fallback dispon├¡vel
 
-    # limpa probe criado por nós
+    # limpa probe criado por n├│s
     if criado_probe and cliente_id:
         try:
             supabase.table(TABELA_CLIENTES).delete().eq("id", cliente_id).execute()
@@ -400,16 +400,16 @@ def _null_violation_coluna(exc: Exception, coluna: str) -> bool:
 
 
 def conversas_e_thread() -> bool:
-    """True se CONVERSAS_TABLE é schema de atendimento/thread (não mensagens)."""
+    """True se CONVERSAS_TABLE ├® schema de atendimento/thread (n├úo mensagens)."""
     flag = _SCHEMA_FLAGS.get("conversas_thread")
     if flag is not None:
         return bool(flag)
     try:
         r = supabase.table(TABELA_HISTORICO).select("*").limit(1).execute()
         cols = set((r.data[0] if r.data else {}).keys())
-        # Se não há linhas, tenta insert probe via heurística de nomes conhecidos
+        # Se n├úo h├í linhas, tenta insert probe via heur├¡stica de nomes conhecidos
         if not cols:
-            # Assume thread se a tabela se chama conversas (PulseDesk) — confirma com select de colunas via erro
+            # Assume thread se a tabela se chama conversas (PulseDesk) ÔÇö confirma com select de colunas via erro
             # Fallback: tenta filtrar por contact_phone (thread) vs cliente_id (mensagens)
             try:
                 supabase.table(TABELA_HISTORICO).select("id").eq(
@@ -421,7 +421,7 @@ def conversas_e_thread() -> bool:
                 if erro_coluna_ausente(exc, "contact_phone"):
                     _SCHEMA_FLAGS["conversas_thread"] = False
                     return False
-                # Outro erro — tenta cliente_id
+                # Outro erro ÔÇö tenta cliente_id
                 try:
                     supabase.table(TABELA_HISTORICO).select("id").eq(
                         "cliente_id", "__probe__"
@@ -432,7 +432,7 @@ def conversas_e_thread() -> bool:
                     if erro_coluna_ausente(exc2, "cliente_id"):
                         _SCHEMA_FLAGS["conversas_thread"] = True
                         return True
-                    _SCHEMA_FLAGS["conversas_thread"] = True  # seguro: não inserir campos errados
+                    _SCHEMA_FLAGS["conversas_thread"] = True  # seguro: n├úo inserir campos errados
                     return True
         is_thread = bool(cols & _COLS_THREAD) and not bool(cols & _COLS_MENSAGENS)
         is_msgs = bool(cols & _COLS_MENSAGENS)
@@ -444,7 +444,7 @@ def conversas_e_thread() -> bool:
         _SCHEMA_FLAGS["message_id"] = "message_id" in cols
         return False
     except Exception:
-        # Em dúvida, trata como thread para não inserir cliente_id/tipo/mensagem
+        # Em d├║vida, trata como thread para n├úo inserir cliente_id/tipo/mensagem
         _SCHEMA_FLAGS["conversas_thread"] = True
         return True
 
@@ -458,7 +458,7 @@ def schema_tem_contexto_venda() -> bool | None:
 
 
 def diagnosticar_schema_persistencia() -> dict:
-    """Lê uma linha de cada tabela e reporta colunas críticas."""
+    """L├¬ uma linha de cada tabela e reporta colunas cr├¡ticas."""
     out = {
         "clientes_tem_contexto_venda": False,
         "conversas_tem_message_id": False,
@@ -488,7 +488,7 @@ def diagnosticar_schema_persistencia() -> dict:
             out["conversas_modo"] = "mensagens"
             _SCHEMA_FLAGS["conversas_thread"] = False
         else:
-            # Heurística pelo nome / colunas parciais
+            # Heur├¡stica pelo nome / colunas parciais
             if "last_message" in cols_set or "contact_phone" in cols_set:
                 out["conversas_modo"] = "thread"
                 _SCHEMA_FLAGS["conversas_thread"] = True
@@ -500,7 +500,7 @@ def diagnosticar_schema_persistencia() -> dict:
 
 
 def extrair_contexto_do_historico_json(historico_raw) -> dict:
-    """Lê contexto embutido no JSON historico (fallback sem coluna)."""
+    """L├¬ contexto embutido no JSON historico (fallback sem coluna)."""
     if isinstance(historico_raw, dict):
         ctx = historico_raw.get("contexto_venda") or historico_raw.get(_HIST_CTX_ROLE)
         return ctx if isinstance(ctx, dict) else {}
@@ -513,7 +513,7 @@ def extrair_contexto_do_historico_json(historico_raw) -> dict:
 
 
 def anexar_contexto_no_historico_json(mensagens: list, contexto: dict) -> list:
-    """Mantém lista compatível + sentinel de contexto no final."""
+    """Mant├®m lista compat├¡vel + sentinel de contexto no final."""
     base = [
         m
         for m in (mensagens or [])
@@ -531,7 +531,7 @@ def anexar_contexto_no_historico_json(mensagens: list, contexto: dict) -> list:
 
 
 def _normalizar_produto(row: dict) -> dict:
-    """Compatível com produtos do ETL PulseDesk (preco_tabela, saldo_estoque)."""
+    """Compat├¡vel com produtos do ETL PulseDesk (preco_tabela, saldo_estoque)."""
     preco = row.get("preco")
     if preco in (None, ""):
         preco = row.get("preco_tabela") or 0
@@ -553,7 +553,7 @@ def _normalizar_produto(row: dict) -> dict:
 # =========================
 
 def _detectar_colunas_clientes() -> set[str]:
-    """Lê colunas da tabela clientes (funciona mesmo com tabela vazia)."""
+    """L├¬ colunas da tabela clientes (funciona mesmo com tabela vazia)."""
     cols: set[str] = set()
     try:
         r = supabase.table(TABELA_CLIENTES).select("*").limit(1).execute()
@@ -561,7 +561,7 @@ def _detectar_colunas_clientes() -> set[str]:
             cols = set(r.data[0].keys())
     except Exception as exc:
         registrar_erro_cliente("detectar_colunas", exc)
-        # Continua com probe individual se possível
+        # Continua com probe individual se poss├¡vel
 
     if not cols:
         for col in _COLS_CLIENTES_CONHECIDAS:
@@ -571,7 +571,7 @@ def _detectar_colunas_clientes() -> set[str]:
             except Exception as exc:
                 if erro_coluna_ausente(exc, col):
                     continue
-                # permissão / rede — aborta probe
+                # permiss├úo / rede ÔÇö aborta probe
                 registrar_erro_cliente("detectar_colunas", exc)
                 break
 
@@ -658,8 +658,8 @@ def registrar_erro_historico(
     ):
         _SCHEMA_FLAGS["clientes_historico"] = False
         resumo = (
-            "coluna clientes.historico ausente — "
-            "rode supabase/018_clientes_historico.sql ou trate histórico como opcional"
+            "coluna clientes.historico ausente ÔÇö "
+            "rode supabase/018_clientes_historico.sql ou trate hist├│rico como opcional"
         )
     _ULTIMO_ERRO_HISTORICO = {
         "etapa": etapa,
@@ -730,7 +730,7 @@ def buscar_cliente(telefone):
             log_seguro("cliente_busca_ok", via="telefone", id_prefix=str(row.get("id") or "")[:8])
             return row
 
-        # Só tenta celular se não sabemos que a coluna não existe
+        # S├│ tenta celular se n├úo sabemos que a coluna n├úo existe
         if _SCHEMA_FLAGS.get("clientes_celular") is not False:
             row = _buscar_cliente_por_campo("celular", tel)
             if row:
@@ -772,10 +772,10 @@ def buscar_cliente(telefone):
 
 
 def criar_cliente(telefone, nome=""):
-    """Cria cliente só com colunas existentes (sem email/CPF/CNPJ/endereço).
+    """Cria cliente s├│ com colunas existentes (sem email/CPF/CNPJ/endere├ºo).
 
-    Nunca inventa mercos_id / mercos_cliente_id (deixar null até sync Mercos).
-    Requer mercos_id nullable — ver supabase/017_clientes_mercos_id_nullable.sql.
+    Nunca inventa mercos_id / mercos_cliente_id (deixar null at├® sync Mercos).
+    Requer mercos_id nullable ÔÇö ver supabase/017_clientes_mercos_id_nullable.sql.
     """
     from services.webhook_guard import log_seguro
 
@@ -787,7 +787,7 @@ def criar_cliente(telefone, nome=""):
     log_seguro("cliente_criacao_inicio", tel_sufixo=tel[-4:])
     cols = _detectar_colunas_clientes()
 
-    # Payload mínimo seguro — NUNCA inclui email/cpf/cnpj/endereço/mercos_id fake
+    # Payload m├¡nimo seguro ÔÇö NUNCA inclui email/cpf/cnpj/endere├ºo/mercos_id fake
     dados: dict = {"telefone": tel, "nome": nome_ok}
     if "celular" in cols:
         dados["celular"] = tel
@@ -817,8 +817,8 @@ def criar_cliente(telefone, nome=""):
         )
 
     tentativas = [dict(dados)]
-    # Se celular conhecido, já está no payload. Se desconhecido (tabela vazia),
-    # NÃO inventa celular — só adiciona se NOT NULL exigir explicitamente.
+    # Se celular conhecido, j├í est├í no payload. Se desconhecido (tabela vazia),
+    # N├âO inventa celular ÔÇö s├│ adiciona se NOT NULL exigir explicitamente.
 
     ultimo_exc: Exception | None = None
     for payload in tentativas:
@@ -880,7 +880,7 @@ def criar_cliente(telefone, nome=""):
                         if encontrado:
                             return encontrado
 
-            # NOT NULL em celular: só então inclui celular (schema exige)
+            # NOT NULL em celular: s├│ ent├úo inclui celular (schema exige)
             if "celular" not in payload and _null_violation_coluna(exc, "celular"):
                 payload["celular"] = tel
                 _SCHEMA_FLAGS["clientes_celular"] = True
@@ -904,7 +904,7 @@ def criar_cliente(telefone, nome=""):
                         if encontrado:
                             return encontrado
 
-            # Não repetir heurística ampla com "null" genérico (causava PGRST204 em celular)
+            # N├úo repetir heur├¡stica ampla com "null" gen├®rico (causava PGRST204 em celular)
             break
 
     if ultimo_exc is not None:
@@ -958,7 +958,7 @@ def salvar_openai_thread_id(cliente_id, thread_id):
 
 
 # =========================
-# HISTÓRICO (agente)
+# HIST├ôRICO (agente)
 # =========================
 
 def _mensagens_do_historico_json(historico_raw) -> list[dict]:
@@ -1024,7 +1024,7 @@ def _salvar_mensagem_no_historico_cliente(
     ctx = extrair_contexto_do_historico_json(hist_raw)
 
     mid = (message_id or "").strip()
-    # Idempotência: message_id já no histórico
+    # Idempot├¬ncia: message_id j├í no hist├│rico
     if mid:
         for m in msgs:
             if str(m.get("message_id") or "") == mid:
@@ -1039,7 +1039,7 @@ def _salvar_mensagem_no_historico_cliente(
         entry["message_id"] = mid
     msgs.append(entry)
 
-    # Limita tamanho do JSON (últimas 80 mensagens)
+    # Limita tamanho do JSON (├║ltimas 80 mensagens)
     if len(msgs) > 80:
         msgs = msgs[-80:]
 
@@ -1047,7 +1047,7 @@ def _salvar_mensagem_no_historico_cliente(
         ctx and _SCHEMA_FLAGS.get("contexto_venda") is not True
     ) else msgs
 
-    # Se há coluna contexto_venda, não precisa do sentinel
+    # Se h├í coluna contexto_venda, n├úo precisa do sentinel
     if _SCHEMA_FLAGS.get("contexto_venda") is True:
         payload = msgs
 
@@ -1077,8 +1077,8 @@ def resolver_cliente_id_conversa(
 ) -> str | None:
     """Resolve clientes.id (uuid) para vincular conversas.cliente_id.
 
-    Ordem: mercos_id → telefone/celular. Retorna None se não achar.
-    Não altera cliente_mercos_id.
+    Ordem: mercos_id ÔåÆ telefone/celular. Retorna None se n├úo achar.
+    N├úo altera cliente_mercos_id.
     """
     if cliente_mercos_id is not None and str(cliente_mercos_id).strip():
         texto = str(cliente_mercos_id).strip()
@@ -1145,7 +1145,7 @@ def atualizar_thread_conversa(
             except Exception as exc:
                 if erro_coluna_ausente(exc, campo):
                     continue
-                # Select sem colunas novas se o banco ainda não tiver FK
+                # Select sem colunas novas se o banco ainda n├úo tiver FK
                 if erro_coluna_ausente(exc, "cliente_id") or erro_coluna_ausente(
                     exc, "cliente_mercos_id"
                 ):
@@ -1169,7 +1169,7 @@ def atualizar_thread_conversa(
             "status": "active",
             "updated_at": agora,
         }
-        # Só inclui colunas seguras
+        # S├│ inclui colunas seguras
         if nome:
             patch["customer_name"] = nome
         mid = (message_id or "").strip()
@@ -1215,7 +1215,7 @@ def atualizar_thread_conversa(
                     raise
             return True
 
-        # Cria thread mínima
+        # Cria thread m├¡nima
         insert = {
             "contact_phone": tel,
             "external_thread_id": tel,
@@ -1244,7 +1244,7 @@ def atualizar_thread_conversa(
         try:
             supabase.table(TABELA_HISTORICO).insert(insert).execute()
         except Exception as exc:
-            # Remove campos opcionais que não existem
+            # Remove campos opcionais que n├úo existem
             for campo in (
                 "message_id",
                 "canal_id",
@@ -1284,8 +1284,8 @@ def salvar_mensagem(
 ):
     """Persiste mensagem do turno.
 
-    - Se conversas é thread PulseDesk: grava em clientes.historico (se a coluna existir).
-    - Se conversas é tabela de mensagens legada: insert na tabela.
+    - Se conversas ├® thread PulseDesk: grava em clientes.historico (se a coluna existir).
+    - Se conversas ├® tabela de mensagens legada: insert na tabela.
     - Sem coluna historico: skip seguro (contexto_venda continua essencial).
     """
     from services.webhook_guard import log_seguro
@@ -1301,7 +1301,7 @@ def salvar_mensagem(
         historico_coluna=tem_hist,
     )
 
-    # Modo thread: NÃO inserir cliente_id/tipo/mensagem em conversas
+    # Modo thread: N├âO inserir cliente_id/tipo/mensagem em conversas
     if conversas_e_thread():
         if not tem_hist:
             return {
@@ -1352,7 +1352,7 @@ def salvar_mensagem(
         )
         text = _texto_erro(exc)
         if mid and ("duplicate" in text or "unique" in text or "23505" in text):
-            print("AVISO: message_id já existe — insert ignorado")
+            print("AVISO: message_id j├í existe ÔÇö insert ignorado")
             return None
         if "message_id" in payload and erro_coluna_ausente(exc, "message_id"):
             _SCHEMA_FLAGS["message_id"] = False
@@ -1378,6 +1378,15 @@ def mensagem_ja_existe(message_id: str) -> bool:
     if not mid:
         return False
 
+    # Preferência: clientes.historico (sempre disponível neste projeto)
+    try:
+        from agents.vendas.memory_repository import message_id_no_historico
+
+        if message_id_no_historico(mid):
+            return True
+    except Exception:
+        pass
+
     # Modo thread: checa coluna message_id da thread e/ou historico dos clientes
     if conversas_e_thread():
         if _SCHEMA_FLAGS.get("message_id") is not False:
@@ -1393,11 +1402,21 @@ def mensagem_ja_existe(message_id: str) -> bool:
                 if r.data:
                     return True
             except Exception as exc:
-                if erro_coluna_ausente(exc, "message_id") or "pgrst" in _texto_erro(exc):
+                text = _texto_erro(exc).lower()
+                if (
+                    erro_coluna_ausente(exc, "message_id")
+                    or "pgrst" in text
+                    or "does not exist" in text
+                    or "schema cache" in text
+                ):
                     _SCHEMA_FLAGS["message_id"] = False
+                    print(
+                        "AVISO: tabela/coluna conversas.message_id indisponivel;",
+                        "usando clientes.historico |",
+                        type(exc).__name__,
+                    )
                 else:
                     raise
-        # Fallback: varre historico recente (limitado) — opcional, não bloqueia
         return False
 
     if _SCHEMA_FLAGS.get("message_id") is False:
@@ -1416,9 +1435,15 @@ def mensagem_ja_existe(message_id: str) -> bool:
         _SCHEMA_FLAGS["message_id"] = True
         return bool(resultado.data)
     except Exception as exc:
-        if erro_coluna_ausente(exc, "message_id") or "pgrst" in _texto_erro(exc):
+        text = _texto_erro(exc).lower()
+        if (
+            erro_coluna_ausente(exc, "message_id")
+            or "pgrst" in text
+            or "does not exist" in text
+            or "schema cache" in text
+        ):
             _SCHEMA_FLAGS["message_id"] = False
-            print("AVISO: checagem message_id indisponível:", type(exc).__name__)
+            print("AVISO: checagem message_id indisponivel:", type(exc).__name__)
             return False
         raise
 
@@ -1474,11 +1499,11 @@ def buscar_historico(cliente_id, limit: int | None = None):
 def atualizar_historico_json(cliente_id, contexto_extra: dict | None = None):
     """Sincroniza clientes.historico.
 
-    Em modo thread o histórico já é gravado por salvar_mensagem — no-op seguro.
-    Em modo legado, reconstrói a partir da tabela de mensagens.
+    Em modo thread o hist├│rico j├í ├® gravado por salvar_mensagem ÔÇö no-op seguro.
+    Em modo legado, reconstr├│i a partir da tabela de mensagens.
     """
     if conversas_e_thread():
-        # Já persistido em clientes.historico; opcionalmente anexa contexto
+        # J├í persistido em clientes.historico; opcionalmente anexa contexto
         if contexto_extra and _SCHEMA_FLAGS.get("contexto_venda") is not True:
             try:
                 atual = (
@@ -1561,7 +1586,7 @@ def persistir_contexto_venda(cliente_id: str, contexto: dict) -> bool:
                     "atualizar_contexto_erro",
                     cliente_id=str(cliente_id)[:8],
                     erro="PGRST204",
-                    detalhe="coluna contexto_venda ausente — usando fallback historico",
+                    detalhe="coluna contexto_venda ausente ÔÇö usando fallback historico",
                 )
             else:
                 log_seguro(
@@ -1572,7 +1597,7 @@ def persistir_contexto_venda(cliente_id: str, contexto: dict) -> bool:
                 )
                 return False
 
-    # Fallback: embute no JSON historico (sem migração)
+    # Fallback: embute no JSON historico (sem migra├º├úo)
     try:
         atual = (
             supabase.table(TABELA_CLIENTES)
@@ -1615,7 +1640,7 @@ def persistir_contexto_venda(cliente_id: str, contexto: dict) -> bool:
 
 
 # =========================
-# PRODUTOS (ETL PulseDesk → Supabase)
+# PRODUTOS (ETL PulseDesk ÔåÆ Supabase)
 # =========================
 
 _cache_produtos: dict = {"dados": None, "expira_em": 0.0}
@@ -1683,7 +1708,7 @@ def buscar_produto_por_mercos_id(mercos_id):
 
 
 def sincronizar_produto_mercos(dados: dict) -> str:
-    """Legado — preferir ETL do backend PulseDesk."""
+    """Legado ÔÇö preferir ETL do backend PulseDesk."""
     mercos_id = dados.get("mercos_id")
     existente = None
 
@@ -1701,7 +1726,7 @@ def sincronizar_produto_mercos(dados: dict) -> str:
         if resultado.data:
             existente = resultado.data[0]
 
-    # Schema PulseDesk (ETL): preco_tabela / saldo_estoque — sem coluna categoria/preco/estoque
+    # Schema PulseDesk (ETL): preco_tabela / saldo_estoque ÔÇö sem coluna categoria/preco/estoque
     campos = {
         "mercos_id": mercos_id,
         "nome": dados.get("nome"),
@@ -1718,7 +1743,7 @@ def sincronizar_produto_mercos(dados: dict) -> str:
         campos["ultima_alteracao"] = dados["ultima_alteracao"]
 
     if dados.get("imagem_url"):
-        # Só grava se a coluna existir no projeto; ignora se falhar no insert/update
+        # S├│ grava se a coluna existir no projeto; ignora se falhar no insert/update
         campos["imagem_url"] = dados["imagem_url"]
 
     def _sem_imagem(payload: dict) -> dict:
@@ -1760,7 +1785,7 @@ def criar_lead(cliente_id, interesse):
         )
     except Exception as erro:
         if _leads_indisponivel(erro):
-            print("AVISO: tabela leads indisponível — lead não salvo")
+            print("AVISO: tabela leads indispon├¡vel ÔÇö lead n├úo salvo")
             return None
         raise
 
@@ -1779,7 +1804,7 @@ def buscar_lead(cliente_id, interesse):
         )
     except Exception as erro:
         if _leads_indisponivel(erro):
-            print("AVISO: tabela leads indisponível — lead ignorado")
+            print("AVISO: tabela leads indispon├¡vel ÔÇö lead ignorado")
             return None
         raise
 

@@ -69,6 +69,7 @@ def resposta_ja_informado(produto: dict) -> str:
 
 
 def _chamar_openai(instrucoes: str, entrada: str, temperature: float) -> str:
+    """LEGADO — mantido apenas como backup. Não é mais chamado pelo fluxo ativo."""
     kwargs = {
         "model": MODEL,
         "instructions": instrucoes,
@@ -83,7 +84,7 @@ def _chamar_openai(instrucoes: str, entrada: str, temperature: float) -> str:
     return (resposta.output_text or "").strip()
 
 
-def perguntar_ia(
+def _perguntar_ia_legado(
     mensagem: str,
     catalogo: str,
     historico_texto: str = "",
@@ -95,6 +96,7 @@ def perguntar_ia(
     temperature: float | None = None,
     mcp_enrichment: str = "",
 ) -> str:
+    """Implementação anterior (xNaMai / Responses API). Preservada, NÃO chamada."""
     ctx = contexto_venda or ContextoVenda(catalogo=catalogo)
     if catalogo and not ctx.catalogo:
         ctx.catalogo = catalogo
@@ -117,7 +119,6 @@ def perguntar_ia(
 
     texto = _chamar_openai(instrucoes, entrada, temp)
 
-    # Anti-repetição: 1 retry se ficar quase igual à última resposta
     if ultima_resposta_ia and _muito_parecida(texto, ultima_resposta_ia):
         instrucoes2 = (
             instrucoes
@@ -132,9 +133,6 @@ def perguntar_ia(
     from services.intent_service import sanitizar_frases_comerciais
 
     stock_ok = False
-    if isinstance(mem, dict):
-        # memória não guarda stock; usa produtos do contexto se houver
-        pass
     prods = getattr(ctx, "produtos", None) or []
     if prods:
         p0 = prods[0] or {}
@@ -149,3 +147,87 @@ def perguntar_ia(
             stock_ok = False
 
     return sanitizar_frases_comerciais(texto, stock_confirmed=stock_ok)
+
+
+def perguntar_ia(
+    mensagem: str,
+    catalogo: str,
+    historico_texto: str = "",
+    nome_cliente: str = "",
+    ultima_resposta_ia: str = "",
+    foto_automatica: bool = False,
+    contexto_venda: ContextoVenda | None = None,
+    memoria_sessao: dict | None = None,
+    temperature: float | None = None,
+    mcp_enrichment: str = "",
+) -> str:
+    """Interface pública do cérebro. Roteia por AGENT_VERSION (novo|legado).
+
+    novo → agents.vendas (Agente de Vendas da xNamai)
+    legado → _perguntar_ia_legado
+    Nunca executa os dois agentes na mesma mensagem.
+    """
+    from services.intent_service import sanitizar_frases_comerciais
+
+    versao = (os.getenv("AGENT_VERSION") or "novo").strip().lower()
+    if versao not in ("novo", "legado"):
+        print("AVISO AGENT_VERSION invalido; usando novo | valor=", versao[:32])
+        versao = "novo"
+
+    telefone = ""
+    message_id = ""
+    input_modality = "text"
+    if isinstance(memoria_sessao, dict):
+        telefone = str(
+            memoria_sessao.get("telefone") or memoria_sessao.get("phone") or ""
+        ).strip()
+        message_id = str(memoria_sessao.get("message_id") or "").strip()
+        input_modality = str(memoria_sessao.get("input_modality") or "text").strip() or "text"
+
+    if versao == "legado":
+        print("EVT=resposta_origem | origem=legacy_agent")
+        texto = _perguntar_ia_legado(
+            mensagem=mensagem,
+            catalogo=catalogo,
+            historico_texto=historico_texto,
+            nome_cliente=nome_cliente,
+            ultima_resposta_ia=ultima_resposta_ia,
+            foto_automatica=foto_automatica,
+            contexto_venda=contexto_venda,
+            memoria_sessao=memoria_sessao,
+            temperature=temperature,
+            mcp_enrichment=mcp_enrichment,
+        )
+    else:
+        from agents.vendas import processar_mensagem_sync
+
+        print("EVT=resposta_origem | origem=xnamai_sales_agent")
+        _ = (foto_automatica, temperature, mcp_enrichment)
+        texto = processar_mensagem_sync(
+            mensagem=mensagem or "",
+            telefone=telefone,
+            nome=nome_cliente or None,
+            historico_texto=historico_texto or "",
+            ultima_resposta_ia=ultima_resposta_ia or "",
+            catalogo=catalogo or "",
+            memoria_sessao=memoria_sessao if isinstance(memoria_sessao, dict) else None,
+            input_modality=input_modality,
+            message_id=message_id or None,
+        )
+
+    stock_ok = False
+    ctx = contexto_venda
+    prods = getattr(ctx, "produtos", None) or [] if ctx is not None else []
+    if prods:
+        p0 = prods[0] or {}
+        qty = p0.get("stock_quantity", p0.get("estoque"))
+        try:
+            stock_ok = bool(
+                p0.get("stock_confirmed")
+                and qty is not None
+                and float(qty) > 0
+            )
+        except (TypeError, ValueError):
+            stock_ok = False
+
+    return sanitizar_frases_comerciais(texto or "", stock_confirmed=stock_ok)
