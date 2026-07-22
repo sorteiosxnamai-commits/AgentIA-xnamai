@@ -1,0 +1,194 @@
+"""Montagem de contexto, intenções e estágio de venda (xNamai)."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from .guardrails import (
+    detect_compare,
+    detect_delivery_question,
+    detect_human_support_request,
+    detect_negotiation,
+    detect_order_inquiry,
+    detect_payment_question,
+    detect_price_inquiry,
+    detect_product_inquiry,
+    detect_promotion_inquiry,
+    detect_purchase_intent,
+    detect_saudacao,
+    detect_stock_inquiry,
+    extract_budget,
+    extract_quantity,
+)
+from .models import IncomingMessage
+from .sales_knowledge import NOME_EMPRESA, SITE_URL
+
+SALES_STAGES = (
+    "descoberta",
+    "busca_produto",
+    "comparacao",
+    "negociacao",
+    "intencao_compra",
+    "checkout",
+    "atendimento_humano",
+    "pos_venda",
+)
+
+INTENT_PRIORITY = (
+    "atendimento_humano",
+    "intencao_compra",
+    "negociacao",
+    "consultar_estoque",
+    "consultar_preco",
+    "comparar_produtos",
+    "consultar_promocao",
+    "consultar_pedido",
+    "duvida_entrega",
+    "duvida_pagamento",
+    "buscar_produto",
+    "pos_venda",
+    "saudacao",
+    "geral",
+)
+
+
+def detect_customer_intents(text: str | None) -> list[str]:
+    normalized = text or ""
+    intents: list[str] = []
+    if detect_human_support_request(normalized):
+        intents.append("atendimento_humano")
+    if detect_purchase_intent(normalized):
+        intents.append("intencao_compra")
+    if detect_negotiation(normalized):
+        intents.append("negociacao")
+    if detect_stock_inquiry(normalized):
+        intents.append("consultar_estoque")
+    if detect_price_inquiry(normalized):
+        intents.append("consultar_preco")
+    if detect_compare(normalized):
+        intents.append("comparar_produtos")
+    if detect_promotion_inquiry(normalized):
+        intents.append("consultar_promocao")
+    if detect_order_inquiry(normalized):
+        intents.append("consultar_pedido")
+    if detect_delivery_question(normalized):
+        intents.append("duvida_entrega")
+    if detect_payment_question(normalized):
+        intents.append("duvida_pagamento")
+    if detect_product_inquiry(normalized):
+        intents.append("buscar_produto")
+    if detect_saudacao(normalized):
+        intents.append("saudacao")
+    if not intents:
+        intents.append("geral")
+    return intents
+
+
+def _primary_intent(intents: list[str]) -> str:
+    for candidate in INTENT_PRIORITY:
+        if candidate in intents:
+            return candidate
+    return intents[0] if intents else "geral"
+
+
+def infer_sales_stage(primary_intent: str, memoria: dict[str, Any] | None = None) -> str:
+    mem = memoria or {}
+    atual = str(mem.get("etapa") or mem.get("sales_stage") or "descoberta")
+    mapping = {
+        "saudacao": "descoberta",
+        "buscar_produto": "busca_produto" if mem.get("orcamento") or mem.get("produto_mencionado") else "descoberta",
+        "consultar_preco": "busca_produto",
+        "consultar_estoque": "busca_produto",
+        "comparar_produtos": "comparacao",
+        "consultar_promocao": "negociacao",
+        "negociacao": "negociacao",
+        "intencao_compra": "intencao_compra",
+        "duvida_pagamento": "checkout",
+        "duvida_entrega": "checkout" if atual in ("intencao_compra", "checkout") else "descoberta",
+        "consultar_pedido": "pos_venda",
+        "atendimento_humano": "atendimento_humano",
+        "pos_venda": "pos_venda",
+        "geral": atual if atual in SALES_STAGES else "descoberta",
+    }
+    return mapping.get(primary_intent, atual if atual in SALES_STAGES else "descoberta")
+
+
+def gather_customer_facts(
+    message: IncomingMessage,
+    customer_context: dict[str, Any],
+) -> dict[str, Any]:
+    text = message.text or ""
+    mem = customer_context.get("memoria_sessao") or {}
+    if not isinstance(mem, dict):
+        mem = {}
+    intents = detect_customer_intents(text)
+    primary = _primary_intent(intents)
+    budget = extract_budget(text) or mem.get("orcamento")
+    qty = extract_quantity(text) or mem.get("quantidade")
+    stage = infer_sales_stage(primary, {**mem, "orcamento": budget, "produto_mencionado": mem.get("produto_mencionado")})
+
+    facts: dict[str, Any] = {
+        "primary_intent": primary,
+        "intents": intents,
+        "input_modality": message.input_modality,
+        "display_name": customer_context.get("display_name")
+        or customer_context.get("name")
+        or mem.get("nome")
+        or message.sender_name,
+        "phone_present": bool(message.sender_phone),
+        "empresa": NOME_EMPRESA,
+        "site_url": SITE_URL or None,
+        "orcamento": budget,
+        "quantidade": qty,
+        "sales_stage": stage,
+        "produto_mencionado": mem.get("produto_mencionado") or customer_context.get("produto_mencionado"),
+        "ultimo_produto": mem.get("ultimo_produto") or customer_context.get("ultimo_produto"),
+        "ultima_pergunta": mem.get("ultima_pergunta"),
+        "interesse_atual": mem.get("interesse_atual"),
+    }
+
+    # Respostas curtas dependem do contexto
+    short = (text or "").strip().lower()
+    if short in {"sim", "não", "nao", "esse", "o outro", "pode ser", "ok", "quero"}:
+        facts["resposta_curta"] = short
+        facts["precisa_contexto"] = True
+    return facts
+
+
+def format_facts_for_prompt(facts: dict[str, Any]) -> str:
+    linhas = [
+        f"- Intenção principal: {facts.get('primary_intent')}",
+        f"- Estágio da venda: {facts.get('sales_stage')}",
+        f"- Nome: {facts.get('display_name') or 'não informado'}",
+        f"- Orçamento: {facts.get('orcamento') or 'não informado'}",
+        f"- Quantidade: {facts.get('quantidade') or 'não informada'}",
+        f"- Produto mencionado: {facts.get('produto_mencionado') or 'não informado'}",
+        f"- Último produto: {facts.get('ultimo_produto') or 'não informado'}",
+    ]
+    if facts.get("resposta_curta"):
+        linhas.append(f"- Resposta curta do cliente: {facts['resposta_curta']} (use o contexto)")
+    return "Contexto comercial:\n" + "\n".join(linhas)
+
+
+def build_template_fallback(message: IncomingMessage, facts: dict[str, Any]) -> str | None:
+    from .sales_knowledge import APRESENTACAO, HUMAN_SUPPORT_MESSAGE
+
+    intent = facts.get("primary_intent")
+    nome = facts.get("display_name")
+    if intent == "saudacao":
+        if nome:
+            return f"Olá, {nome}! Sou o assistente de vendas da xNamai. Como posso ajudar hoje?"
+        return APRESENTACAO
+    if intent == "atendimento_humano":
+        return HUMAN_SUPPORT_MESSAGE
+    if intent == "buscar_produto":
+        return (
+            "Claro! Você já tem alguma marca ou modelo em mente, "
+            "ou prefere que eu procure opções dentro de uma faixa de preço?"
+        )
+    if intent in ("consultar_preco", "consultar_estoque") and facts.get("produto_mencionado"):
+        return (
+            f"Vou verificar isso sobre {facts['produto_mencionado']} para você. "
+            "Um instante — se preferir, me diga o código ou o nome exato."
+        )
+    return None

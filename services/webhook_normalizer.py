@@ -26,6 +26,53 @@ def _extrair_texto_zapi(data: dict) -> str:
     return ""
 
 
+def _extrair_audio_zapi(data: dict) -> dict[str, str]:
+    """Extrai URL de áudio do payload Z-API (audio / ptt)."""
+    out: dict[str, str] = {}
+    for chave in ("audio", "ptt", "voice"):
+        bloco = data.get(chave)
+        if isinstance(bloco, dict):
+            url = (
+                bloco.get("audioUrl")
+                or bloco.get("audioURL")
+                or bloco.get("url")
+                or bloco.get("downloadUrl")
+                or ""
+            )
+            if url:
+                out["audio_url"] = str(url).strip()
+                out["audio_mime"] = str(bloco.get("mimeType") or bloco.get("mimetype") or "")
+                return out
+        if isinstance(bloco, str) and bloco.startswith("http"):
+            out["audio_url"] = bloco.strip()
+            return out
+    for chave in ("audioUrl", "audioURL", "mediaUrl", "media_url"):
+        url = data.get(chave)
+        if isinstance(url, str) and url.startswith("http"):
+            out["audio_url"] = url.strip()
+            return out
+    return out
+
+
+def _extrair_audio_ultramsg(evento: dict) -> dict[str, str]:
+    out: dict[str, str] = {}
+    media = evento.get("media") or evento.get("body") or evento.get("audio")
+    if isinstance(media, str) and media.startswith("http"):
+        out["audio_url"] = media.strip()
+        out["audio_mime"] = str(evento.get("mimetype") or evento.get("mime_type") or "")
+        return out
+    if isinstance(media, dict):
+        url = media.get("url") or media.get("link") or media.get("audioUrl") or ""
+        if url:
+            out["audio_url"] = str(url).strip()
+            out["audio_mime"] = str(media.get("mimetype") or "")
+            return out
+    return out
+
+
+_AUDIO_TYPES = {"audio", "ptt", "voice", "audiomessage", "pttmessage"}
+
+
 def _timestamp_zapi(data: dict):
     momento = data.get("momment") or data.get("moment")
     if momento in (None, ""):
@@ -203,6 +250,52 @@ def analisar_webhook(data: dict) -> dict:
                 parse_ok=True,
             )
         if not mensagem:
+            audio = _extrair_audio_zapi(data)
+            tipo_raw = str(data.get("messageType") or data.get("type") or "").lower()
+            if audio.get("audio_url") or any(t in tipo_raw for t in _AUDIO_TYPES):
+                phone = str(data.get("phone") or "").strip()
+                if not phone:
+                    return _resultado_diag(
+                        ok=False,
+                        motivo="sem_telefone",
+                        provider_detectado="zapi",
+                        tipo_evento=tipo_evento or "ReceivedCallback",
+                        tem_texto=False,
+                        parse_ok=True,
+                    )
+                if not audio.get("audio_url"):
+                    return _resultado_diag(
+                        ok=False,
+                        motivo="audio_sem_url",
+                        provider_detectado="zapi",
+                        tipo_evento=tipo_evento or "ReceivedCallback",
+                        tem_texto=False,
+                        parse_ok=True,
+                    )
+                payload = {
+                    "event_type": "message_received",
+                    "provider": "zapi",
+                    "data": {
+                        "from": phone,
+                        "body": "",
+                        "pushname": data.get("senderName") or data.get("chatName") or "",
+                        "fromMe": False,
+                        "type": "audio",
+                        "id": data.get("messageId") or data.get("id") or "",
+                        "time": _timestamp_zapi(data),
+                        "audio_url": audio["audio_url"],
+                        "audio_mime": audio.get("audio_mime") or "",
+                        "input_modality": "audio",
+                    },
+                }
+                return _resultado_diag(
+                    ok=True,
+                    payload=payload,
+                    provider_detectado="zapi",
+                    tipo_evento=tipo_evento or "ReceivedCallback",
+                    tem_texto=False,
+                    parse_ok=True,
+                )
             return _resultado_diag(
                 ok=False,
                 motivo="sem_texto",
@@ -334,6 +427,54 @@ def analisar_webhook(data: dict) -> dict:
         )
 
     if tipo_msg and tipo_msg not in ("chat", "text", ""):
+        audio = _extrair_audio_ultramsg(evento)
+        if tipo_msg in _AUDIO_TYPES or audio.get("audio_url"):
+            if not audio.get("audio_url"):
+                return _resultado_diag(
+                    ok=False,
+                    motivo="audio_sem_url",
+                    provider_detectado="ultramsg",
+                    tipo_evento=tipo_evento or "message_received",
+                    tem_texto=False,
+                    parse_ok=True,
+                )
+            origem = str(evento.get("from") or "").strip()
+            phone = _telefone_de_jid(origem) or _telefone_de_jid(
+                str(evento.get("author") or "")
+            )
+            if not phone:
+                return _resultado_diag(
+                    ok=False,
+                    motivo="sem_telefone",
+                    provider_detectado="ultramsg",
+                    tipo_evento=tipo_evento or "message_received",
+                    tem_texto=False,
+                    parse_ok=True,
+                )
+            payload = {
+                "event_type": "message_received",
+                "provider": "ultramsg",
+                "data": {
+                    "from": phone,
+                    "body": "",
+                    "pushname": evento.get("pushname") or evento.get("notifyName") or "",
+                    "fromMe": False,
+                    "type": "audio",
+                    "id": msg_id,
+                    "time": evento.get("time") or data.get("time"),
+                    "audio_url": audio["audio_url"],
+                    "audio_mime": audio.get("audio_mime") or "",
+                    "input_modality": "audio",
+                },
+            }
+            return _resultado_diag(
+                ok=True,
+                payload=payload,
+                provider_detectado="ultramsg",
+                tipo_evento=tipo_evento or "message_received",
+                tem_texto=False,
+                parse_ok=True,
+            )
         if not body:
             return _resultado_diag(
                 ok=False,
