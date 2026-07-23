@@ -130,6 +130,7 @@ from services.supabase_service import (
     diagnostico_coluna_historico,
     limpar_ultimo_erro_historico,
     obter_ultimo_erro_historico,
+    historico_leitura_indisponivel,
 )
 
 CODE_VERSION = "2026-07-13-etapa6-handoff-humano"
@@ -157,6 +158,7 @@ def _montar_resultado(
     historico_debug: dict | None = None,
     formatacao_debug: dict | None = None,
     handoff_debug: dict | None = None,
+    historico_indisponivel: bool = False,
 ) -> dict:
     out = {
         "resposta": resposta,
@@ -172,6 +174,8 @@ def _montar_resultado(
         out["formatacao_debug"] = formatacao_debug
     if handoff_debug is not None:
         out["handoff_debug"] = handoff_debug
+    if historico_indisponivel:
+        out["historico_indisponivel"] = True
     return out
 
 
@@ -440,6 +444,7 @@ def _processar_mensagem_locked(
         cliente_debug_erro = None
         historico_tentou_salvar = False
         historico_erro_dbg = None
+        historico_indisponivel = False
         historico_coluna_meta = diagnostico_coluna_historico()
         historico_essencial = bool(historico_coluna_meta.get("historico_coluna_existe"))
 
@@ -658,14 +663,34 @@ def _processar_mensagem_locked(
 
         if str(cliente_id).startswith("ephemeral-"):
             historico = []
+            historico_indisponivel = False
         else:
-            historico = buscar_historico(cliente_id)
+            try:
+                historico = buscar_historico(cliente_id) or []
+                historico_indisponivel = bool(historico_leitura_indisponivel())
+            except Exception as exc:
+                # Blindagem extra: nunca derruba /chat por falha de histórico
+                historico = []
+                historico_indisponivel = True
+                log_seguro(
+                    "historico_indisponivel",
+                    telefone=numero,
+                    message_id=msg_id or "-",
+                    erro=type(exc).__name__,
+                )
+
+        if historico_indisponivel:
+            log_seguro(
+                "historico_indisponivel",
+                telefone=numero,
+                message_id=msg_id or "-",
+                historico_indisponivel=True,
+            )
 
         historico_texto = ""
         ultima_resposta_ia = ""
 
         for msg in historico:
-
             if msg["tipo"] == "cliente":
                 historico_texto += f"Cliente: {msg['mensagem']}\n"
             else:
@@ -1619,6 +1644,7 @@ def _processar_mensagem_locked(
             historico_debug=historico_debug,
             formatacao_debug=formatacao_debug if dry_run else None,
             handoff_debug=handoff_debug if dry_run else None,
+            historico_indisponivel=historico_indisponivel,
         )
         log_seguro(
             "chat_resposta_final",
@@ -2141,6 +2167,8 @@ async def chat_teste(payload: dict):
         "persistencia_ok": persistencia_ok if resultado.get("resposta") else False,
         "code_version": CODE_VERSION,
     }
+    if resultado.get("historico_indisponivel"):
+        out["historico_indisponivel"] = True
     if etapas is not None:
         out["persistencia_etapas"] = etapas
     if cliente_debug is not None:

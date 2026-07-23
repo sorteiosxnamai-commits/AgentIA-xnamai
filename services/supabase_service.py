@@ -49,6 +49,27 @@ _SCHEMA_FLAGS: dict[str, bool | None] = {
     "conversas_cliente_id_uuid": None,
     "clientes_celular": None,
     "clientes_historico": None,
+    # Coluna de ordenação em conversas (mensagens) — "" = sem coluna válida
+    "conversas_ordem_coluna": None,
+}
+
+# Colunas de data candidatas (PulseDesk usa last_message_at/updated_at; legado criado_em)
+_COLS_ORDEM_CONVERSAS = (
+    "criado_em",
+    "created_at",
+    "last_message_at",
+    "updated_at",
+    "data_criacao",
+    "enviado_em",
+    "atualizado_em",
+    "timestamp",
+)
+
+# Meta da última buscar_historico (sem PII)
+_META_BUSCAR_HISTORICO: dict = {
+    "indisponivel": False,
+    "coluna_ordem": None,
+    "sem_order": False,
 }
 
 # ├Ültimo erro seguro de busca/cria├º├úo (para dry_run / debug)
@@ -130,6 +151,10 @@ def classificar_erro_supabase(exc: Exception) -> tuple[str, str, str]:
         )
     if code.upper() == "PGRST204" or "pgrst204" in text or "schema cache" in text:
         return code or "PGRST204", "SCHEMA", message[:120]
+    if code == "42703" or "42703" in text or (
+        "does not exist" in text and "column" in text
+    ):
+        return code or "42703", "SCHEMA", message[:120]
     if code.upper() == "PGRST116" or "pgrst116" in text:
         return code or "PGRST116", "NOT_FOUND", message[:120]
     if "23505" in text or "duplicate" in text or "unique" in text:
@@ -373,7 +398,7 @@ def diagnosticar_persistencia_cliente(telefone: str = "") -> dict:
 
 
 def erro_coluna_ausente(exc: Exception, coluna: str | None = None) -> bool:
-    """Detecta PGRST204 / column not in schema cache."""
+    """Detecta PGRST204 / 42703 / column not in schema cache."""
     text = _texto_erro(exc)
     code = ""
     payload = _payload_api_error(exc)
@@ -384,12 +409,58 @@ def erro_coluna_ausente(exc: Exception, coluna: str | None = None) -> bool:
         if not coluna:
             return True
         return coluna.lower() in text
+    # Postgres undefined_column
+    if code == "42703" or "42703" in text:
+        if not coluna:
+            return True
+        return coluna.lower() in text
     if coluna and coluna.lower() in text and (
-        "column" in text or "schema cache" in text or "could not find" in text
+        "column" in text
+        or "schema cache" in text
+        or "could not find" in text
+        or "does not exist" in text
     ):
         return True
     return False
 
+
+def _eh_erro_coluna_inexistente(exc: Exception, coluna: str | None = None) -> bool:
+    return erro_coluna_ausente(exc, coluna)
+
+
+def conversas_created_at_column_env() -> str | None:
+    raw = (os.getenv("CONVERSAS_CREATED_AT_COLUMN") or "").strip()
+    return raw or None
+
+
+def detectar_coluna_ordem_conversas(cols: set[str] | list[str] | None = None) -> str | None:
+    """Escolhe coluna de data para ORDER BY em conversas (mensagens).
+
+    Preferência: CONVERSAS_CREATED_AT_COLUMN; senão primeira candidata presente.
+    """
+    cfg = conversas_created_at_column_env()
+    if cfg:
+        return cfg
+    cached = _SCHEMA_FLAGS.get("conversas_ordem_coluna")
+    if cached is not None:
+        return cached or None
+    colset = set(cols or [])
+    if not colset:
+        return None
+    for nome in _COLS_ORDEM_CONVERSAS:
+        if nome in colset:
+            _SCHEMA_FLAGS["conversas_ordem_coluna"] = nome
+            return nome
+    _SCHEMA_FLAGS["conversas_ordem_coluna"] = ""
+    return None
+
+
+def historico_leitura_indisponivel() -> bool:
+    return bool(_META_BUSCAR_HISTORICO.get("indisponivel"))
+
+
+def meta_buscar_historico() -> dict:
+    return dict(_META_BUSCAR_HISTORICO)
 
 def _null_violation_coluna(exc: Exception, coluna: str) -> bool:
     text = _texto_erro(exc)
@@ -400,16 +471,16 @@ def _null_violation_coluna(exc: Exception, coluna: str) -> bool:
 
 
 def conversas_e_thread() -> bool:
-    """True se CONVERSAS_TABLE ├® schema de atendimento/thread (n├úo mensagens)."""
+    """True se CONVERSAS_TABLE é schema de atendimento/thread (não mensagens)."""
     flag = _SCHEMA_FLAGS.get("conversas_thread")
     if flag is not None:
         return bool(flag)
     try:
         r = supabase.table(TABELA_HISTORICO).select("*").limit(1).execute()
         cols = set((r.data[0] if r.data else {}).keys())
-        # Se n├úo h├í linhas, tenta insert probe via heur├¡stica de nomes conhecidos
+        # Se não há linhas, tenta insert probe via heurística de nomes conhecidos
         if not cols:
-            # Assume thread se a tabela se chama conversas (PulseDesk) ÔÇö confirma com select de colunas via erro
+            # Assume thread se a tabela se chama conversas (PulseDesk) — confirma com select de colunas via erro
             # Fallback: tenta filtrar por contact_phone (thread) vs cliente_id (mensagens)
             try:
                 supabase.table(TABELA_HISTORICO).select("id").eq(
@@ -421,7 +492,7 @@ def conversas_e_thread() -> bool:
                 if erro_coluna_ausente(exc, "contact_phone"):
                     _SCHEMA_FLAGS["conversas_thread"] = False
                     return False
-                # Outro erro ÔÇö tenta cliente_id
+                # Outro erro — tenta cliente_id
                 try:
                     supabase.table(TABELA_HISTORICO).select("id").eq(
                         "cliente_id", "__probe__"
@@ -432,19 +503,30 @@ def conversas_e_thread() -> bool:
                     if erro_coluna_ausente(exc2, "cliente_id"):
                         _SCHEMA_FLAGS["conversas_thread"] = True
                         return True
-                    _SCHEMA_FLAGS["conversas_thread"] = True  # seguro: n├úo inserir campos errados
+                    _SCHEMA_FLAGS["conversas_thread"] = True  # seguro: não inserir campos errados
                     return True
-        is_thread = bool(cols & _COLS_THREAD) and not bool(cols & _COLS_MENSAGENS)
-        is_msgs = bool(cols & _COLS_MENSAGENS)
+        # Mensagens do agente: exige tipo+mensagem. cliente_id sozinho (PulseDesk FK) NÃO basta.
+        is_msgs = "tipo" in cols and "mensagem" in cols
+        is_thread = bool(cols & _COLS_THREAD) and not is_msgs
         if is_thread or (not is_msgs and ("last_message" in cols or "contact_phone" in cols)):
             _SCHEMA_FLAGS["conversas_thread"] = True
             _SCHEMA_FLAGS["message_id"] = "message_id" in cols
+            # Ordenação típica em thread (não usada em buscar_historico JSON)
+            if "last_message_at" in cols:
+                _SCHEMA_FLAGS["conversas_ordem_coluna"] = "last_message_at"
+            elif "updated_at" in cols:
+                _SCHEMA_FLAGS["conversas_ordem_coluna"] = "updated_at"
             return True
+        if is_msgs:
+            _SCHEMA_FLAGS["conversas_thread"] = False
+            _SCHEMA_FLAGS["message_id"] = "message_id" in cols
+            detectar_coluna_ordem_conversas(cols)
+            return False
         _SCHEMA_FLAGS["conversas_thread"] = False
         _SCHEMA_FLAGS["message_id"] = "message_id" in cols
         return False
     except Exception:
-        # Em d├║vida, trata como thread para n├úo inserir cliente_id/tipo/mensagem
+        # Em dúvida, trata como thread para não inserir cliente_id/tipo/mensagem
         _SCHEMA_FLAGS["conversas_thread"] = True
         return True
 
@@ -481,14 +563,23 @@ def diagnosticar_schema_persistencia() -> dict:
         out["conversas_tem_message_id"] = "message_id" in cols
         _SCHEMA_FLAGS["message_id"] = out["conversas_tem_message_id"]
         cols_set = set(cols)
-        if cols_set & _COLS_THREAD and not (cols_set & _COLS_MENSAGENS):
+        is_msgs = "tipo" in cols_set and "mensagem" in cols_set
+        if (cols_set & _COLS_THREAD) and not is_msgs:
             out["conversas_modo"] = "thread"
             _SCHEMA_FLAGS["conversas_thread"] = True
-        elif cols_set & _COLS_MENSAGENS:
+            if "last_message_at" in cols_set:
+                _SCHEMA_FLAGS["conversas_ordem_coluna"] = "last_message_at"
+                out["conversas_ordem_coluna"] = "last_message_at"
+            elif "updated_at" in cols_set:
+                _SCHEMA_FLAGS["conversas_ordem_coluna"] = "updated_at"
+                out["conversas_ordem_coluna"] = "updated_at"
+        elif is_msgs:
             out["conversas_modo"] = "mensagens"
             _SCHEMA_FLAGS["conversas_thread"] = False
+            ordem = detectar_coluna_ordem_conversas(cols_set)
+            out["conversas_ordem_coluna"] = ordem
         else:
-            # Heur├¡stica pelo nome / colunas parciais
+            # Heurística pelo nome / colunas parciais
             if "last_message" in cols_set or "contact_phone" in cols_set:
                 out["conversas_modo"] = "thread"
                 _SCHEMA_FLAGS["conversas_thread"] = True
@@ -1449,7 +1540,18 @@ def mensagem_ja_existe(message_id: str) -> bool:
 
 
 def buscar_historico(cliente_id, limit: int | None = None):
-    """Retorna lista [{tipo, mensagem, criado_em}] para o fluxo do agente."""
+    """Retorna lista [{tipo, mensagem, criado_em}] para o fluxo do agente.
+
+    Nunca propaga erro de coluna ausente (42703/PGRST204): retorna [] e marca
+    ``historico_leitura_indisponivel()`` para o /chat continuar até a OpenAI.
+    """
+    global _META_BUSCAR_HISTORICO
+    _META_BUSCAR_HISTORICO = {
+        "indisponivel": False,
+        "coluna_ordem": None,
+        "sem_order": False,
+    }
+
     # Modo thread / historico JSON em clientes
     if conversas_e_thread():
         if not clientes_tem_historico():
@@ -1481,19 +1583,87 @@ def buscar_historico(cliente_id, limit: int | None = None):
             if erro_coluna_ausente(exc, "historico"):
                 _SCHEMA_FLAGS["clientes_historico"] = False
             print("AVISO buscar_historico (json):", type(exc).__name__, str(exc)[:120])
+            _META_BUSCAR_HISTORICO["indisponivel"] = True
+            registrar_erro_historico("buscar_historico_json", exc)
             return []
 
-    query = (
-        supabase.table(TABELA_HISTORICO)
-        .select("*")
-        .eq("cliente_id", cliente_id)
-        .order("criado_em")
-    )
-    resultado = query.execute()
-    dados = resultado.data or []
-    if limit is not None and limit > 0 and len(dados) > limit:
-        return dados[-limit:]
-    return dados
+    # Modo mensagens (tabela legada): ordena pela coluna real de data
+    try:
+        cols_amostra: set[str] = set()
+        try:
+            amostra = (
+                supabase.table(TABELA_HISTORICO).select("*").limit(1).execute()
+            )
+            if amostra.data:
+                cols_amostra = set(amostra.data[0].keys())
+        except Exception:
+            cols_amostra = set()
+
+        coluna = detectar_coluna_ordem_conversas(cols_amostra or None)
+        _META_BUSCAR_HISTORICO["coluna_ordem"] = coluna
+
+        base = (
+            supabase.table(TABELA_HISTORICO)
+            .select("*")
+            .eq("cliente_id", cliente_id)
+        )
+        dados: list = []
+        if coluna:
+            try:
+                resultado = base.order(coluna).execute()
+                dados = resultado.data or []
+            except Exception as exc:
+                if erro_coluna_ausente(exc, coluna) or erro_coluna_ausente(exc, None):
+                    print(
+                        "AVISO buscar_historico: coluna de ordem indisponivel:",
+                        coluna,
+                        type(exc).__name__,
+                    )
+                    _SCHEMA_FLAGS["conversas_ordem_coluna"] = ""
+                    _META_BUSCAR_HISTORICO["sem_order"] = True
+                    _META_BUSCAR_HISTORICO["coluna_ordem"] = None
+                    try:
+                        from services.webhook_guard import log_seguro
+
+                        log_seguro(
+                            "historico_order_fallback",
+                            coluna=coluna,
+                            erro=type(exc).__name__,
+                        )
+                    except Exception:
+                        pass
+                    dados = (
+                        supabase.table(TABELA_HISTORICO)
+                        .select("*")
+                        .eq("cliente_id", cliente_id)
+                        .execute()
+                        .data
+                        or []
+                    )
+                else:
+                    raise
+        else:
+            _META_BUSCAR_HISTORICO["sem_order"] = True
+            dados = base.execute().data or []
+
+        if limit is not None and limit > 0 and len(dados) > limit:
+            return dados[-limit:]
+        return dados
+    except Exception as exc:
+        print("AVISO buscar_historico (mensagens):", type(exc).__name__, str(exc)[:120])
+        _META_BUSCAR_HISTORICO["indisponivel"] = True
+        registrar_erro_historico("buscar_historico", exc)
+        try:
+            from services.webhook_guard import log_seguro
+
+            log_seguro(
+                "historico_indisponivel",
+                erro=type(exc).__name__,
+                codigo=str(_payload_api_error(exc).get("code") or "-"),
+            )
+        except Exception:
+            pass
+        return []
 
 
 def atualizar_historico_json(cliente_id, contexto_extra: dict | None = None):
