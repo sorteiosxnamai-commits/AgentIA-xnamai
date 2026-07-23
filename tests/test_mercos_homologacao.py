@@ -237,7 +237,7 @@ def test_put_produtos_id_so_na_url_e_payload_correto(client, monkeypatch):
     assert "id" not in capturado["body"]
     assert capturado["body"]["nome"] == "Produto Alterado"
     assert capturado["body"]["preco_tabela"] == 22.5
-    assert capturado["body"]["saldo_estoque"] == 8
+    assert "saldo_estoque" not in capturado["body"]  # estoque só via ajustar_estoque
     assert capturado["body"]["ativo"] is False
     assert capturado["body"]["unidade"] == "CX"
     assert "campo_inventado" not in capturado["body"]

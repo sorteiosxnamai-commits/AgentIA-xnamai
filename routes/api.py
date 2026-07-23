@@ -2045,10 +2045,58 @@ async def chat_teste(payload: dict):
     }
 
     loop = asyncio.get_event_loop()
-    resultado = await loop.run_in_executor(
-        None,
-        lambda: processar_mensagem(data, dry_run=dry_run, persistir=persistir),
-    )
+    try:
+        chat_timeout = float(os.getenv("CHAT_TIMEOUT_SEGUNDOS", "70") or "70")
+    except (TypeError, ValueError):
+        chat_timeout = 70.0
+    chat_timeout = max(1.0, chat_timeout)
+    try:
+        resultado = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: processar_mensagem(data, dry_run=dry_run, persistir=persistir),
+            ),
+            timeout=chat_timeout,
+        )
+    except asyncio.TimeoutError:
+        log_seguro(
+            "processamento_finalizado",
+            origem="chat",
+            status="timeout",
+            telefone=telefone,
+        )
+        return {
+            "status": "erro",
+            "telefone": telefone,
+            "mensagem": mensagem,
+            "resposta": (
+                "Não consegui concluir a consulta a tempo. "
+                "Tente novamente em instantes."
+            ),
+            "code": "timeout",
+            "code_version": CODE_VERSION,
+            "persistencia_ok": False,
+        }
+    except Exception as exc:
+        log_seguro(
+            "processamento_finalizado",
+            origem="chat",
+            status="erro",
+            erro=type(exc).__name__,
+            telefone=telefone,
+        )
+        return {
+            "status": "erro",
+            "telefone": telefone,
+            "mensagem": mensagem,
+            "resposta": (
+                "Não consegui concluir o atendimento agora. "
+                "Pode tentar novamente ou pedir atendimento humano?"
+            ),
+            "code": type(exc).__name__,
+            "code_version": CODE_VERSION,
+            "persistencia_ok": False,
+        }
     if not isinstance(resultado, dict):
         resultado = {
             "resposta": resultado if isinstance(resultado, str) else "",

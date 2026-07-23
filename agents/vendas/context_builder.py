@@ -127,6 +127,16 @@ def gather_customer_facts(
     qty = extract_quantity(text) or mem.get("quantidade")
     stage = infer_sales_stage(primary, {**mem, "orcamento": budget, "produto_mencionado": mem.get("produto_mencionado")})
 
+    produtos_ctx = customer_context.get("produtos_contexto") or mem.get("produtos_contexto") or []
+    if not isinstance(produtos_ctx, list):
+        produtos_ctx = []
+    catalogo = str(customer_context.get("catalogo") or "").strip()
+    fonte = str(
+        customer_context.get("fonte_produtos")
+        or mem.get("fonte_produtos")
+        or ""
+    ).strip()
+
     facts: dict[str, Any] = {
         "primary_intent": primary,
         "intents": intents,
@@ -145,7 +155,17 @@ def gather_customer_facts(
         "ultimo_produto": mem.get("ultimo_produto") or customer_context.get("ultimo_produto"),
         "ultima_pergunta": mem.get("ultima_pergunta"),
         "interesse_atual": mem.get("interesse_atual"),
+        "catalogo": catalogo,
+        "fonte_produtos": fonte or None,
+        "produtos_precarregados": [p for p in produtos_ctx if isinstance(p, dict)],
     }
+
+    if facts["produtos_precarregados"] and not facts.get("produto_mencionado"):
+        p0 = facts["produtos_precarregados"][0]
+        nome_p = p0.get("name") or p0.get("nome")
+        if nome_p:
+            facts["produto_mencionado"] = nome_p
+            facts["ultimo_produto"] = nome_p
 
     # Respostas curtas dependem do contexto
     short = (text or "").strip().lower()
@@ -165,9 +185,66 @@ def format_facts_for_prompt(facts: dict[str, Any]) -> str:
         f"- Produto mencionado: {facts.get('produto_mencionado') or 'não informado'}",
         f"- Último produto: {facts.get('ultimo_produto') or 'não informado'}",
     ]
+    if facts.get("fonte_produtos"):
+        linhas.append(f"- Fonte do catálogo (Product Service): {facts['fonte_produtos']}")
     if facts.get("resposta_curta"):
         linhas.append(f"- Resposta curta do cliente: {facts['resposta_curta']} (use o contexto)")
+
+    produtos = facts.get("produtos_precarregados") or []
+    if produtos:
+        linhas.append(
+            "- CATÁLOGO PRÉ-CARREGADO (já consultado pelo Product Service — "
+            "NÃO chame search_products / get_product / check_inventory / get_product_price):"
+        )
+        for p in produtos[:8]:
+            if not isinstance(p, dict):
+                continue
+            nome = p.get("name") or p.get("nome") or ""
+            preco = p.get("price") if p.get("price") is not None else p.get("preco")
+            estoque = p.get("stock_quantity")
+            if estoque is None:
+                estoque = p.get("estoque")
+            pedaco = f"  • {nome}"
+            if preco not in (None, ""):
+                pedaco += f" | R$ {preco}"
+            if estoque not in (None, ""):
+                pedaco += f" | estoque={estoque}"
+            linhas.append(pedaco)
+    elif facts.get("catalogo"):
+        linhas.append("- CATÁLOGO PRÉ-CARREGADO (texto):")
+        linhas.append(str(facts["catalogo"])[:2500])
+
     return "Contexto comercial:\n" + "\n".join(linhas)
+
+
+def reply_from_preloaded_products(facts: dict[str, Any]) -> str | None:
+    """Resposta segura a partir dos produtos já encontrados pelo Product Service."""
+    produtos = facts.get("produtos_precarregados") or []
+    if not produtos:
+        catalogo = str(facts.get("catalogo") or "").strip()
+        if catalogo:
+            return (
+                "Encontrei estas opções no catálogo:\n"
+                + catalogo[:700]
+                + "\nQual delas te interessa?"
+            )
+        return None
+    nome = facts.get("display_name")
+    prefixo = f"{nome}, encontrei estas opções:\n" if nome else "Encontrei estas opções:\n"
+    linhas = []
+    for p in produtos[:3]:
+        if not isinstance(p, dict):
+            continue
+        item = p.get("name") or p.get("nome") or ""
+        if not item:
+            continue
+        preco = p.get("price") if p.get("price") is not None else p.get("preco")
+        if preco not in (None, ""):
+            item += f" — R$ {preco}"
+        linhas.append(f"• {item}")
+    if not linhas:
+        return None
+    return prefixo + "\n".join(linhas) + "\nQual dessas faz mais sentido para você?"
 
 
 def build_template_fallback(message: IncomingMessage, facts: dict[str, Any]) -> str | None:
@@ -181,6 +258,19 @@ def build_template_fallback(message: IncomingMessage, facts: dict[str, Any]) -> 
         return APRESENTACAO
     if intent == "atendimento_humano":
         return HUMAN_SUPPORT_MESSAGE
+
+    preloaded = reply_from_preloaded_products(facts)
+    if preloaded and intent in (
+        "buscar_produto",
+        "consultar_preco",
+        "consultar_estoque",
+        "comparar_produtos",
+        "negociacao",
+        "intencao_compra",
+        "geral",
+    ):
+        return preloaded
+
     if intent == "buscar_produto":
         return (
             "Claro! Você já tem alguma marca ou modelo em mente, "

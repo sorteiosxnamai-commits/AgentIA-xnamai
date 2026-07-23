@@ -87,9 +87,19 @@ def _normalizar_pedido(item: dict) -> dict[str, Any] | None:
         "total": item.get("total") if item.get("total") is not None else item.get("valor_total"),
         "status": item.get("status") or item.get("situacao"),
         "data_emissao": item.get("data_emissao"),
-        "ultima_alteracao": item.get("ultima_alteracao"),
+        "ultima_alteracao": item.get("ultima_alteracao")
+        or item.get("data_criacao")
+        or item.get("data_emissao"),
     }
-    for chave in ("condicao_pagamento", "numero", "excluido"):
+    for chave in (
+        "condicao_pagamento",
+        "numero",
+        "excluido",
+        "status_faturamento",
+        "itens",
+        "valor_frete",
+        "data_criacao",
+    ):
         if chave in item:
             out[chave] = item.get(chave)
     return out

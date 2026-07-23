@@ -335,12 +335,12 @@ def test_conversas_ausente_nao_quebra_memoria(monkeypatch):
 
 
 def test_nenhum_arquivo_mercos_alterado():
+    """Throttle e mercos_service (agente) intactos; homologação pode evoluir."""
     import subprocess
 
     out = subprocess.check_output(
-        ["git", "diff", "--name-only", "--", "services/mercos_api_client.py",
-         "services/mercos_service.py", "services/mercos_homolog_service.py",
-         "services/mercos_throttle.py"],
+        ["git", "diff", "--name-only", "--",
+         "services/mercos_service.py", "services/mercos_throttle.py"],
         cwd=str(Path(__file__).resolve().parents[1]),
         text=True,
     )

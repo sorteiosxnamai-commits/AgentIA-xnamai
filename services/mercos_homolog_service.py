@@ -20,7 +20,13 @@ from services.mercos_api_client import (
     post_json,
     put_json,
 )
+from services import mercos_throttle
 from services.mercos_service import mercos_ambiente_sandbox, mercos_configurado
+
+# Homologação Ajuste de Estoque: piso específico (>= global). Default 20s —
+# o cartão da Mercos tem reprovado com “Throttling não foi respeitado!” mesmo
+# com intervalo local >> 10s; 20s é configurável sem alterar o throttle global.
+ESTOQUE_HOMOLOG_INTERVALO_DEFAULT_SEGUNDOS = 20.0
 
 # Paths confirmados no sandbox Xnamai (probe 2026-07-13)
 PATHS = {
@@ -36,6 +42,9 @@ PATHS = {
     # cupom e condição de pagamento
     "promocoes": "/v1/promocoes",
     "produtos": "/v1/produtos",
+    # Doc oficial Mercos: PUT /v1/ajustar_estoque (objeto {produto_id, novo_saldo})
+    # — entidade distinta de PUT /v1/produtos/{id}
+    "ajustar_estoque": "/v1/ajustar_estoque",
     "segmentos": "/v1/segmentos",
     "tabelas_preco": "/v1/tabelas_preco",
     # Doc oficial Mercos (Apiary): POST /v1/clientes_tabela_preco/liberar_todas
@@ -55,6 +64,7 @@ PATHS = {
     "imagens_produto": "/v1/imagens_produto",
     "usuarios": "/v1/usuarios",
     "titulos": "/v1/titulos",
+    # PUT/cancelamento/faturamento permanecem em v1; GET de listagem usa v2
     "pedidos": "/v1/pedidos",
     "pedidos_v2": "/v2/pedidos",
     # Doc oficial Mercos (Apiary): POST /v1/pedidos/cancelar/{id}, id só na URL
@@ -95,6 +105,12 @@ def inventario_homologacao() -> dict[str, Any]:
             {"entidade": "Pagamentos", "metodo": "GET", "path": _path("pagamentos"), "status": "pronto"},
             {"entidade": "Promoções", "metodo": "GET", "path": _path("promocoes"), "status": "pronto"},
             {"entidade": "Produtos", "metodo": "GET", "path": _path("produtos"), "status": "pronto"},
+            {
+                "entidade": "Ajuste de Estoque",
+                "metodo": "PUT",
+                "path": _path("ajustar_estoque"),
+                "status": "pronto",
+            },
             {"entidade": "Segmentos de Clientes", "metodo": "GET", "path": _path("segmentos"), "status": "pronto"},
             {"entidade": "Tabelas de Preço", "metodo": "GET", "path": _path("tabelas_preco"), "status": "pronto"},
             {"entidade": "Tabelas de Preço", "metodo": "POST", "path": _path("tabelas_preco"), "status": "pronto"},
@@ -140,6 +156,7 @@ def inventario_homologacao() -> dict[str, Any]:
                 "nota": "Sandbox retornou 404 em /v1/tipos_pedido. Confirmar path com suporte Mercos e setar MERCOS_PATH_TIPOS_PEDIDO.",
             },
             {"entidade": "Usuários", "metodo": "GET", "path": _path("usuarios"), "status": "pronto"},
+            {"entidade": "Pedidos", "metodo": "GET", "path": _path("pedidos_v2"), "status": "pronto"},
             {"entidade": "Pedidos", "metodo": "POST", "path": _path("pedidos_v2"), "status": "pronto"},
             {"entidade": "Pedidos", "metodo": "PUT", "path": _path("pedidos") + "/{id}", "status": "pronto"},
             {"entidade": "Cancelamento de Pedidos", "metodo": "POST", "path": _path("pedidos_cancelar") + "/{id}", "status": "pronto"},
@@ -260,18 +277,266 @@ def criar_produto(body: dict) -> dict:
 
 
 def alterar_produto(produto_id: int | str, body: dict) -> dict:
-    """PUT /v1/produtos/{id} — id só na URL; envia apenas campos conhecidos preenchidos."""
+    """PUT /v1/produtos/{id} — id só na URL; envia apenas campos conhecidos preenchidos.
+
+    Estoque NÃO é atualizado por esta rota. Use ``ajustar_estoque`` (PUT
+    /v1/ajustar_estoque) — contrato oficial Mercos para Ajuste de Estoque.
+    """
     pid = str(produto_id or "").strip()
     if not pid:
         raise MercosApiError("ID do produto é obrigatório para alteração.", status_code=422)
     payload = montar_payload_produto(body)
     payload.pop("id", None)
+    # Homologação Mercos: estoque só via entidade Ajuste de Estoque
+    payload.pop("saldo_estoque", None)
     if not payload:
         raise MercosApiError(
-            "Nenhum campo válido informado para atualizar o produto.",
+            "Nenhum campo válido informado para atualizar o produto "
+            "(estoque deve usar PUT /v1/ajustar_estoque).",
             status_code=422,
         )
     return put_json(f"{_path('produtos')}/{pid}", payload)
+
+
+_AJUSTE_ESTOQUE_LOCK = threading.Lock()
+_AJUSTE_ESTOQUE_EM_ANDAMENTO: set[tuple[int, str]] = set()
+# Dedup pós-sucesso: evita 2º PUT idêntico (duplo clique / reenvio UI) sem GET de confirmação.
+_AJUSTE_ESTOQUE_OK_RECENTE: dict[tuple[int, str], dict[str, Any]] = {}
+_AJUSTE_ESTOQUE_ACAO_IDS: dict[str, dict[str, Any]] = {}
+_AJUSTE_OK_TTL_S = 120.0
+
+
+def _reset_ajuste_estoque_para_testes() -> None:
+    """Limpa locks/caches de ajuste (somente testes)."""
+    with _AJUSTE_ESTOQUE_LOCK:
+        _AJUSTE_ESTOQUE_EM_ANDAMENTO.clear()
+        _AJUSTE_ESTOQUE_OK_RECENTE.clear()
+        _AJUSTE_ESTOQUE_ACAO_IDS.clear()
+
+
+def intervalo_homolog_ajuste_estoque() -> float:
+    """Intervalo específico da homologação de ajuste (env, default 20s)."""
+    raw = os.getenv("MERCOS_HOMOLOG_ESTOQUE_INTERVALO_SEGUNDOS", "").strip()
+    if not raw:
+        return ESTOQUE_HOMOLOG_INTERVALO_DEFAULT_SEGUNDOS
+    try:
+        return max(0.0, float(raw.replace(",", ".")))
+    except (TypeError, ValueError):
+        return ESTOQUE_HOMOLOG_INTERVALO_DEFAULT_SEGUNDOS
+
+
+def piso_ajuste_estoque() -> float:
+    """Maior entre throttle global e intervalo específico da homologação de estoque."""
+    global_piso = mercos_throttle.estado_atual().get("intervalo_minimo")
+    try:
+        g = float(global_piso) if global_piso is not None else 10.0
+    except (TypeError, ValueError):
+        g = 10.0
+    return max(g, intervalo_homolog_ajuste_estoque())
+
+
+def montar_payload_ajuste_estoque(
+    produto_id: int | str,
+    novo_saldo: float | int | str,
+) -> dict[str, Any]:
+    """Payload oficial PUT /v1/ajustar_estoque — objeto JSON (não lista).
+
+    Sandbox Mercos (HTTP 422 se lista): ``{"produto_id": int, "novo_saldo": float}``.
+    """
+    try:
+        pid = int(str(produto_id).strip())
+    except (TypeError, ValueError) as exc:
+        raise MercosApiError(
+            "produto_id inválido para ajuste de estoque.",
+            status_code=422,
+        ) from exc
+    try:
+        saldo = float(str(novo_saldo).strip().replace(",", "."))
+    except (TypeError, ValueError) as exc:
+        raise MercosApiError(
+            "novo_saldo inválido para ajuste de estoque.",
+            status_code=422,
+        ) from exc
+    if saldo < 0 or saldo > 9999999.99:
+        raise MercosApiError(
+            "novo_saldo fora do intervalo suportado (0 a 9999999.99).",
+            status_code=422,
+        )
+    return {"produto_id": pid, "novo_saldo": saldo}
+
+
+def _ajuste_estoque_cache_get(
+    chave: tuple[int, str],
+    acao_id: str | None,
+) -> dict[str, Any] | None:
+    agora = time.time()
+    with _AJUSTE_ESTOQUE_LOCK:
+        if acao_id:
+            hit = _AJUSTE_ESTOQUE_ACAO_IDS.get(acao_id)
+            if hit and agora - float(hit.get("_ts") or 0) <= _AJUSTE_OK_TTL_S:
+                out = dict(hit)
+                out.pop("_ts", None)
+                out["deduplicado"] = True
+                out["chamadas_mercos"] = 0
+                return out
+        hit2 = _AJUSTE_ESTOQUE_OK_RECENTE.get(chave)
+        if hit2 and agora - float(hit2.get("_ts") or 0) <= _AJUSTE_OK_TTL_S:
+            out = dict(hit2)
+            out.pop("_ts", None)
+            out["deduplicado"] = True
+            out["chamadas_mercos"] = 0
+            return out
+    return None
+
+
+def _ajuste_estoque_cache_put(
+    chave: tuple[int, str],
+    acao_id: str | None,
+    resultado: dict[str, Any],
+) -> None:
+    packed = dict(resultado)
+    packed["_ts"] = time.time()
+    with _AJUSTE_ESTOQUE_LOCK:
+        _AJUSTE_ESTOQUE_OK_RECENTE[chave] = packed
+        if acao_id:
+            _AJUSTE_ESTOQUE_ACAO_IDS[acao_id] = packed
+        # Limpa entradas velhas (evita crescimento ilimitado em sessão longa).
+        limite = time.time() - _AJUSTE_OK_TTL_S
+        for bag in (_AJUSTE_ESTOQUE_OK_RECENTE, _AJUSTE_ESTOQUE_ACAO_IDS):
+            mortos = [k for k, v in bag.items() if float(v.get("_ts") or 0) < limite]
+            for k in mortos:
+                bag.pop(k, None)
+
+
+def ajustar_estoque(
+    produto_id: int | str,
+    novo_saldo: float | int | str,
+    *,
+    saldo_anterior: float | int | str | None = None,
+    acao_id: str | None = None,
+) -> dict[str, Any]:
+    """PUT /v1/ajustar_estoque — entidade oficial de Ajuste de Estoque.
+
+    Sandbox exige corpo **dict** ``{produto_id, novo_saldo}`` (não lista).
+    ``novo_saldo`` é o saldo absoluto final (não delta). Não usa PUT
+    /v1/produtos/{id}. Não faz GET de confirmação após o PUT.
+
+    Antes do PUT aguarda ``max(throttle global, MERCOS_HOMOLOG_ESTOQUE_INTERVALO_SEGUNDOS)``
+    (default 20s). ``max_retries_429=0``: sem reenvio HTTP após 200/422/429.
+    ``acao_id`` / cache curto: mesma submissão não dispara segundo PUT.
+    """
+    payload = montar_payload_ajuste_estoque(produto_id, novo_saldo)
+    chave = (int(payload["produto_id"]), f"{float(payload['novo_saldo']):.4f}")
+    aid = (acao_id or "").strip() or None
+    cached = _ajuste_estoque_cache_get(chave, aid)
+    if cached is not None:
+        return cached
+    with _AJUSTE_ESTOQUE_LOCK:
+        if chave in _AJUSTE_ESTOQUE_EM_ANDAMENTO:
+            raise MercosApiError(
+                "Ajuste de estoque já em andamento para este produto/saldo. Aguarde.",
+                status_code=409,
+            )
+        _AJUSTE_ESTOQUE_EM_ANDAMENTO.add(chave)
+    path = _path("ajustar_estoque")
+    piso = piso_ajuste_estoque()
+    try:
+        # Exatamente uma chamada Mercos nesta ação — sem GET posterior.
+        out = put_json(
+            path,
+            payload,
+            max_retries_429=0,
+            intervalo_minimo=piso,
+        )
+        anterior = None
+        if saldo_anterior not in (None, ""):
+            try:
+                anterior = float(str(saldo_anterior).strip().replace(",", "."))
+            except (TypeError, ValueError):
+                anterior = None
+        throttle = out.get("throttle") if isinstance(out.get("throttle"), dict) else {}
+        throttle = dict(throttle or {})
+        # Garante que o cartão mostre o piso efetivo desta homologação.
+        throttle["intervalo_minimo"] = piso
+        throttle["intervalo_homolog_estoque"] = intervalo_homolog_ajuste_estoque()
+        intervalo_real = throttle.get("intervalo_desde_anterior")
+        evidencia = {
+            "chamada_global_anterior": (
+                f"{throttle.get('anterior_metodo')} {throttle.get('anterior_endpoint')}"
+                if throttle.get("anterior_metodo") and throttle.get("anterior_endpoint")
+                else None
+            ),
+            "timestamp_anterior": throttle.get("anterior_ts"),
+            "intervalo_aplicado": piso,
+            "intervalo_real": intervalo_real,
+            "endpoint_seguinte": None,
+            "chamadas_mercos": 1,
+            "sem_chamada_posterior_automatica": True,
+            "metodo": "PUT",
+            "endpoint": path,
+        }
+        resultado = {
+            "ok": True,
+            "status_code": out.get("status_code") or 200,
+            "sandbox": out.get("sandbox"),
+            "dados": out.get("dados") if isinstance(out.get("dados"), dict) else {},
+            "throttle": throttle,
+            "path": path,
+            "method": "PUT",
+            "entidade": "Ajuste de estoque",
+            "produto_id": payload["produto_id"],
+            "novo_saldo": payload["novo_saldo"],
+            "saldo_anterior": anterior,
+            "payload_enviado": dict(payload),
+            "deduplicado": False,
+            "chamadas_mercos": 1,
+            "acao_id": aid,
+            "evidencia_throttle": evidencia,
+            "cliente_interno": "mercos_homolog_service.ajustar_estoque",
+        }
+        _ajuste_estoque_cache_put(chave, aid, resultado)
+        return resultado
+    finally:
+        with _AJUSTE_ESTOQUE_LOCK:
+            _AJUSTE_ESTOQUE_EM_ANDAMENTO.discard(chave)
+
+
+def adaptar_pedido_v2(item: dict | None) -> dict[str, Any]:
+    """Normaliza um pedido da GET /v2/pedidos para o formato interno da homologação.
+
+    Preserva campos v2 (itens, faturamento, cancelamento) e garante aliases
+    usados pela UI/catálogo (total, ultima_alteracao, status).
+    """
+    if not isinstance(item, dict):
+        return {}
+    out = dict(item)
+    if out.get("total") is None and out.get("valor_total") is not None:
+        out["total"] = out.get("valor_total")
+    if out.get("status") is not None and out.get("status") != "":
+        out["status"] = str(out["status"])
+    if out.get("ultima_alteracao") in (None, ""):
+        for chave in (
+            "data_alteracao",
+            "atualizado_em",
+            "data_atualizacao",
+            "data_criacao",
+            "data_emissao",
+        ):
+            if out.get(chave) not in (None, ""):
+                out["ultima_alteracao"] = out[chave]
+                break
+    if "itens" in out and not isinstance(out.get("itens"), list):
+        out["itens"] = []
+    return out
+
+
+def adaptar_lista_pedidos_v2(itens: list | None) -> list[dict[str, Any]]:
+    saida: list[dict[str, Any]] = []
+    for item in itens or []:
+        adaptado = adaptar_pedido_v2(item if isinstance(item, dict) else None)
+        if adaptado.get("id") not in (None, ""):
+            saida.append(adaptado)
+    return saida
 
 
 def normalizar_imagens_produto(payload: Any) -> list[dict[str, Any]]:
@@ -1407,30 +1672,37 @@ def listar_pedidos_paginado_seguro(
     sessao_id: str | None = None,
     rate_limiter: "_RateLimiterMercos | None" = None,
 ) -> dict[str, Any]:
-    """Lista pedidos com o mesmo contrato seguro de clientes/usuários.
+    """Lista pedidos via GET /v2/pedidos (homologação exige v2, não /v1/pedidos).
 
-    Diagnóstico sandbox 2026-07-17: GET /v1/pedidos aceita alterado_apos
-    (cursor keyset, filtro estritamente maior) e retorna os headers
-    MEUSPEDIDOS_QTDE_TOTAL_REGISTROS / REQUISICOES_EXTRAS. Cada item traz
-    cliente_id, cliente_razao_social, total, status, data_emissao e
-    ultima_alteracao (formato "YYYY-MM-DD HH:MM:SS").
+    Doc oficial Mercos (v2): filtros alterado_apos, status, status_faturamento,
+    registros_por_pagina; headers MEUSPEDIDOS_* para paginação. Cada item é
+    adaptado por ``adaptar_pedido_v2`` para compatibilidade com o catálogo/UI.
 
-    Throttling: o intervalo mínimo é garantido ANTES de cada requisição por
-    um rate limiter compartilhado por empresa (relógio monotônico), inclusive
-    entre a 1ª chamada e cada chamada extra de MEUSPEDIDOS_REQUISICOES_EXTRAS.
+    Throttling: intervalo mínimo antes de cada requisição pelo rate limiter
+    compartilhado por empresa (inclui extras de MEUSPEDIDOS_REQUISICOES_EXTRAS).
     """
-    return _listar_paginado_seguro(
-        path=_path("pedidos"),
+    extras = dict(params_extra or {})
+    # Limite sugerido pela doc v2 (máx. 20) — não sobrescreve se o caller já setou
+    if "registros_por_pagina" not in extras:
+        extras["registros_por_pagina"] = 20
+    data = _listar_paginado_seguro(
+        path=_path("pedidos_v2"),
         resume_ns="pedidos",
         alterado_apos=alterado_apos,
         pagina_inicial=pagina_inicial,
         max_paginas=max_paginas,
         timeout_request=timeout_request,
         timeout_total=timeout_total,
-        params_extra=params_extra,
+        params_extra=extras or None,
         sessao_id=sessao_id,
         rate_limiter=rate_limiter if rate_limiter is not None else _rate_limiter_pedidos(),
     )
+    itens_brutos = data.get("itens") or []
+    data["itens"] = adaptar_lista_pedidos_v2(itens_brutos)
+    data["total"] = len(data["itens"])
+    data["versao"] = "v2"
+    data["path"] = _path("pedidos_v2")
+    return data
 
 
 _SYNC_PEDIDOS_LOCK = _ExpiringLock(ttl_seconds=CLIENTES_LOCK_TTL_SEGUNDOS)
@@ -1483,7 +1755,8 @@ def sincronizar_pedidos(
             "novo_cursor": novo_cursor,
             "total": total,
             "itens": itens,
-            "path": data.get("path"),
+            "path": data.get("path") or _path("pedidos_v2"),
+            "versao": data.get("versao") or "v2",
             "paginas_lidas": data.get("paginas_lidas"),
             "filtros": data.get("filtros") or {},
             "status": status,
@@ -3004,6 +3277,10 @@ __all__ = [
     "montar_payload_produto",
     "criar_produto",
     "alterar_produto",
+    "ajustar_estoque",
+    "montar_payload_ajuste_estoque",
+    "adaptar_pedido_v2",
+    "adaptar_lista_pedidos_v2",
     "listar_imagens_produto",
     "normalizar_imagens_produto",
     "localizar_produto_por_nome",

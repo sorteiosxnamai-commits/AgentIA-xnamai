@@ -2430,12 +2430,15 @@ def acao_produtos_alterar(
     nome: str = Form(""),
     codigo: str = Form(""),
     preco_tabela: str = Form(""),
-    saldo_estoque: str = Form(""),
     ativo: str = Form(""),
     unidade: str = Form(""),
     excluido: str = Form(""),
 ):
-    """Alteração operacional de produto (inclui exclusão lógica via excluido=true)."""
+    """Alteração operacional de produto (inclui exclusão lógica via excluido=true).
+
+    Estoque não é alterado aqui — use a ação «Ajuste de estoque» (PUT
+    /v1/ajustar_estoque).
+    """
     _auth(request, token)
     pid_txt = (produto_id or "").strip()
     if not pid_txt:
@@ -2457,9 +2460,6 @@ def acao_produtos_alterar(
     preco = _float_form(preco_tabela)
     if preco is not None:
         body["preco_tabela"] = preco
-    estoque = _float_form(saldo_estoque)
-    if estoque is not None:
-        body["saldo_estoque"] = estoque
     ativo_txt = (ativo or "").strip().lower()
     if ativo_txt in ("true", "false"):
         body["ativo"] = ativo_txt == "true"
@@ -2473,7 +2473,13 @@ def acao_produtos_alterar(
         return _wrap_result(
             _card(
                 "Nada para alterar",
-                [("Mensagem", "Preencha ao menos um campo para atualizar o produto.")],
+                [
+                    (
+                        "Mensagem",
+                        "Preencha ao menos um campo para atualizar o produto. "
+                        "Para estoque, use «Ajuste de estoque».",
+                    )
+                ],
                 status_label="Validação",
                 css="erro",
             )
@@ -2506,18 +2512,206 @@ def acao_produtos_alterar(
                 ("Nome", _mostra("nome")),
                 ("Código", _mostra("codigo")),
                 ("Preço tabela", _mostra("preco_tabela")),
-                ("Estoque", _mostra("saldo_estoque")),
                 (
                     "Excluído",
                     _fmt_bool(excluido_final) if excluido_final is not None else "—",
                 ),
                 ("Ativo", _fmt_bool(ativo_final) if ativo_final is not None else "—"),
                 ("Última alteração", dados.get("ultima_alteracao") or "—"),
-            ],
+            ]
+            + _linhas_throttling_global("PUT Produto", out.get("throttle")),
             status_label=f"Status {out.get('status_code') or 200}",
             css="ok",
         )
         return _wrap_result(card, entity="produto", entity_id=pid_txt)
+    except Exception as exc:
+        return _wrap_result(_erro_html(exc))
+
+
+@router.post("/homologacao-ui/acoes/produtos-ajustar-estoque", response_class=HTMLResponse)
+def acao_produtos_ajustar_estoque(
+    request: Request,
+    token: str = Form(""),
+    produto_id: str = Form(""),
+    novo_saldo: str = Form(""),
+    saldo_anterior: str = Form(""),
+    acao_id: str = Form(""),
+):
+    """PUT /v1/ajustar_estoque — entidade oficial Ajuste de Estoque (não usa PUT produto).
+
+    Não consulta GET /v1/produtos após o ajuste. ``acao_id`` evita reexecução da
+    mesma submissão (duplo clique / reenvio).
+    """
+    import json as _json
+
+    _auth(request, token)
+    pid_txt = (produto_id or "").strip()
+    saldo_txt = (novo_saldo or "").strip()
+    if not pid_txt or not saldo_txt:
+        return _wrap_result(
+            _card(
+                "Dados incompletos",
+                [("Mensagem", "Informe o ID do produto e o novo saldo de estoque.")],
+                status_label="Validação",
+                css="erro",
+            )
+        )
+    try:
+        out = homolog.ajustar_estoque(
+            pid_txt,
+            saldo_txt,
+            saldo_anterior=(saldo_anterior or "").strip() or None,
+            acao_id=(acao_id or "").strip() or None,
+        )
+        payload = out.get("payload_enviado") or {
+            "produto_id": out.get("produto_id"),
+            "novo_saldo": out.get("novo_saldo"),
+        }
+        json_enviado = _json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        ev = out.get("evidencia_throttle") if isinstance(out.get("evidencia_throttle"), dict) else {}
+        th = out.get("throttle") if isinstance(out.get("throttle"), dict) else {}
+        intervalo_aplicado = ev.get("intervalo_aplicado")
+        if intervalo_aplicado is None:
+            intervalo_aplicado = th.get("intervalo_minimo")
+        intervalo_real = ev.get("intervalo_real")
+        if intervalo_real is None:
+            intervalo_real = th.get("intervalo_desde_anterior")
+        anterior_label = ev.get("chamada_global_anterior")
+        if not anterior_label:
+            if th.get("anterior_metodo") and th.get("anterior_endpoint"):
+                anterior_label = f"{th.get('anterior_metodo')} {th.get('anterior_endpoint')}"
+            else:
+                anterior_label = "— (primeira chamada global)"
+        endpoint_seguinte = ev.get("endpoint_seguinte")
+        if endpoint_seguinte in (None, ""):
+            endpoint_seguinte = "— (nenhuma automática após o PUT)"
+        try:
+            real_ok = (
+                intervalo_real is None
+                or (
+                    isinstance(intervalo_aplicado, (int, float))
+                    and float(intervalo_real) >= float(intervalo_aplicado)
+                )
+            )
+        except (TypeError, ValueError):
+            real_ok = False
+        chamadas = out.get("chamadas_mercos")
+        if chamadas is None:
+            chamadas = 1
+        linhas = [
+            ("Método e entidade", "PUT Ajuste de estoque"),
+            ("Endpoint", out.get("path") or "/v1/ajustar_estoque"),
+            ("Produto ID", out.get("produto_id")),
+            (
+                "Quantidade anterior",
+                out.get("saldo_anterior")
+                if out.get("saldo_anterior") is not None
+                else "—",
+            ),
+            ("Novo saldo", out.get("novo_saldo")),
+            ("JSON enviado", json_enviado),
+            ("Status HTTP", out.get("status_code") or 200),
+            ("Cliente interno", out.get("cliente_interno") or "mercos_homolog_service.ajustar_estoque"),
+            ("Chamadas Mercos nesta ação", chamadas),
+            ("Chamada global anterior", anterior_label),
+            (
+                "Timestamp da chamada anterior",
+                _fmt_ts_global(ev.get("timestamp_anterior") or th.get("anterior_ts")),
+            ),
+            (
+                "Intervalo aplicado (max global/estoque)",
+                f"{float(intervalo_aplicado):.1f}s"
+                if isinstance(intervalo_aplicado, (int, float))
+                else "—",
+            ),
+            (
+                "Intervalo real desde a anterior",
+                f"{float(intervalo_real):.1f}s"
+                if isinstance(intervalo_real, (int, float))
+                else "—",
+            ),
+            ("Endpoint seguinte (após o PUT)", endpoint_seguinte),
+            (
+                "Evidência homologação estoque",
+                "OK"
+                if (
+                    int(chamadas) == 1
+                    and (out.get("path") or "").endswith("ajustar_estoque")
+                    and real_ok
+                    and not out.get("deduplicado")
+                )
+                or (
+                    out.get("deduplicado") and int(chamadas or 0) == 0
+                )
+                else "Revisar",
+            ),
+        ]
+        if out.get("deduplicado"):
+            linhas.append(
+                (
+                    "Reenvio",
+                    "Ignorado — mesma submissão/ajuste recente (sem novo PUT).",
+                )
+            )
+        card = _card(
+            "Ajuste de estoque",
+            linhas
+            + _linhas_throttling_global("PUT Ajuste de estoque", out.get("throttle")),
+            status_label=f"Status {out.get('status_code') or 200}",
+            css="ok",
+        )
+        return _wrap_result(card, entity="produto", entity_id=str(out.get("produto_id") or pid_txt))
+    except MercosApiError as exc:
+        if exc.status_code == 429:
+            segundos = exc.retry_after if exc.retry_after is not None else 10
+            try:
+                segundos = max(0, int(float(segundos)))
+            except (TypeError, ValueError):
+                segundos = 10
+            resp = _wrap_result(
+                _card(
+                    "Aguardando limite da Mercos",
+                    [
+                        ("Método e entidade", "PUT Ajuste de estoque"),
+                        ("Endpoint", "/v1/ajustar_estoque"),
+                        ("Mensagem", "Aguardando limite da Mercos (sem reenvio automático)."),
+                        ("Segundos restantes", segundos),
+                        ("Status HTTP", 429),
+                    ],
+                    status_label="Aguardando",
+                    css="pendente",
+                ),
+                extra_attrs={
+                    "status-sync": "aguardando-429",
+                    "http-status": "429",
+                    "segundos-espera": str(segundos),
+                },
+            )
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(segundos)
+            return resp
+        # 422 e demais: mostra resposta Mercos sem tokens
+        msg = str(getattr(exc, "message", "") or exc)
+        lower = msg.lower()
+        for bad in ("companytoken", "applicationtoken", "bearer ", "token=", "sk-", "sb_secret"):
+            if bad in lower:
+                msg = "Mercos rejeitou a requisição (detalhe omitido por segurança)."
+                break
+        return _wrap_result(
+            _card(
+                "Falha no ajuste de estoque",
+                [
+                    ("Método e entidade", "PUT Ajuste de estoque"),
+                    ("Endpoint", "/v1/ajustar_estoque"),
+                    ("Produto ID", pid_txt),
+                    ("Novo saldo", saldo_txt),
+                    ("Status HTTP", exc.status_code or "—"),
+                    ("Resposta Mercos", msg[:280]),
+                ],
+                status_label=f"Erro {exc.status_code or '—'}",
+                css="erro",
+            )
+        )
     except Exception as exc:
         return _wrap_result(_erro_html(exc))
 
@@ -6421,10 +6615,17 @@ def acao_pedidos_sincronizar(
         resumo = _card(
             "Sincronização de pedidos",
             [
+                ("Método e entidade", "GET Pedidos"),
+                ("Versão utilizada", data.get("versao") or "v2"),
+                ("Endpoint", data.get("path") or "/v2/pedidos"),
                 ("Status da sincronização", status_label),
                 ("Motivo da parada", motivo or "—"),
+                ("Páginas consultadas", paginas),
+                ("Quantidade de pedidos", total),
+                ("Status HTTP", 200),
             ]
-            + _linhas_ciclo_pedidos(sessao, estado),
+            + _linhas_ciclo_pedidos(sessao, estado)
+            + _linhas_throttling_global("GET Pedidos", None),
             status_label=status_label,
             css=css,
         )

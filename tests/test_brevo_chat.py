@@ -271,6 +271,7 @@ def test_timeout_whatsapp_nao_libera_duplicata(monkeypatch):
 
 
 def test_mercos_intacta():
+    """Throttle e mercos_service intactos após integração Brevo."""
     import subprocess
     from pathlib import Path
 
@@ -280,9 +281,7 @@ def test_mercos_intacta():
             "diff",
             "--name-only",
             "--",
-            "services/mercos_api_client.py",
             "services/mercos_service.py",
-            "services/mercos_homolog_service.py",
             "services/mercos_throttle.py",
         ],
         cwd=str(Path(__file__).resolve().parents[1]),

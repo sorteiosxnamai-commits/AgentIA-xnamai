@@ -203,17 +203,40 @@ def perguntar_ia(
 
         print("EVT=resposta_origem | origem=xnamai_sales_agent")
         _ = (foto_automatica, temperature, mcp_enrichment)
-        texto = processar_mensagem_sync(
-            mensagem=mensagem or "",
-            telefone=telefone,
-            nome=nome_cliente or None,
-            historico_texto=historico_texto or "",
-            ultima_resposta_ia=ultima_resposta_ia or "",
-            catalogo=catalogo or "",
-            memoria_sessao=memoria_sessao if isinstance(memoria_sessao, dict) else None,
-            input_modality=input_modality,
-            message_id=message_id or None,
-        )
+        ctx = contexto_venda
+        produtos_ctx = list(getattr(ctx, "produtos", None) or []) if ctx is not None else []
+        fonte_ctx = str(getattr(ctx, "fonte", "") or "") if ctx is not None else ""
+        catalogo_final = catalogo or (getattr(ctx, "catalogo", "") if ctx is not None else "") or ""
+        try:
+            texto = processar_mensagem_sync(
+                mensagem=mensagem or "",
+                telefone=telefone,
+                nome=nome_cliente or None,
+                historico_texto=historico_texto or "",
+                ultima_resposta_ia=ultima_resposta_ia or "",
+                catalogo=catalogo_final,
+                memoria_sessao=memoria_sessao if isinstance(memoria_sessao, dict) else None,
+                input_modality=input_modality,
+                message_id=message_id or None,
+                produtos_contexto=produtos_ctx,
+                fonte_produtos=fonte_ctx,
+            )
+        except Exception as exc:
+            print("AVISO xnamai_sales_agent falhou:", type(exc).__name__, str(exc)[:120])
+            if produtos_ctx:
+                from agents.vendas.context_builder import reply_from_preloaded_products
+
+                texto = reply_from_preloaded_products(
+                    {"produtos_precarregados": produtos_ctx}
+                ) or (
+                    "Não consegui consultar o catálogo agora. "
+                    "Tente novamente em instantes."
+                )
+            else:
+                texto = (
+                    "Não consegui concluir o atendimento agora. "
+                    "Pode tentar novamente ou pedir atendimento humano?"
+                )
 
     stock_ok = False
     ctx = contexto_venda

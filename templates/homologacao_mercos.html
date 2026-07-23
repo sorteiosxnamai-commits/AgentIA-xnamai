@@ -210,6 +210,7 @@
       </div>
       <a href="#sec-produtos">Produto</a>
       <a href="#sec-produtos-criar">Cadastrar produto</a>
+      <a href="#sec-produtos-ajustar-estoque">Ajuste de estoque</a>
       <a href="#sec-categorias">Categoria</a>
       <a href="#sec-categorias-criar">Categoria — Incluir</a>
       <a href="#sec-clientes-buscar">Clientes</a>
@@ -314,7 +315,7 @@
         <!-- 1c -->
         <section class="panel" id="sec-produtos-alterar" data-homolog-sec="produto-alterar">
           <h2>Produto — Alterar</h2>
-          <p class="hint">Atualiza produto no sandbox. Campos vazios não são enviados. Independente do ciclo de sincronização GET.</p>
+          <p class="hint">Atualiza produto no sandbox (sem estoque). Campos vazios não são enviados. Para estoque use «Ajuste de estoque» (PUT /v1/ajustar_estoque). Independente do ciclo de sincronização GET.</p>
           <div class="toolbar">
             <label class="field">ID do produto
               <input type="text" id="input-produto-alt-id" placeholder="Ex.: 123456" />
@@ -327,9 +328,6 @@
             </label>
             <label class="field">Preço tabela
               <input type="text" id="input-produto-alt-preco" placeholder="Opcional" />
-            </label>
-            <label class="field">Estoque
-              <input type="text" id="input-produto-alt-estoque" placeholder="Opcional" />
             </label>
             <label class="field">Ativo
               <select id="input-produto-alt-ativo">
@@ -352,7 +350,7 @@
             <button type="button" class="secondary"
               data-action="/mercos/homologacao-ui/acoes/produtos-alterar"
               data-target="res-produtos-alterar"
-              data-fields="produto_id:input-produto-alt-id,nome:input-produto-alt-nome,codigo:input-produto-alt-codigo,preco_tabela:input-produto-alt-preco,saldo_estoque:input-produto-alt-estoque,ativo:input-produto-alt-ativo,unidade:input-produto-alt-unidade,excluido:input-produto-alt-excluido">
+              data-fields="produto_id:input-produto-alt-id,nome:input-produto-alt-nome,codigo:input-produto-alt-codigo,preco_tabela:input-produto-alt-preco,ativo:input-produto-alt-ativo,unidade:input-produto-alt-unidade,excluido:input-produto-alt-excluido">
               Alterar produto
             </button>
             <button type="button" class="secondary"
@@ -363,6 +361,32 @@
             </button>
           </div>
           <div class="resultado" id="res-produtos-alterar"></div>
+        </section>
+
+        <!-- 1c2 — Ajuste de estoque (entidade oficial, distinta de PUT produto) -->
+        <section class="panel" id="sec-produtos-ajustar-estoque" data-homolog-sec="ajuste-estoque">
+          <h2>Ajuste de estoque — PUT</h2>
+          <p class="hint">Usa a entidade oficial PUT /v1/ajustar_estoque (produto_id + novo_saldo). Não altera demais dados do produto e não usa PUT /v1/produtos/{id}. Aguarda o maior entre o throttle global e MERCOS_HOMOLOG_ESTOQUE_INTERVALO_SEGUNDOS (padrão 20s). Uma única chamada Mercos por submissão — sem GET automático depois.</p>
+          <div class="toolbar">
+            <label class="field">ID do produto
+              <input type="text" id="input-ajuste-estoque-id" placeholder="Ex.: 123456" />
+            </label>
+            <label class="field">Quantidade anterior (opcional)
+              <input type="text" id="input-ajuste-estoque-anterior" placeholder="Só informativo" />
+            </label>
+            <label class="field">Novo saldo
+              <input type="text" id="input-ajuste-estoque-novo" placeholder="Ex.: 10" value="10" />
+            </label>
+            <button type="button" id="btn-ajuste-estoque"
+              data-action="/mercos/homologacao-ui/acoes/produtos-ajustar-estoque"
+              data-target="res-produtos-ajustar-estoque"
+              data-sem-retry="1"
+              data-idempotent="1"
+              data-fields="produto_id:input-ajuste-estoque-id,novo_saldo:input-ajuste-estoque-novo,saldo_anterior:input-ajuste-estoque-anterior">
+              Ajustar estoque
+            </button>
+          </div>
+          <div class="resultado" id="res-produtos-ajustar-estoque"></div>
         </section>
 
         <!-- 1d -->
@@ -1058,7 +1082,7 @@
         <!-- 12 -->
         <section class="panel" id="sec-pedidos-buscar" data-homolog-sec="pedidos-buscar">
           <h2>Pedidos — Buscar</h2>
-          <p class="hint">Ciclo de homologação em 2 etapas: 1/2 busca completa e 2/2 busca incremental com alterado_apos. Use «Localizar pedido pelo cliente» para conferir o total exigido pela Mercos.</p>
+          <p class="hint">Ciclo de homologação em 2 etapas via GET /v2/pedidos: 1/2 busca completa e 2/2 busca incremental com alterado_apos. Use «Localizar pedido pelo cliente» para conferir o total exigido pela Mercos.</p>
           <div class="toolbar">
             <button type="button" id="btn-pedidos-reiniciar" class="secondary">
               Reiniciar ciclo de sincronização
@@ -2425,13 +2449,52 @@
         }
       }
 
+      var _acoesEmVoo = {};
+
+      function _novoAcaoId() {
+        try {
+          if (window.crypto && typeof window.crypto.randomUUID === "function") {
+            return window.crypto.randomUUID();
+          }
+        } catch (e) {}
+        return "acao-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
+      }
+
       async function postAcao(url, fields, target, btn, opts) {
         opts = opts || {};
         var entSync = opts.entidade === "clientes" || opts.entidade === "usuarios" || opts.entidade === "pedidos" || opts.entidade === "tipos" || opts.entidade === "pagamentos" || opts.entidade === "promocoes";
+        var isAjusteEstoque = !!(url && url.indexOf("produtos-ajustar-estoque") >= 0);
+        if (isAjusteEstoque) {
+          opts.semRetry = true;
+        }
+        if (opts.semRetry == null && btn && btn.getAttribute("data-sem-retry") === "1") {
+          opts.semRetry = true;
+        }
+        var chaveVoo = (url || "") + "|" + JSON.stringify(fields || {});
+        if (opts.idempotent || isAjusteEstoque || (btn && btn.getAttribute("data-idempotent") === "1")) {
+          if (_acoesEmVoo[chaveVoo]) {
+            if (target) {
+              target.innerHTML =
+                '<div class="result-card pendente"><h4>Ajuste já em andamento</h4>' +
+                "<p>Aguarde a conclusão da submissão anterior (proteção contra duplo clique).</p></div>";
+            }
+            return null;
+          }
+          _acoesEmVoo[chaveVoo] = true;
+        }
         var fd = new FormData();
         Object.keys(fields || {}).forEach(function (k) {
           fd.append(k, fields[k] == null ? "" : String(fields[k]));
         });
+        var jaTemAcaoId = false;
+        try {
+          jaTemAcaoId = typeof fd.has === "function" && fd.has("acao_id");
+        } catch (eHas) {
+          jaTemAcaoId = !!(fields && fields.acao_id);
+        }
+        if ((opts.idempotent || isAjusteEstoque) && !jaTemAcaoId) {
+          fd.append("acao_id", _novoAcaoId());
+        }
         if (btn) btn.disabled = true;
         if (entSync && opts.syncThrottle) {
           target.innerHTML =
@@ -2477,7 +2540,8 @@
               '<p class="loading">Aguardando limite da Mercos… retomando página ' +
               paginaHdr + "…</p>";
             resp = await fetch(url, fetchOpts);
-          } else if (resp.status === 429 && !(entSync && opts.semRetry)) {
+          } else if (resp.status === 429 && !opts.semRetry) {
+            // Ajuste de estoque e ações data-sem-retry NÃO reenviam automaticamente.
             var ra2 = parseFloat(resp.headers.get("Retry-After") || "10");
             if (!isFinite(ra2) || ra2 < 0) ra2 = 10;
             target.innerHTML = '<p class="loading">Limite da Mercos atingido. Aguardando ' + ra2 + 's…</p>';
@@ -2487,6 +2551,8 @@
               body: fd,
               credentials: "same-origin"
             });
+          } else if (resp.status === 429 && opts.semRetry) {
+            // Mantém HTML do servidor (card 429) sem segundo fetch.
           }
           var text = await resp.text();
           if (resp.status === 403) {
@@ -2561,6 +2627,9 @@
           return null;
         } finally {
           if (abortTimer) clearTimeout(abortTimer);
+          if (chaveVoo) {
+            try { delete _acoesEmVoo[chaveVoo]; } catch (e2) {}
+          }
           if (btn) btn.disabled = false;
           atualizarBuscaBloqueada();
           atualizarBuscaClientesBloqueada();
@@ -3650,7 +3719,15 @@
           if (btn.id === "btn-usuarios-buscar") {
             opts.entidade = "usuarios";
           }
-
+          if (btn.getAttribute("data-sem-retry") === "1" || (url && url.indexOf("produtos-ajustar-estoque") >= 0)) {
+            opts.semRetry = true;
+          }
+          if (btn.getAttribute("data-idempotent") === "1" || (url && url.indexOf("produtos-ajustar-estoque") >= 0)) {
+            opts.idempotent = true;
+          }
+          if (btn.disabled) {
+            return;
+          }
           btn.disabled = true;
           try {
             var resp = await postAcao(url, fieldMap, target, btn, opts);

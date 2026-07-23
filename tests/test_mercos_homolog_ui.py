@@ -2627,10 +2627,10 @@ def test_pedidos_reiniciar_nao_chama_mercos(client, monkeypatch):
 
 
 def _fake_pedidos_sandbox(cursores_vistos):
-    """Mock do contrato real de GET /v1/pedidos (diagnóstico 2026-07-17)."""
+    """Mock do contrato real de GET /v2/pedidos (homologação exige v2)."""
 
     def fake_get(path, *, params=None, **_kw):
-        assert path == "/v1/pedidos"
+        assert path == "/v2/pedidos"
         params = params or {}
         assert "pagina" not in params
         cursor = params.get("alterado_apos")
@@ -2754,7 +2754,7 @@ def test_pedidos_extras_headers_limita_chamadas(monkeypatch):
     chamadas: list[str | None] = []
 
     def fake_get(path, *, params=None, **_kw):
-        assert path == "/v1/pedidos"
+        assert path == "/v2/pedidos"
         chamadas.append((params or {}).get("alterado_apos"))
         assert len(chamadas) <= 2, "não pode existir 3ª chamada"
         if len(chamadas) == 1:
@@ -2822,7 +2822,7 @@ def test_pedidos_rate_limiter_intervalo_minimo_antes_de_cada_request(monkeypatch
     instantes: list[float] = []
 
     def fake_get(path, *, params=None, **_kw):
-        assert path == "/v1/pedidos"
+        assert path == "/v2/pedidos"
         instantes.append(clk.t)
         clk.t += 0.3  # duração variável da requisição
         if len(instantes) == 1:
@@ -2929,7 +2929,7 @@ def test_pedidos_fluxo_completo_intervalo_real_entre_paginas(monkeypatch):
     lock_preso_durante_http: list[bool] = []
 
     def fake_get(path, *, params=None, **_kw):
-        assert path == "/v1/pedidos"
+        assert path == "/v2/pedidos"
         # Timestamp monotônico imediatamente antes do envio HTTP
         marcas_pre_http.append(clk.agora())
         # Nenhuma chamada fora do limiter: o lock global deve estar preso
@@ -4822,7 +4822,7 @@ def test_ui_form_produto_alterar_presente(client):
     assert 'id="input-produto-alt-nome"' in html
     assert 'id="input-produto-alt-codigo"' in html
     assert 'id="input-produto-alt-preco"' in html
-    assert 'id="input-produto-alt-estoque"' in html
+    assert 'id="sec-produtos-ajustar-estoque"' in html
     assert 'id="input-produto-alt-ativo"' in html
     assert 'id="input-produto-alt-unidade"' in html
     assert "/mercos/homologacao-ui/acoes/produtos-alterar" in html
@@ -7937,7 +7937,7 @@ def test_promocoes_limiter_compartilhado_entre_rotas_mesmo_company_token(monkeyp
     assert inicio_pedidos_ref is not None
 
     def fake_pedidos(path, *, params=None, **_kw):
-        assert path == "/v1/pedidos"
+        assert path == "/v2/pedidos"
         clk.t += 0.3
         return (
             [

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import Any
 
 TOOL_SCHEMAS = [
@@ -9,7 +11,10 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_products",
-            "description": "Pesquisar produtos reais no catálogo Mercos.",
+            "description": (
+                "Pesquisar produtos no catálogo. "
+                "NÃO use se o contexto da mensagem já trouxer CATÁLOGO / produtos pré-carregados."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -169,6 +174,18 @@ TOOL_SCHEMAS = [
     },
 ]
 
+CATALOG_ERROR_MSG = "Não foi possível consultar o catálogo agora."
+PRODUCT_TOOLS = frozenset(
+    {"search_products", "get_product", "check_inventory", "get_product_price"}
+)
+
+
+def _tool_timeout_segundos() -> float:
+    try:
+        return max(3.0, float(os.getenv("AGENT_TOOL_TIMEOUT_SEGUNDOS", "12") or "12"))
+    except (TypeError, ValueError):
+        return 12.0
+
 
 def _ok(data: Any) -> dict[str, Any]:
     return {"ok": True, "data": data, "error": None}
@@ -183,34 +200,123 @@ def _err(mensagem: str) -> dict[str, Any]:
     return {"ok": False, "data": None, "error": safe}
 
 
-def _log_tool(nome: str, ok: bool, **extra: Any) -> None:
+def _catalog_unavailable(_exc: BaseException | None = None) -> dict[str, Any]:
+    return _err(CATALOG_ERROR_MSG)
+
+
+def _is_catalog_failure(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError, FuturesTimeout, OSError)):
+        return True
+    nome = type(exc).__name__
+    return nome in {
+        "ConnectionError",
+        "TimeoutError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "ConnectionResetError",
+        "ChunkedEncodingError",
+        "HTTPError",
+        "RequestException",
+        "ProxyError",
+        "SSLError",
+    }
+
+
+def _log_evento(evento: str, **extra: Any) -> None:
     try:
         from services.webhook_guard import log_seguro
 
-        log_seguro("agente_tool", tool=nome, ok=ok, **extra)
+        log_seguro(evento, **extra)
     except Exception:
         pass
 
 
 def _reduce_produto(produto: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
+    nome = produto.get("nome") or produto.get("name")
+    if nome not in (None, ""):
+        out["name"] = nome
     for chave_src, chave_dst in (
-        ("nome", "name"),
         ("codigo", "reference"),
         ("preco", "price"),
+        ("price", "price"),
         ("estoque", "stock"),
+        ("stock_quantity", "stock"),
         ("categoria", "category"),
+        ("category", "category"),
         ("descricao", "description"),
+        ("description", "description"),
         ("imagem_url", "image_url"),
         ("id", "id"),
     ):
+        if chave_dst in out and chave_dst != "price":
+            continue
         valor = produto.get(chave_src)
         if valor not in (None, ""):
             out[chave_dst] = valor
     return out
 
 
-def _search_products(query: str, limit: int = 5) -> dict[str, Any]:
+def _products_from_context(context_products: list[dict[str, Any]], limit: int = 5) -> dict[str, Any]:
+    limit = max(1, min(int(limit or 5), 5))
+    reduzidos = [_reduce_produto(p) for p in (context_products or []) if isinstance(p, dict)]
+    reduzidos = [p for p in reduzidos if p.get("name")][:limit]
+    catalog_text = ""
+    try:
+        from services.mercos_service import montar_catalogo_texto
+
+        catalog_text = montar_catalogo_texto(context_products[:limit]) if context_products else ""
+    except Exception:
+        linhas = []
+        for p in reduzidos:
+            preco = p.get("price")
+            linha = p.get("name") or ""
+            if preco not in (None, ""):
+                linha += f" — R$ {preco}"
+            linhas.append(linha)
+        catalog_text = "\n".join(linhas)
+    return _ok(
+        {
+            "products": reduzidos,
+            "catalog_text": catalog_text,
+            "source": "context",
+            "skipped_mercos": True,
+        }
+    )
+
+
+def _match_context_product(
+    query: str, context_products: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    q = (query or "").strip().lower()
+    if not q:
+        return None
+    for p in context_products or []:
+        if not isinstance(p, dict):
+            continue
+        nome = str(p.get("name") or p.get("nome") or "").lower()
+        codigo = str(p.get("codigo") or p.get("reference") or "").lower()
+        if q in nome or (codigo and q in codigo) or (nome and nome in q):
+            return p
+    return None
+
+
+def _run_with_timeout(fn, *args, timeout: float | None = None, **kwargs):
+    limite = timeout if timeout is not None else _tool_timeout_segundos()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn, *args, **kwargs)
+        return future.result(timeout=limite)
+
+
+def _search_products(
+    query: str,
+    limit: int = 5,
+    *,
+    context_products: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if context_products:
+        return _products_from_context(context_products, limit=limit)
+
     from services.mercos_service import (
         buscar_produtos_por_termo,
         mercos_configurado,
@@ -218,22 +324,34 @@ def _search_products(query: str, limit: int = 5) -> dict[str, Any]:
     )
 
     if not mercos_configurado():
-        return _err("Mercos não configurada")
+        return _catalog_unavailable()
     try:
-        encontrados = buscar_produtos_por_termo(query or "")
+        encontrados = _run_with_timeout(buscar_produtos_por_termo, query or "")
     except Exception as exc:
-        return _err(f"falha_consulta_produtos:{type(exc).__name__}")
+        if _is_catalog_failure(exc):
+            return _catalog_unavailable(exc)
+        return _catalog_unavailable(exc)
     limit = max(1, min(int(limit or 5), 5))
     reduzidos = [_reduce_produto(p) for p in (encontrados or [])[:limit]]
     return _ok(
         {
             "products": reduzidos,
             "catalog_text": montar_catalogo_texto(encontrados[:limit]) if encontrados else "",
+            "source": "mercos",
         }
     )
 
 
-def _get_product(query: str) -> dict[str, Any]:
+def _get_product(
+    query: str,
+    *,
+    context_products: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if context_products:
+        hit = _match_context_product(query, context_products)
+        if hit:
+            return _ok({"found": True, "product": _reduce_produto(hit), "source": "context"})
+
     from services.mercos_service import (
         buscar_produto_bruto_por_mensagem,
         mercos_configurado,
@@ -241,17 +359,41 @@ def _get_product(query: str) -> dict[str, Any]:
     )
 
     if not mercos_configurado():
-        return _err("Mercos não configurada")
+        return _catalog_unavailable()
     try:
-        bruto = buscar_produto_bruto_por_mensagem(query or "")
+        bruto = _run_with_timeout(buscar_produto_bruto_por_mensagem, query or "")
     except Exception as exc:
-        return _err(f"falha_get_product:{type(exc).__name__}")
+        return _catalog_unavailable(exc)
     if not bruto:
         return _ok({"found": False, "product": None})
     return _ok({"found": True, "product": _reduce_produto(normalizar_produto(bruto))})
 
 
-def _check_inventory(query: str) -> dict[str, Any]:
+def _check_inventory(
+    query: str,
+    *,
+    context_products: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if context_products:
+        hit = _match_context_product(query, context_products)
+        if hit:
+            reduced = _reduce_produto(hit)
+            stock = reduced.get("stock")
+            confirmed = False
+            try:
+                confirmed = stock is not None and float(stock) > 0
+            except (TypeError, ValueError):
+                confirmed = bool(hit.get("stock_confirmed"))
+            return _ok(
+                {
+                    "found": True,
+                    "product": reduced,
+                    "stock_confirmed": confirmed,
+                    "stock_raw": stock,
+                    "source": "context",
+                }
+            )
+
     from services.mercos_service import (
         buscar_produto_bruto_por_mensagem,
         estoque_confirmado,
@@ -260,11 +402,11 @@ def _check_inventory(query: str) -> dict[str, Any]:
     )
 
     if not mercos_configurado():
-        return _err("Mercos não configurada")
+        return _catalog_unavailable()
     try:
-        bruto = buscar_produto_bruto_por_mensagem(query or "")
+        bruto = _run_with_timeout(buscar_produto_bruto_por_mensagem, query or "")
     except Exception as exc:
-        return _err(f"falha_consulta_estoque:{type(exc).__name__}")
+        return _catalog_unavailable(exc)
     if not bruto:
         return _ok({"found": False, "products": []})
     normalizado = normalizar_produto(bruto)
@@ -278,8 +420,12 @@ def _check_inventory(query: str) -> dict[str, Any]:
     )
 
 
-def _get_product_price(query: str) -> dict[str, Any]:
-    out = _get_product(query)
+def _get_product_price(
+    query: str,
+    *,
+    context_products: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    out = _get_product(query, context_products=context_products)
     if not out.get("ok"):
         return out
     data = out.get("data") or {}
@@ -303,8 +449,10 @@ def _search_customer(telefone: str | None) -> dict[str, Any]:
     if not (telefone or "").strip():
         return _err("telefone_ausente")
     try:
-        cliente = buscar_cliente(telefone)
+        cliente = _run_with_timeout(buscar_cliente, telefone)
     except Exception as exc:
+        if _is_catalog_failure(exc):
+            return _err("Não foi possível consultar o cliente agora.")
         return _err(f"falha_consulta_cliente:{type(exc).__name__}")
     if not cliente:
         return _ok({"found": False})
@@ -355,7 +503,6 @@ def _register_or_update_lead(
 
     if not (interesse or "").strip():
         return _err("interesse_ausente")
-    # Não criar lead só por saudação
     baixo = interesse.strip().lower()
     if baixo in {"saudacao", "saudação", "oi", "ola", "olá", "geral"}:
         return _ok({"skipped": True, "reason": "interesse_insuficiente"})
@@ -388,7 +535,6 @@ def _register_or_update_lead(
                 }
             )
         if update_only and not existente:
-            # update_lead sem registro prévio: cria uma vez
             pass
         criar_lead(cliente["id"], interesse_final)
         return _ok(
@@ -415,17 +561,28 @@ def _request_human_support(motivo: str | None = None) -> dict[str, Any]:
     )
 
 
-def execute_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def execute_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    context_products: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     args = arguments or {}
+    ctx = list(context_products or [])
+    _log_evento("tool_inicio", tool=name)
     try:
         if name == "search_products":
-            out = _search_products(str(args.get("query") or ""), int(args.get("limit") or 5))
+            out = _search_products(
+                str(args.get("query") or ""),
+                int(args.get("limit") or 5),
+                context_products=ctx or None,
+            )
         elif name == "get_product":
-            out = _get_product(str(args.get("query") or ""))
+            out = _get_product(str(args.get("query") or ""), context_products=ctx or None)
         elif name == "check_inventory":
-            out = _check_inventory(str(args.get("query") or ""))
+            out = _check_inventory(str(args.get("query") or ""), context_products=ctx or None)
         elif name == "get_product_price":
-            out = _get_product_price(str(args.get("query") or ""))
+            out = _get_product_price(str(args.get("query") or ""), context_products=ctx or None)
         elif name == "lookup_promotions":
             out = _lookup_promotions(args.get("slug"))
         elif name in ("search_customer", "get_customer"):
@@ -452,9 +609,18 @@ def execute_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             out = _request_human_support(args.get("motivo"))
         else:
             out = _err(f"unknown_tool:{name}")
-        _log_tool(name, bool(out.get("ok")), erro=out.get("error") or "-")
+
+        if out.get("ok"):
+            _log_evento("tool_fim", tool=name, ok=True)
+        else:
+            _log_evento("tool_erro", tool=name, erro=out.get("error") or "-")
+            _log_evento("tool_fim", tool=name, ok=False)
         return out
     except Exception as exc:
-        out = _err(f"tool_failed:{type(exc).__name__}")
-        _log_tool(name, False, erro=out["error"])
+        if name in PRODUCT_TOOLS or _is_catalog_failure(exc):
+            out = _catalog_unavailable(exc)
+        else:
+            out = _err(f"tool_failed:{type(exc).__name__}")
+        _log_evento("tool_erro", tool=name, erro=out["error"], tipo=type(exc).__name__)
+        _log_evento("tool_fim", tool=name, ok=False)
         return out

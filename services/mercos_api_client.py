@@ -68,11 +68,17 @@ def request_mercos(
     path: str,
     *,
     params: dict | None = None,
-    json_body: dict | None = None,
+    json_body: dict | list | None = None,
     timeout: int | float = 30,
     max_retries_429: int = MAX_RETRIES_429,
+    intervalo_minimo: float | None = None,
 ) -> requests.Response:
-    """GET/POST/PUT na Mercos com retry de 429 (configurável)."""
+    """GET/POST/PUT na Mercos com retry de 429 (configurável).
+
+    ``json_body`` aceita dict (maioria das entidades) ou list quando a API exigir.
+    ``intervalo_minimo`` opcional sobrepõe o piso desta chamada no throttle
+    global (ex.: homologação de ajuste de estoque com piso maior).
+    """
     if not mercos_configurado():
         raise MercosApiError(
             "Mercos não configurada. Defina MERCOS_APPLICATION_TOKEN e MERCOS_COMPANY_TOKEN.",
@@ -108,6 +114,7 @@ def request_mercos(
                         json=json_body,
                         timeout=timeout,
                     ),
+                    intervalo_minimo=intervalo_minimo,
                 )
             except requests.Timeout as exc:
                 raise MercosApiError(
@@ -283,8 +290,25 @@ def post_json(path: str, body: dict) -> dict[str, Any]:
     }
 
 
-def put_json(path: str, body: dict) -> dict[str, Any]:
-    resp = request_mercos("PUT", path, json_body=body or {})
+def put_json(
+    path: str,
+    body: dict | list | None,
+    *,
+    max_retries_429: int = MAX_RETRIES_429,
+    intervalo_minimo: float | None = None,
+) -> dict[str, Any]:
+    """PUT na Mercos. Body tipicamente dict; list só se a entidade exigir."""
+    if body is None:
+        payload: dict | list = {}
+    else:
+        payload = body
+    resp = request_mercos(
+        "PUT",
+        path,
+        json_body=payload,
+        max_retries_429=max_retries_429,
+        intervalo_minimo=intervalo_minimo,
+    )
     throttle_info = mercos_throttle.ultima_execucao_info()
     dados: Any = {}
     if (resp.text or "").strip():
@@ -300,4 +324,6 @@ def put_json(path: str, body: dict) -> dict[str, Any]:
         "sandbox": mercos_ambiente_sandbox(),
         "dados": dados,
         "throttle": throttle_info,
+        "path": path,
+        "method": "PUT",
     }
