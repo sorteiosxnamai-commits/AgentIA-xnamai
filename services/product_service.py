@@ -110,6 +110,105 @@ def _resultado(
     }
 
 
+# Tokens que identificam a categoria no nome/categoria do produto (filtro duro)
+_TOKENS_CATEGORIA: dict[str, tuple[str, ...]] = {
+    "notebook": ("notebook", "laptop"),
+    "headset": ("headset", "fone", "headphone"),
+    "fone": ("fone", "headset", "headphone"),
+    "mouse": ("mouse",),
+    "teclado": ("teclado", "keyboard"),
+    "monitor": ("monitor",),
+    "webcam": ("webcam",),
+    "ssd": ("ssd",),
+    "hd": ("hd externo", "hd ", "disco rigido", "disco rígido", "externo"),
+    "armazenamento": ("ssd", "hd externo", "hd ", "pendrive", "disco"),
+    "hub": ("hub",),
+    "cabo": ("cabo", "hdmi"),
+    "hdmi": ("hdmi", "cabo"),
+    "carregador": ("carregador", "fonte"),
+    "celular": ("celular", "smartphone", "iphone", "galaxy"),
+}
+
+
+def _parse_orcamento_valor(valor: float | int | str | None) -> float | None:
+    if valor in (None, ""):
+        return None
+    if isinstance(valor, (int, float)):
+        return float(valor) if float(valor) > 0 else None
+    texto = str(valor).strip()
+    if not texto:
+        return None
+    # "4000" / "4.000" / "4000,00" / "4 mil"
+    m_mil = re.search(r"([\d]+(?:[.,]\d+)?)\s*mil\b", texto, flags=re.IGNORECASE)
+    if m_mil:
+        try:
+            return float(m_mil.group(1).replace(",", ".")) * 1000.0
+        except ValueError:
+            return None
+    raw = re.sub(r"[^\d.,]", "", texto)
+    if not raw:
+        return None
+    try:
+        if re.match(r"^\d{1,3}(\.\d{3})+(,\d+)?$", raw):
+            return float(raw.replace(".", "").replace(",", "."))
+        return float(raw.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _categoria_da_mensagem(mensagem: str, categoria_ativa: str = "") -> str:
+    from services.intent_service import _extrair_categoria
+
+    cat = _extrair_categoria(_normalizar(mensagem or ""), {"categoria_interesse": categoria_ativa})
+    return (cat or categoria_ativa or "").strip().lower()
+
+
+def _produto_bate_categoria(produto: dict, categoria: str) -> bool:
+    cat = (categoria or "").strip().lower()
+    if not cat:
+        return True
+    tokens = _TOKENS_CATEGORIA.get(cat, (cat,))
+    blob = _normalizar(
+        f"{produto.get('name') or ''} {produto.get('nome') or ''} "
+        f"{produto.get('category') or ''} {produto.get('categoria') or ''}"
+    )
+    return any(tok in blob for tok in tokens)
+
+
+def _filtrar_por_categoria(produtos: list[dict], categoria: str) -> list[dict]:
+    cat = (categoria or "").strip().lower()
+    if not cat:
+        return list(produtos)
+    filtrados = [p for p in produtos if _produto_bate_categoria(p, cat)]
+    return filtrados  # sem fallback para acessórios
+
+
+def _filtrar_por_orcamento(produtos: list[dict], orcamento_max: float | None) -> list[dict]:
+    limite = _parse_orcamento_valor(orcamento_max)
+    if not limite:
+        return list(produtos)
+    out: list[dict] = []
+    for p in produtos:
+        preco = p.get("price")
+        if preco is None:
+            preco = p.get("preco")
+        if preco in (None, ""):
+            # Sem preço confirmado: não inventa valor; exclui da lista prioritária
+            continue
+        try:
+            if float(preco) <= limite + 0.009:
+                out.append(p)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _limite_busca_especifica(limite: int, categoria: str) -> int:
+    if categoria:
+        return max(1, min(int(limite or 3), 3))
+    return max(1, min(int(limite or 8), 8))
+
+
 def montar_catalogo_para_prompt(produtos: list[dict]) -> str:
     """Catálogo limpo: só dados reais; estoque sem afirmação inventada."""
     if not produtos:
@@ -175,23 +274,33 @@ def buscar_por_intencao(
     produto_ativo: str = "",
     product_query: str = "",
     limite: int = 8,
+    orcamento_max: float | int | str | None = None,
 ) -> dict[str, Any]:
     """
     Busca produtos relevantes para a intenção.
     Nunca inventa itens — só o que veio do catálogo.
+    Com categoria específica: filtra só essa família (máx. 3) e respeita orçamento.
     """
     from services.vendas.respostas import query_apenas_generica
 
     intent_u = (intent or "").upper().strip()
     query = (product_query or mensagem or "").strip()
-    categoria = (categoria_ativa or "").strip()
+    # Categoria da mensagem atual tem prioridade sobre a sessão (troca de assunto)
+    cat_msg = _categoria_da_mensagem(mensagem, "")
+    categoria = (cat_msg or categoria_ativa or "").strip()
+    orc_max = _parse_orcamento_valor(orcamento_max)
+    if orc_max is None:
+        # Extrai da mensagem (ex.: "até 4 mil reais")
+        from agents.vendas.guardrails import extract_budget
 
-    # CATÁLOGO GERAL / produtos disponíveis
+        orc_max = _parse_orcamento_valor(extract_budget(mensagem or ""))
+
+    # CATÁLOGO GERAL / produtos disponíveis — amostra geral (não herda categoria da sessão)
     if intent_u in ("CATALOGO_GERAL", "PRODUTOS_DISPONIVEIS"):
         return listar_produtos_catalogo(limit=limite)
 
     # Query só com genéricos ("mande catálogo") → lista geral, nunca "não encontrei"
-    if query and query_apenas_generica(query) and intent_u in (
+    if query and query_apenas_generica(query) and not cat_msg and intent_u in (
         "BUSCA_PRODUTO",
         "DUVIDA_PRODUTO",
         "",
@@ -205,7 +314,8 @@ def buscar_por_intencao(
             categoria=categoria,
             historico_texto=historico_texto,
             mensagem=mensagem,
-            limite=limite,
+            limite=_limite_busca_especifica(limite, categoria),
+            orcamento_max=orc_max,
         )
 
     # PRECO: produto ativo primeiro
@@ -228,36 +338,74 @@ def buscar_por_intencao(
         return buscar_produto_por_nome(produto_ativo, historico_texto=historico_texto)
 
     # Proteção extra: genéricos nunca viram produto inexistente
-    if query_apenas_generica(busca):
+    if query_apenas_generica(busca) and not categoria:
         return listar_produtos_catalogo(limit=limite)
 
     brutos, fonte, sem_match = _buscar_brutos(busca, historico_texto)
     normalizados = [
         normalizar_produto_servico(p, source=fonte or "supabase") for p in brutos
     ]
-    normalizados = [p for p in normalizados if p][:limite]
+    normalizados = [p for p in normalizados if p]
+
+    # Filtro duro: categoria específica → só produtos da família
+    if categoria:
+        normalizados = _filtrar_por_categoria(normalizados, categoria)
+        # Se a busca bruta veio ampla/vazia após filtro, tenta de novo no catálogo geral filtrado
+        if not normalizados:
+            from services.vendas.catalogo import montar_catalogo_geral
+
+            geral = montar_catalogo_geral(limite=40)
+            fonte = geral.get("fonte") or fonte
+            brutos_geral = geral.get("produtos") or []
+            normalizados = [
+                normalizar_produto_servico(p, source=fonte or "supabase") for p in brutos_geral
+            ]
+            normalizados = [p for p in normalizados if p]
+            normalizados = _filtrar_por_categoria(normalizados, categoria)
+
+    if orc_max:
+        normalizados = _filtrar_por_orcamento(normalizados, orc_max)
+
+    limite_efetivo = _limite_busca_especifica(limite, categoria)
+    normalizados = normalizados[:limite_efetivo]
 
     if not normalizados:
         # Não coloca amostra aleatória em products (evita lista sem relação no prompt)
+        msg = (
+            "Não encontrei esse item no catálogo. "
+            "Responda de forma curta, sem listar produtos aleatórios."
+        )
+        if categoria and orc_max:
+            msg = (
+                f"Não encontrei {categoria} até R$ {orc_max:,.2f} no catálogo. "
+                "Não complete com acessórios; ofereça ajustar faixa ou categoria."
+            ).replace(",", "X").replace(".", ",").replace("X", ".")
+        elif categoria:
+            msg = (
+                f"Não encontrei {categoria} no catálogo. "
+                "Não complete com acessórios irrelevantes."
+            )
         return _resultado(
             found=False,
             query=query or mensagem,
             category=categoria,
             products=[],
-            message=(
-                "Não encontrei esse item no catálogo. "
-                "Responda de forma curta, sem listar produtos aleatórios."
-            ),
+            message=msg,
             fonte=fonte,
         )
 
     cat = categoria or normalizados[0].get("category") or ""
+    msg_ok = "Produtos encontrados no catálogo."
+    if categoria and len(normalizados) == 1:
+        msg_ok = f"Única opção de {categoria} compatível com o pedido."
+    elif categoria and len(normalizados) < 3:
+        msg_ok = f"Somente {len(normalizados)} opções de {categoria} compatíveis."
     return _resultado(
         found=True,
         query=query or mensagem,
         category=cat,
         products=normalizados,
-        message="Produtos encontrados no catálogo.",
+        message=msg_ok,
         fonte=fonte,
     )
 
@@ -268,6 +416,7 @@ def buscar_mais_opcoes(
     historico_texto: str = "",
     mensagem: str = "",
     limite: int = 8,
+    orcamento_max: float | int | str | None = None,
 ) -> dict[str, Any]:
     """Fluxo MAIS_OPCOES — usa categoria ativa; sem categoria, found=False com mensagem."""
     from services.vendas.respostas import _categoria_no_historico
@@ -288,40 +437,31 @@ def buscar_mais_opcoes(
 
     geral = montar_catalogo_geral(limite=40)
     fonte = geral.get("fonte") or "supabase"
-    chave = _normalizar(cat)
-    filtrados = []
-    for p in geral.get("produtos") or []:
-        nome = _normalizar(str(p.get("nome") or ""))
-        pcat = _normalizar(str(p.get("categoria") or ""))
-        if chave[:4] in nome or chave[:4] in pcat or chave in nome or chave in pcat:
-            filtrados.append(p)
-    if not filtrados:
-        # fallback: busca textual pela categoria
-        brutos, fonte2, _ = _buscar_brutos(cat, historico_texto)
-        filtrados = brutos
-        fonte = fonte2 or fonte
-
-    normalizados = [
-        normalizar_produto_servico(p, source=fonte) for p in filtrados
+    produtos = [
+        normalizar_produto_servico(p, source=fonte) for p in (geral.get("produtos") or [])
     ]
-    normalizados = [p for p in normalizados if p][:limite]
+    produtos = [p for p in produtos if p]
+    produtos = _filtrar_por_categoria(produtos, cat)
+    orc = _parse_orcamento_valor(orcamento_max)
+    if orc:
+        produtos = _filtrar_por_orcamento(produtos, orc)
+    produtos = produtos[: _limite_busca_especifica(limite, cat)]
 
-    if not normalizados:
+    if not produtos:
         return _resultado(
             found=False,
             query=mensagem,
             category=cat,
             products=[],
-            message=f"Não encontrei mais opções de {cat} no catálogo.",
+            message=f"Sem mais opções de {cat} no catálogo.",
             fonte=fonte,
         )
-
     return _resultado(
         found=True,
         query=mensagem,
         category=cat,
-        products=normalizados,
-        message=f"Opções de {cat} no catálogo.",
+        products=produtos,
+        message=f"Mais opções de {cat}.",
         fonte=fonte,
     )
 

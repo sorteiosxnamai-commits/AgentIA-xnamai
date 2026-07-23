@@ -158,6 +158,9 @@ def gather_customer_facts(
         "catalogo": catalogo,
         "fonte_produtos": fonte or None,
         "produtos_precarregados": [p for p in produtos_ctx if isinstance(p, dict)],
+        "user_text": text,
+        "finalidade": mem.get("finalidade") or None,
+        "categoria_interesse": mem.get("categoria_interesse") or customer_context.get("categoria_interesse") or "",
     }
 
     if facts["produtos_precarregados"] and not facts.get("produto_mencionado"):
@@ -219,6 +222,8 @@ def format_facts_for_prompt(facts: dict[str, Any]) -> str:
 
 def reply_from_preloaded_products(facts: dict[str, Any]) -> str | None:
     """Resposta segura a partir dos produtos já encontrados pelo Product Service."""
+    from services.vendas.respostas import detectar_finalidade, resposta_busca_produtos
+
     produtos = facts.get("produtos_precarregados") or []
     if not produtos:
         catalogo = str(facts.get("catalogo") or "").strip()
@@ -229,6 +234,26 @@ def reply_from_preloaded_products(facts: dict[str, Any]) -> str | None:
                 + "\nQual delas te interessa?"
             )
         return None
+
+    mensagem = str(facts.get("user_text") or facts.get("mensagem") or "")
+    finalidade = facts.get("finalidade") or detectar_finalidade(mensagem)
+    orc = facts.get("orcamento")
+    try:
+        orc_f = float(str(orc).replace(",", ".")) if orc not in (None, "") else None
+    except (TypeError, ValueError):
+        orc_f = None
+
+    # Preferir resposta filtrada (sem reperguntar finalidade)
+    if facts.get("categoria_interesse") or finalidade or orc_f:
+        return resposta_busca_produtos(
+            nome_cliente=str(facts.get("display_name") or ""),
+            produtos=list(produtos),
+            mensagem=mensagem,
+            categoria=str(facts.get("categoria_interesse") or ""),
+            finalidade=finalidade,
+            orcamento_max=orc_f,
+        )
+
     nome = facts.get("display_name")
     prefixo = f"{nome}, encontrei estas opções:\n" if nome else "Encontrei estas opções:\n"
     linhas = []
@@ -244,7 +269,10 @@ def reply_from_preloaded_products(facts: dict[str, Any]) -> str | None:
         linhas.append(f"• {item}")
     if not linhas:
         return None
-    return prefixo + "\n".join(linhas) + "\nQual dessas faz mais sentido para você?"
+    fechamento = "\nQual dessas faz mais sentido para você?"
+    if finalidade:
+        fechamento = "\nQual dessas te interessa?"
+    return prefixo + "\n".join(linhas) + fechamento
 
 
 def build_template_fallback(message: IncomingMessage, facts: dict[str, Any]) -> str | None:

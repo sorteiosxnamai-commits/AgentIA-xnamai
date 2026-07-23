@@ -100,8 +100,45 @@ def query_apenas_generica(texto: str) -> bool:
     return all(eh_termo_generico_catalogo(t) for t in uteis)
 
 
+_CATEGORIAS_ESPECIFICAS = (
+    "headset", "fone", "cabo", "hdmi", "mouse", "teclado", "monitor",
+    "notebook", "laptop", "webcam", "ssd", "hd", "hub", "carregador",
+    "celular", "smartphone", "mesa", "cadeira", "caixa",
+)
+
+
+def mensagem_tem_produto_especifico(mensagem: str) -> bool:
+    """True se a mensagem cita categoria/produto concreto."""
+    texto = _normalizar(mensagem or "")
+    return any(re.search(rf"\b{re.escape(c)}\b", texto) for c in _CATEGORIAS_ESPECIFICAS)
+
+
+def detectar_finalidade(mensagem: str) -> str | None:
+    """Detecta finalidade já informada (trabalho, estudo, jogos, presente)."""
+    texto = _normalizar(mensagem or "")
+    if re.search(
+        r"\b(para\s+)?(trabalhar|trabalho|uso\s+profissional|escritorio|escritório|home\s*office)\b",
+        texto,
+    ):
+        return "trabalho"
+    if re.search(r"\b(para\s+)?(estudar|estudo|faculdade|escola|universidade)\b", texto):
+        return "estudo"
+    if re.search(
+        r"\b(para\s+)?(jogar|jogo|jogos|gamer|gaming|game)\b",
+        texto,
+    ):
+        return "jogos"
+    if re.search(r"\b(para\s+)?(presente|presentear|aniversario|aniversário)\b", texto):
+        return "presente"
+    return None
+
+
 def cliente_quer_ver_catalogo(mensagem: str, ultima_resposta_ia: str = "") -> bool:
     """Pedido de CATÁLOGO GERAL / produtos disponíveis (não busca específica)."""
+    # "notebook… quais opções" é busca filtrada, não catálogo aberto
+    if mensagem_tem_produto_especifico(mensagem):
+        return False
+
     texto = _normalizar(mensagem).rstrip("!?.,")
 
     if ia_ofereceu_catalogo(ultima_resposta_ia):
@@ -650,12 +687,16 @@ def _montar_item_catalogo(produto: dict) -> str:
 def resposta_mostrar_catalogo(
     nome_cliente: str = "",
     produtos: list | None = None,
+    *,
+    mensagem: str = "",
+    finalidade: str | None = None,
 ) -> str:
     """Lista produtos reais quando o cliente pede catálogo geral."""
     from services.texto_seguro import texto_para_exibicao
 
     nome = texto_para_exibicao(nome_cliente or "Cliente") or "Cliente"
     itens = produtos or []
+    uso = finalidade if finalidade is not None else detectar_finalidade(mensagem)
 
     if not itens:
         return texto_para_exibicao(
@@ -684,8 +725,77 @@ def resposta_mostrar_catalogo(
     blocos = [intro]
     if not algum_estoque_ok:
         blocos.append("A disponibilidade eu confirmo antes de finalizar.")
-    blocos.append("Você procura algo para uso pessoal, trabalho ou gamer?")
+    # Não reperguntar finalidade já informada (trabalho / estudo / jogos / presente)
+    if not uso:
+        blocos.append("Você procura algo para uso pessoal, trabalho ou gamer?")
     return texto_para_exibicao(" ".join(blocos))
+
+
+def resposta_busca_produtos(
+    nome_cliente: str = "",
+    produtos: list | None = None,
+    *,
+    mensagem: str = "",
+    categoria: str = "",
+    finalidade: str | None = None,
+    orcamento_max: float | None = None,
+) -> str:
+    """Resposta determinística para busca específica (categoria + orçamento)."""
+    from services.texto_seguro import texto_para_exibicao
+
+    nome = texto_para_exibicao(nome_cliente or "Cliente") or "Cliente"
+    itens = [p for p in (produtos or []) if p]
+    uso = finalidade if finalidade is not None else detectar_finalidade(mensagem)
+    cat = (categoria or "").strip() or "produto"
+
+    if not itens:
+        return texto_para_exibicao(
+            f"{nome}, não encontrei {cat} dentro do que você pediu no momento. "
+            "Quer que eu verifique outra faixa de preço ou outra categoria?"
+        )
+
+    amostra = itens[:3]
+    linhas: list[str] = []
+    for produto in amostra:
+        linhas.append(f"• {_montar_item_catalogo(produto)}")
+
+    motivo_partes: list[str] = []
+    if uso == "trabalho":
+        motivo_partes.append("para trabalho")
+    elif uso == "estudo":
+        motivo_partes.append("para estudar")
+    elif uso == "jogos":
+        motivo_partes.append("para jogos")
+    elif uso == "presente":
+        motivo_partes.append("para presente")
+    if orcamento_max and orcamento_max > 0:
+        motivo_partes.append(f"até R$ {orcamento_max:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+    motivo = " ".join(motivo_partes)
+    if len(amostra) == 1:
+        intro = (
+            f"{nome}, encontrei esta opção de {cat}"
+            + (f" {motivo}" if motivo else "")
+            + " que combina com o que você pediu:"
+        )
+        fechamento = "Quer que eu detalhe esse modelo ou avance com a compra?"
+    elif len(amostra) < 3:
+        intro = (
+            f"{nome}, encontrei somente {len(amostra)} opções de {cat}"
+            + (f" {motivo}" if motivo else "")
+            + ":"
+        )
+        fechamento = "Qual dessas te interessa?"
+    else:
+        intro = (
+            f"{nome}, estas são opções de {cat}"
+            + (f" {motivo}" if motivo else "")
+            + ":"
+        )
+        fechamento = "Qual dessas faz mais sentido para você?"
+
+    texto = intro + "\n" + "\n".join(linhas) + "\n" + fechamento
+    return texto_para_exibicao(texto)
 
 
 def resposta_abrir_nova_venda(

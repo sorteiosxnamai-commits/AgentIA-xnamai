@@ -23,6 +23,7 @@ SESSAO_PADRAO: dict[str, Any] = {
     "produto_mencionado": "",
     "faixa_preco": "",
     "orcamento": None,
+    "finalidade": "",
     "marca_preferida": "",
     "caracteristicas": [],
     "ultima_pergunta_agente": "",
@@ -216,20 +217,45 @@ def atualizar_sessao_turno(
     # Orçamento / faixa de preço na mensagem do cliente
     msg_n = (mensagem or "").lower()
     m_orc = re.search(
-        r"(?:orcamento|orçamento|ate|até|faixa|maximo|máximo).{0,24}?r?\$?\s*([\d.,]{2,})",
+        r"(?:orcamento|orçamento|ate|até|faixa|maximo|máximo).{0,24}?"
+        r"r?\$?\s*([\d]+(?:[.,]\d+)?)\s*mil\b",
         msg_n,
     )
+    fator_mil = 1000.0 if m_orc else 1.0
+    if not m_orc:
+        m_orc = re.search(
+            r"(?:orcamento|orçamento|ate|até|faixa|maximo|máximo).{0,24}?r?\$?\s*([\d.,]{2,})",
+            msg_n,
+        )
     if not m_orc:
         m_orc = re.search(r"r\$\s*([\d.,]{2,})", msg_n)
     if m_orc:
         try:
-            valor = float(m_orc.group(1).replace(".", "").replace(",", "."))
+            bruto = m_orc.group(1).replace(".", "").replace(",", ".")
+            # "4.000" já veio sem ponto de milhar se usamos só dígitos+decimal no mil
+            if fator_mil == 1000.0:
+                valor = float(m_orc.group(1).replace(",", ".")) * fator_mil
+            else:
+                # Preferir interpretação BR: 4.000 → 4000; 4.000,50 → 4000.50
+                raw = m_orc.group(1)
+                if re.match(r"^\d{1,3}(\.\d{3})+(,\d+)?$", raw):
+                    valor = float(raw.replace(".", "").replace(",", "."))
+                else:
+                    valor = float(raw.replace(",", "."))
             if valor > 20:
                 out["orcamento"] = valor
                 out["faixa_preco"] = f"até R$ {valor:.2f}".replace(".", ",")
                 _adicionar_fato(out, f"Orçamento: {out['faixa_preco']}")
         except ValueError:
             pass
+
+    # Finalidade já informada — evita reperguntar uso pessoal/trabalho/gamer
+    from services.vendas.respostas import detectar_finalidade
+
+    finalidade = detectar_finalidade(mensagem or "")
+    if finalidade:
+        out["finalidade"] = finalidade
+        _adicionar_fato(out, f"Finalidade: {finalidade}")
 
     # Marca preferida (só se citada)
     for marca in ("hmaston", "lenovo", "jbl", "logitech", "samsung", "apple", "kimaster", "knup"):
@@ -248,6 +274,8 @@ def atualizar_sessao_turno(
         "hdmi": "cabo",
         "mouse": "mouse",
         "monitor": "monitor",
+        "notebook": "notebook",
+        "laptop": "notebook",
         "carregador": "carregador",
         "celular": "celular",
     }

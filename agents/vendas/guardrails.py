@@ -205,14 +205,36 @@ def default_safe_handoff() -> str:
 
 
 def extract_budget(text: str) -> str | None:
+    """Extrai orçamento; aceita 'até 4 mil', 'até R$ 4.000', 'R$ 2500'."""
+    raw = text or ""
+
+    def _fmt(valor: float) -> str:
+        if valor >= 1000 and abs(valor - round(valor)) < 0.01:
+            return f"{int(round(valor))}"
+        return f"{valor:.2f}".rstrip("0").rstrip(".")
+
+    # até 4 mil / orçamento de 2 mil reais
+    m_mil = re.search(
+        r"(?:até|ate|maximo|máximo|orcamento|orçamento|faixa)\s*(?:de\s*)?"
+        r"R?\$?\s*([\d]+(?:[.,]\d+)?)\s*mil\b",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if m_mil:
+        try:
+            base = float(m_mil.group(1).replace(",", "."))
+            return _fmt(base * 1000)
+        except ValueError:
+            pass
+
     m = re.search(
         r"(?:até|ate|maximo|máximo|orcamento|orçamento|faixa)\s*(?:de\s*)?R?\$?\s*([\d\.\,]+)",
-        text or "",
+        raw,
         flags=re.IGNORECASE,
     )
     if m:
         return m.group(1)
-    m2 = re.search(r"R\$\s*([\d\.\,]+)", text or "", flags=re.IGNORECASE)
+    m2 = re.search(r"R\$\s*([\d\.\,]+)", raw, flags=re.IGNORECASE)
     return m2.group(1) if m2 else None
 
 

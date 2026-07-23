@@ -59,9 +59,27 @@ def _norm_list(produtos: list[dict]) -> list[dict]:
     return [_normalizar_produto(p) for p in produtos]
 
 
+def _tem_categoria_especifica(mensagem: str) -> bool:
+    """True se o cliente citou categoria/produto concreto (ex.: notebook)."""
+    import re
+
+    texto = _normalizar(mensagem or "")
+    for chave in ALIASES_PRODUTO:
+        if re.search(rf"\b{re.escape(chave)}\b", texto):
+            return True
+    # Sinônimos comuns fora do mapa de aliases
+    for chave in ("laptop", "notebooks", "computador", "pc", "smartphone"):
+        if re.search(rf"\b{re.escape(chave)}\b", texto):
+            return True
+    return False
+
+
 def _consulta_catalogo(mensagem: str) -> bool:
     import re
 
+    # "Quais opções" + categoria específica = busca filtrada, não catálogo geral
+    if _tem_categoria_especifica(mensagem):
+        return False
     texto = _normalizar(mensagem)
     return any(re.search(padrao, texto) for padrao in PADROES_CATALOGO)
 
@@ -457,7 +475,9 @@ def montar_contexto_catalogo(mensagem: str, historico_texto: str = "") -> dict:
     if principal and catalogo_base:
         similares = _similares(principal, catalogo_base)
         upsell = _upsell(principal, catalogo_base)
-        complementos = _complementos(principal, catalogo_base)
+        # Acessórios só como follow-up — não misturar na 1ª busca por categoria
+        if not (_tem_categoria_especifica(mensagem) or consulta_especifica):
+            complementos = _complementos(principal, catalogo_base)
 
     def bloco(titulo: str, itens: list[dict]) -> str:
         if not itens:

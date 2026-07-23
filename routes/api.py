@@ -14,6 +14,8 @@ from services.vendas.respostas import (
     cliente_pediu_mais_opcoes,
     cliente_perguntou_preco,
     cliente_quer_ver_catalogo,
+    detectar_finalidade,
+    resposta_busca_produtos,
     resposta_fora_catalogo,
     resposta_mais_opcoes,
     resposta_mostrar_catalogo,
@@ -906,6 +908,8 @@ def _processar_mensagem_locked(
                 ),
                 produto_ativo=str(sessao.get("produto_ativo") or ""),
                 product_query=str(intent.get("product_query") or mensagem),
+                orcamento_max=sessao.get("orcamento"),
+                limite=3 if (intent.get("category") or sessao.get("categoria_interesse")) else 8,
             )
             aplicar_resultado_no_contexto(contexto_venda, resultado_produtos)
             produtos = contexto_venda.produtos
@@ -919,6 +923,9 @@ def _processar_mensagem_locked(
                     sessao["produto_mencionado"] = p0["name"]
                 if p0.get("price") is not None:
                     sessao["preco_cotado"] = p0["price"]
+            finalidade = detectar_finalidade(mensagem) or sessao.get("finalidade")
+            if finalidade:
+                sessao["finalidade"] = finalidade
             contexto_venda.memoria = sessao
             if persistir and not str(cliente_id).startswith("ephemeral-"):
                 _tentar_persistir(
@@ -1291,8 +1298,40 @@ def _processar_mensagem_locked(
                 produtos_cat = cat_geral.get("produtos") or []
                 catalogo = cat_geral.get("catalogo") or catalogo
             produtos = produtos_cat
-            resposta_ia = resposta_mostrar_catalogo(nome_conversa, produtos_cat)
+            resposta_ia = resposta_mostrar_catalogo(
+                nome_conversa,
+                produtos_cat,
+                mensagem=mensagem,
+                finalidade=sessao.get("finalidade") or detectar_finalidade(mensagem),
+            )
             print("CATALOGO GERAL: lista de produtos reais")
+        elif (
+            intent.get("intent") in ("BUSCA_PRODUTO", "COMPARACAO", "DUVIDA_PRODUTO")
+            and resultado_produtos
+            and resultado_produtos.get("found")
+            and (resultado_produtos.get("products") or produtos)
+            and not pedido_encerrado
+        ):
+            produtos_busca = resultado_produtos.get("products") or produtos
+            orc = sessao.get("orcamento")
+            try:
+                orc_f = float(orc) if orc not in (None, "") else None
+            except (TypeError, ValueError):
+                orc_f = None
+            resposta_ia = resposta_busca_produtos(
+                nome_cliente=nome_conversa,
+                produtos=produtos_busca,
+                mensagem=mensagem,
+                categoria=str(
+                    resultado_produtos.get("category")
+                    or sessao.get("categoria_interesse")
+                    or intent.get("category")
+                    or ""
+                ),
+                finalidade=sessao.get("finalidade") or detectar_finalidade(mensagem),
+                orcamento_max=orc_f,
+            )
+            print("BUSCA PRODUTO: resposta filtrada (Product Service)")
         elif cliente_perguntou_como_trabalham(mensagem) and not pedido_encerrado:
             resposta_ia = resposta_como_trabalham(nome_conversa)
             print("SCRIPT XNAMAI: como trabalhamos (não é produto)")

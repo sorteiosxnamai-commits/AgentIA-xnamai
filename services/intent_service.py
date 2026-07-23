@@ -227,6 +227,7 @@ def classificar_intencao(
         )
 
     # --- CATÁLOGO GERAL / produtos disponíveis ---
+    # (cliente_quer_ver_catalogo já ignora mensagens com categoria específica)
     if cliente_quer_ver_catalogo(msg):
         return _resultado(
             "CATALOGO_GERAL",
@@ -340,12 +341,12 @@ def classificar_intencao(
         and re.search(r"\d", t)
         and len(t.split()) <= 12
     ):
-        cat = categoria or _extrair_categoria(hist, ctx)
+        cat = _extrair_categoria(t, ctx) or categoria or _extrair_categoria(hist, ctx)
         return _resultado(
             "BUSCA_PRODUTO",
             0.8,
             needs_catalog=True,
-            product_query=produto or cat,
+            product_query=produto or cat or _extrair_product_query(msg, cat),
             category=cat,
             reason="resposta_orcamento",
         )
@@ -372,7 +373,7 @@ def classificar_intencao(
     # --- BUSCA DE PRODUTO ---
     cat_msg = _extrair_categoria(t, ctx)
     if re.search(
-        r"\b(quero|queria|procuro|preciso|tem|têm|voces\s+tem|vocês\s+têm|"
+        r"\b(quero|queria|procuro|procurando|preciso|tem|têm|voces\s+tem|vocês\s+têm|"
         r"busca|looking|me\s+indica|indica|recomend|para\s+jogos|pra\s+jogos|"
         r"gamer)\b",
         t,
