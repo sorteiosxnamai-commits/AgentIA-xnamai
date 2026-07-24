@@ -15,7 +15,7 @@ def _normalizar(texto: str) -> str:
 
 _LIXO_LINHA = (
     r"^webhook\b",
-    r"^teste\b.*(z-?api|ultramsg|plataforma)",
+    r"^teste\b.*(brevo|plataforma|whatsapp)",
     r"^\[system\]",
     r"^event_type=",
     r"^null$",

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from database.supabase import supabase
 
-CANAL_AGENT_ID = os.getenv("PULSEDESK_AGENT_CANAL_ID", "agent-vendas-zapi")
+CANAL_AGENT_ID = os.getenv("PULSEDESK_AGENT_CANAL_ID", "agent-vendas-brevo")
 BRIDGE_ENABLED = os.getenv("PULSEDESK_BRIDGE_ENABLED", "true").lower() == "true"
 
 

@@ -30,11 +30,8 @@ from services.vendas.catalogo import montar_catalogo_geral
 from services.whatsapp_service import (
     enviar_imagem,
     enviar_mensagem,
-    provider_nome,
     whatsapp_configurado,
 )
-from services import ultramsg_service as ultramsg_svc
-from services import zapi_service as zapi_svc
 from services.produto_imagem_service import (
     cliente_pediu_foto,
     enviar_fotos_produtos,
@@ -1729,7 +1726,7 @@ def _processar_mensagem_locked(
         if isinstance(envio, dict) and not envio.get("ok"):
             print("FALHA ENVIO WHATSAPP:", {k: v for k, v in envio.items() if k != "token"})
         elif envio is None:
-            print("FALHA ENVIO WHATSAPP: resposta vazia da Z-API")
+            print("FALHA ENVIO WHATSAPP: resposta vazia da Brevo")
 
         if produtos and not saudacao:
             fotos_enviadas = enviar_fotos_produtos(numero, produtos, mensagem)
@@ -1873,25 +1870,32 @@ async def receber_webhook(data: dict, background_tasks: BackgroundTasks | None =
 async def webhook_info():
     return {
         "status": "ok",
-        "mensagem": "POST aqui para receber mensagens WhatsApp (UltraMsg ou Z-API)",
-        "url": "https://agent-ia-xnamai.onrender.com/webhook",
-        "provider": provider_nome(),
+        "mensagem": (
+            "Endpoint legado. WhatsApp ativo é somente via Brevo. "
+            "Use POST /webhooks/brevo/whatsapp"
+        ),
+        "url_legado": "https://agent-ia-xnamai.onrender.com/webhook",
+        "url_ativa": "/webhooks/brevo/whatsapp",
+        "provider": "brevo",
         "code_version": CODE_VERSION,
-        "aceita": [
-            "ultramsg message_received (privado @c.us)",
-            "zapi ReceivedCallback",
+        "aceita": [],
+        "ignorado": [
+            "payloads Z-API / UltraMsg (integrações removidas)",
         ],
-        "ignora": [
-            "grupos @g.us",
-            "fromMe=true",
-            "sem texto",
-        ],
+        "use": ["/webhooks/brevo/whatsapp", "/webhooks/brevo/chat"],
     }
 
 
 @router.post("/webhook")
 async def webhook(data: dict, background_tasks: BackgroundTasks):
-    return await receber_webhook(data, background_tasks)
+    """Legado Z-API/UltraMsg — não processa; redireciona mentalmente para Brevo."""
+    _ = background_tasks
+    return {
+        "status": "ignored",
+        "motivo": "legado_zapi_ultramsg_removido_use_brevo",
+        "use": "/webhooks/brevo/whatsapp",
+        "code_version": CODE_VERSION,
+    }
 
 
 @router.get("/webhooks/brevo/chat")
@@ -1917,7 +1921,7 @@ def brevo_whatsapp_info():
         "sender_sufixo": sender[-4:] if sender else None,
         "envio_configurado": brevo_configurado_envio(),
         "fluxo": "WhatsApp → Brevo → webhook → agents.vendas → Brevo WhatsApp API → cliente",
-        "nao_usa": ["ultramsg", "zapi"],
+        "provider_unico": "brevo",
         "code_version": CODE_VERSION,
     }
 
@@ -1932,7 +1936,8 @@ async def brevo_whatsapp_webhook(
     """Recebe mensagens WhatsApp via Brevo e responde pelo WhatsApp (mesmo canal).
 
     Processa em background para ACK rápido (evita retry/duplicata por timeout).
-    Nunca envia UltraMsg/Z-API neste fluxo (processar_mensagem com dry_run=True).
+    Nunca envia por provedores legados neste fluxo (processar_mensagem com dry_run=True;
+    a resposta sai por brevo_service.enviar_resposta).
     """
     from services.brevo_parser import (
         normalizar_para_webhook_interno,
@@ -1983,7 +1988,7 @@ async def brevo_whatsapp_webhook(
 
 
 def _processar_e_responder_brevo(normalized: dict) -> None:
-    """WhatsApp→Brevo→agents.vendas→Brevo WhatsApp (1 resposta; sem UltraMsg/Z-API)."""
+    """WhatsApp→Brevo→agents.vendas→Brevo WhatsApp (1 resposta; canal único Brevo)."""
     from services.brevo_service import enviar_resposta
     from services.webhook_guard import log_seguro, marcar_envio_concluido, finalizar_mensagem
 
@@ -1992,7 +1997,7 @@ def _processar_e_responder_brevo(normalized: dict) -> None:
     msg_id = str(evento.get("id") or meta.get("message_id") or "")
 
     try:
-        # dry_run=True: NÃO chama UltraMsg/Z-API; persiste e usa agents.vendas
+        # dry_run=True: não usa whatsapp_service legado; persiste e usa agents.vendas
         resultado = processar_mensagem(normalized, dry_run=True, persistir=True)
         if not resultado:
             log_seguro("brevo_sem_resultado", message_id=msg_id or "-")
@@ -2244,13 +2249,15 @@ async def chat_teste(payload: dict):
 
 @router.get("/status")
 async def status():
+    from services.brevo_service import brevo_configurado_envio, brevo_reply_mode
+
     supabase_diag = diagnosticar_supabase_status()
     return {
         "status": "online",
-        "whatsapp_provider": provider_nome(),
+        "whatsapp_provider": "brevo",
         "whatsapp_configurado": whatsapp_configurado(),
-        "ultramsg_configurado": ultramsg_svc.ultramsg_configurado(),
-        "zapi_configurado": zapi_svc.zapi_configurado(),
+        "brevo_configurado": brevo_configurado_envio(),
+        "brevo_reply_mode": brevo_reply_mode(),
         "vendedor_configurado": vendedor_configurado(),
         "produtos_fonte": os.getenv("PRODUTOS_FONTE", "auto"),
         "mercos_configurado": mercos_configurado(),
@@ -2434,7 +2441,7 @@ async def teste_vendedor(token: str = ""):
 
 @router.get("/teste-imagem")
 async def teste_imagem(tel: str = "", url: str = "", token: str = ""):
-    """Envia imagem de teste via WhatsApp (Z-API ou UltraMsg)."""
+    """Diagnóstico de envio de imagem (Brevo — canal atual não envia mídia)."""
     bloqueio = _bloqueio_diagnostico(token)
     if bloqueio:
         return bloqueio
@@ -2445,22 +2452,24 @@ async def teste_imagem(tel: str = "", url: str = "", token: str = ""):
         }
 
     if not whatsapp_configurado():
-        return {"status": "erro", "mensagem": "WhatsApp não configurado"}
+        return {
+            "status": "erro",
+            "mensagem": "Brevo não configurada (BREVO_API_KEY / BREVO_SENDER_NUMBER)",
+            "provider": "brevo",
+        }
 
     resposta = enviar_imagem(tel, url, "Teste de imagem — Xnamai")
 
     return {
-        "status": "ok" if resposta else "erro",
-        "provider": provider_nome(),
+        "status": "ok" if isinstance(resposta, dict) and resposta.get("ok") else "erro",
+        "provider": "brevo",
         "resposta_whatsapp": resposta,
     }
 
 
-@router.get("/teste-ultramsg")
-@router.get("/teste-zapi")
 @router.get("/teste-whatsapp")
 async def teste_whatsapp(tel: str = "", token: str = ""):
-    """Envia mensagem de teste direto pelo provedor WhatsApp configurado."""
+    """Envia mensagem de teste via Brevo WhatsApp."""
     bloqueio = _bloqueio_diagnostico(token)
     if bloqueio:
         return bloqueio
@@ -2468,21 +2477,15 @@ async def teste_whatsapp(tel: str = "", token: str = ""):
         return {"status": "erro", "mensagem": "Informe ?tel=5543988601234"}
 
     if not whatsapp_configurado():
-        prov = provider_nome()
-        msg = (
-            "Configure ULTRAMSG_INSTANCE_ID e ULTRAMSG_TOKEN no Render"
-            if prov == "ultramsg"
-            else "Configure ZAPI_INSTANCE_ID e ZAPI_TOKEN no Render"
-        )
         return {
             "status": "erro",
-            "mensagem": msg,
-            "provider": prov,
+            "mensagem": "Configure BREVO_API_KEY e BREVO_SENDER_NUMBER",
+            "provider": "brevo",
         }
 
     resposta = enviar_mensagem(
         tel,
-        f"Teste do agente Xnamai ({provider_nome()}). Se chegou, o WhatsApp está ok.",
+        "Teste do agente Xnamai (brevo). Se chegou, o WhatsApp via Brevo está ok.",
     )
 
     ok = isinstance(resposta, dict) and resposta.get("ok")
@@ -2493,8 +2496,6 @@ async def teste_whatsapp(tel: str = "", token: str = ""):
         safe_resp = {k: v for k, v in resposta.items() if "token" not in k.lower()}
     return {
         "status": "ok" if ok else "erro",
-        "provider": provider_nome(),
-        "zapi_client_token_configurado": bool(os.getenv("ZAPI_CLIENT_TOKEN", "").strip()),
-        "ultramsg_configurado": ultramsg_svc.ultramsg_configurado(),
+        "provider": "brevo",
         "resposta_whatsapp": safe_resp,
     }

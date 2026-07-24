@@ -23,4 +23,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS conversas_message_id_uidx
   WHERE message_id IS NOT NULL;
 
 COMMENT ON COLUMN public.conversas.message_id IS
-  'ID da mensagem Z-API/chat para deduplicação.';
+  'ID da mensagem do webhook (Brevo/chat) para deduplicação.';

@@ -129,16 +129,16 @@ def test_modo_whatsapp_exige_sender_e_telefone(monkeypatch):
     assert out2["error"] == "recipient_phone_missing"
 
 
-def test_fluxo_completo_whatsapp_sem_ultramsg(monkeypatch):
-    """WhatsApp → Brevo → webhook → agents.vendas → Brevo WhatsApp (não UltraMsg)."""
+def test_fluxo_completo_whatsapp_via_brevo(monkeypatch):
+    """WhatsApp → Brevo → webhook → agents.vendas → Brevo WhatsApp."""
     from routes import api as api_mod
 
-    chamado = {"processar": 0, "enviar": 0, "ultramsg": 0}
+    chamado = {"processar": 0, "enviar": 0, "whatsapp_service": 0}
 
     def fake_processar(data, dry_run=False, persistir=True):
         chamado["processar"] += 1
         assert data["provider"] == "brevo"
-        assert dry_run is True  # impede UltraMsg/Z-API
+        assert dry_run is True  # envio outbound só via Brevo neste fluxo
         assert "5511999887766" in data["data"]["from"]
         return {"resposta": "Olá! Sou o assistente de vendas da xNamai."}
 
@@ -154,15 +154,15 @@ def test_fluxo_completo_whatsapp_sem_ultramsg(monkeypatch):
             "sender_number": "551100001111",
         }
 
-    def fake_ultramsg(*a, **k):
-        chamado["ultramsg"] += 1
-        raise AssertionError("UltraMsg não deve ser chamado no fluxo Brevo WhatsApp")
+    def fake_wa_svc(*a, **k):
+        chamado["whatsapp_service"] += 1
+        raise AssertionError("whatsapp_service não deve ser chamado no fluxo Brevo webhook")
 
     monkeypatch.setenv("BREVO_REPLY_MODE", "whatsapp")
     monkeypatch.setattr(api_mod, "processar_mensagem", fake_processar)
     monkeypatch.setattr("services.brevo_service.enviar_resposta", fake_enviar)
     monkeypatch.setattr(
-        "services.whatsapp_service.enviar_mensagem", fake_ultramsg
+        "services.whatsapp_service.enviar_mensagem", fake_wa_svc
     )
     monkeypatch.setattr(
         "services.webhook_guard.marcar_envio_concluido", lambda *a, **k: None
@@ -178,7 +178,7 @@ def test_fluxo_completo_whatsapp_sem_ultramsg(monkeypatch):
     )
     assert chamado["processar"] == 1
     assert chamado["enviar"] == 1
-    assert chamado["ultramsg"] == 0
+    assert chamado["whatsapp_service"] == 0
 
 
 def test_duplicata_e_eco_agente():

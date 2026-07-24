@@ -225,7 +225,6 @@ def test_chat_json_resposta_sem_colagem(monkeypatch):
 def test_chat_catalogo_real_resp_json_sem_estoque_colado(monkeypatch):
     """Integração real /chat 'mande o catalogo' — valida resp_json['resposta']."""
     monkeypatch.setenv("CHECKOUT_CREATE_ORDER", "false")
-    monkeypatch.setenv("WHATSAPP_PROVIDER", "ultramsg")
 
     def _produtos_ps(limit=8):
         return {
@@ -415,13 +414,12 @@ def test_chat_atualiza_resultado_resposta_mesmo_com_sujeira(monkeypatch):
 def test_whatsapp_envio_filtra_json_equivalente(monkeypatch):
     capturado = {}
 
-    def _fake_ultra(numero, mensagem):
-        capturado["mensagem"] = mensagem
-        return {"ok": True}
+    def _fake_brevo(texto, telefone=None, **_k):
+        capturado["mensagem"] = texto
+        return {"ok": True, "provider": "brevo"}
 
-    monkeypatch.setenv("WHATSAPP_PROVIDER", "ultramsg")
-    monkeypatch.setattr("services.ultramsg_service.ultramsg_configurado", lambda: True)
-    monkeypatch.setattr("services.ultramsg_service.enviar_mensagem", _fake_ultra)
+    monkeypatch.setattr("services.brevo_service.enviar_resposta", _fake_brevo)
+    monkeypatch.setattr("services.brevo_service.brevo_configurado_envio", lambda: True)
 
     enviar_mensagem(
         "5543999999999",

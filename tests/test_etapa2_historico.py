@@ -221,7 +221,7 @@ def test_historico_maior_que_limite_preserva_essenciais():
 # 9. Mensagem vazia
 # ---------------------------------------------------------------------------
 
-def test_mensagem_vazia_zapi_descartada():
+def test_mensagem_vazia_legado_descartada():
     payload = {
         "type": "ReceivedCallback",
         "fromMe": False,

@@ -1,49 +1,44 @@
-import os
+"""Facade de envio WhatsApp — somente Brevo.
+
+Z-API e UltraMsg foram removidos. Todo envio outbound passa por brevo_service.
+"""
+
+from __future__ import annotations
 
 from services.env_loader import carregar_env
-
-from services import ultramsg_service, zapi_service
 
 carregar_env()
 
 
-def _provider() -> str:
-    return os.getenv("WHATSAPP_PROVIDER", "zapi").strip().lower()
+def provider_nome() -> str:
+    return "brevo"
 
 
 def whatsapp_configurado() -> bool:
-    if _provider() == "ultramsg":
-        return ultramsg_service.ultramsg_configurado()
-    return zapi_service.zapi_configurado()
+    from services.brevo_service import brevo_configurado_envio
 
-
-def ultramsg_ativo() -> bool:
-    return _provider() == "ultramsg"
-
-
-def provider_nome() -> str:
-    return _provider() or "zapi"
+    return bool(brevo_configurado_envio())
 
 
 def enviar_mensagem(numero: str, mensagem: str):
-    from services.webhook_guard import log_seguro
+    from services.brevo_service import enviar_resposta
     from services.texto_seguro import aplicar_formatador_final
+    from services.webhook_guard import log_seguro
 
-    # Última camada antes de qualquer provider (UltraMsg/Z-API)
     texto, _dbg = aplicar_formatador_final(mensagem or "")
-
-    prov = provider_nome()
-    log_seguro("whatsapp_provider_usado", provider=prov)
-    if prov == "ultramsg":
-        return ultramsg_service.enviar_mensagem(numero, texto)
-    return zapi_service.enviar_mensagem(numero, texto)
+    log_seguro("whatsapp_provider_usado", provider="brevo")
+    return enviar_resposta(texto, telefone=numero)
 
 
 def enviar_imagem(numero: str, url_imagem: str, legenda: str = ""):
+    """Imagem via Brevo WhatsApp ainda não está no canal transacional atual."""
     from services.webhook_guard import log_seguro
 
-    prov = provider_nome()
-    log_seguro("whatsapp_provider_usado", provider=prov, tipo="imagem")
-    if prov == "ultramsg":
-        return ultramsg_service.enviar_imagem(numero, url_imagem, legenda)
-    return zapi_service.enviar_imagem(numero, url_imagem, legenda)
+    log_seguro("whatsapp_provider_usado", provider="brevo", tipo="imagem")
+    _ = (numero, url_imagem, legenda)
+    return {
+        "ok": False,
+        "error": "brevo_envio_imagem_nao_disponivel",
+        "provider": "brevo",
+        "hint": "Use texto com link da imagem ou o fluxo Brevo Conversations.",
+    }

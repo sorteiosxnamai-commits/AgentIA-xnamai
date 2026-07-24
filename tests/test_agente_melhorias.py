@@ -280,8 +280,9 @@ def test_audio_falha_resposta_segura(monkeypatch):
     assert out["ok"] is False
 
 
-def test_normalizer_aceita_audio_ultramsg():
-    from services.webhook_normalizer import analisar_webhook
+def test_normalizer_rejeita_payload_legado_audio():
+    """Payload UltraMsg/Z-API legado não entra mais no pipeline."""
+    from services.webhook_normalizer import analisar_webhook, normalizar_webhook
 
     payload = {
         "event_type": "message_received",
@@ -294,8 +295,9 @@ def test_normalizer_aceita_audio_ultramsg():
         },
     }
     diag = analisar_webhook(payload)
-    assert diag["ok"] is True
-    assert diag["payload"]["data"]["type"] == "audio"
+    assert diag["ok"] is False
+    assert "brevo" in (diag.get("motivo_ignorado") or "")
+    assert normalizar_webhook(payload) is None
 
 
 def test_idempotencia_nao_libera_apos_envio():

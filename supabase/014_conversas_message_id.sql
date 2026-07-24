@@ -1,4 +1,4 @@
--- Idempotência persistente de mensagens do webhook (Z-API messageId).
+-- Idempotência persistente de mensagens do webhook (Brevo message_id).
 -- Execute no SQL Editor do Supabase antes do deploy que grava message_id.
 
 ALTER TABLE public.conversas
@@ -9,4 +9,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS conversas_message_id_uidx
   WHERE message_id IS NOT NULL;
 
 COMMENT ON COLUMN public.conversas.message_id IS
-  'ID da mensagem Z-API/UltraMsg para deduplicação entre reinícios.';
+  'ID da mensagem do webhook (Brevo) para deduplicação entre reinícios.';

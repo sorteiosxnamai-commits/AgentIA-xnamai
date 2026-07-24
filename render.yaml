@@ -36,17 +36,13 @@ services:
         value: "true"
       - key: MERCOS_CRIAR_PEDIDO
         value: "true"
-      - key: WHATSAPP_PROVIDER
-        value: zapi
-      - key: ZAPI_INSTANCE_ID
+      - key: BREVO_API_KEY
         sync: false
-      - key: ZAPI_TOKEN
+      - key: BREVO_WEBHOOK_SECRET
         sync: false
-      - key: ZAPI_CLIENT_TOKEN
-        sync: false
-      - key: ULTRAMSG_INSTANCE_ID
-        sync: false
-      - key: ULTRAMSG_TOKEN
+      - key: BREVO_REPLY_MODE
+        value: whatsapp
+      - key: BREVO_SENDER_NUMBER
         sync: false
       - key: VENDEDOR_WHATSAPP
         sync: false

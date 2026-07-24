@@ -30,17 +30,13 @@ def extrair_id_mensagem(data: dict, evento: dict) -> str:
     return ""
 
 
-def extrair_id_ultramsg(data: dict, evento: dict) -> str:
-    return extrair_id_mensagem(data, evento)
-
-
 def evento_deve_ser_ignorado(data: dict) -> tuple[bool, str]:
     event_type = (data.get("event_type") or "").strip().lower()
     if event_type and event_type not in ("message_received",):
         return True, f"event_type={event_type}"
 
     evento = data.get("data") or {}
-    msg_id = extrair_id_ultramsg(data, evento)
+    msg_id = extrair_id_mensagem(data, evento)
     if msg_id:
         _limpar_ids_antigos()
         if msg_id in _IDS_PROCESSADOS:
@@ -60,6 +56,6 @@ def evento_deve_ser_ignorado(data: dict) -> tuple[bool, str]:
 
 def marcar_evento_processado(data: dict) -> None:
     evento = data.get("data") or {}
-    msg_id = extrair_id_ultramsg(data, evento)
+    msg_id = extrair_id_mensagem(data, evento)
     if msg_id:
         _IDS_PROCESSADOS[msg_id] = time.time()
