@@ -62,10 +62,9 @@ def mercadopago_webhook_info():
     return {
         "status": "ok",
         "canal": "mercadopago_pix",
-        "url_post": "/webhooks/mercadopago",
-        "auth": "Header x-signature + x-request-id (MP_WEBHOOK_SECRET)",
         "mp_env": mp.mp_env(),
         "configurado": mp.mp_configurado(),
+        "pix_enabled": mp.mp_pix_enabled(),
     }
 
 

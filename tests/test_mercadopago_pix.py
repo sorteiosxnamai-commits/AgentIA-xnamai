@@ -53,6 +53,7 @@ def _env_mp(monkeypatch):
     monkeypatch.setenv("MP_WEBHOOK_SECRET", "whsec_test_fake")
     monkeypatch.setenv("MP_NOTIFICATION_URL", "https://example.test/webhooks/mercadopago")
     monkeypatch.setenv("MP_ENV", "test")
+    monkeypatch.setenv("MP_PIX_ENABLED", "true")
     monkeypatch.setenv("CHECKOUT_CREATE_ORDER", "false")
 
     # Bloqueia qualquer HTTP real ao Mercado Pago nesta suíte
@@ -567,4 +568,146 @@ def test_rota_webhook_registrada():
     client = TestClient(app)
     info = client.get("/webhooks/mercadopago")
     assert info.status_code == 200
-    assert info.json().get("canal") == "mercadopago_pix"
+    body = info.json()
+    assert body.get("canal") == "mercadopago_pix"
+    assert "pix_enabled" in body
+    assert set(body.keys()) == {"status", "canal", "mp_env", "configurado", "pix_enabled"}
+    assert "TEST-fake" not in str(body)
+    assert "whsec" not in str(body)
+
+
+def test_mp_pix_enabled_ausente_bloqueia(monkeypatch):
+    from services import pagamento_pix_service as pix
+
+    monkeypatch.delenv("MP_PIX_ENABLED", raising=False)
+    monkeypatch.setattr(
+        "services.pagamento_pix_service.buscar_produto_por_nome",
+        lambda *_a, **_k: PRODUTO_OK,
+    )
+    called_mp = {"n": 0}
+    called_db = {"n": 0}
+    monkeypatch.setattr(
+        "services.mercadopago_service.criar_pagamento_pix",
+        lambda **_k: called_mp.__setitem__("n", called_mp["n"] + 1) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        pix,
+        "_upsert_pagamento",
+        lambda *_a, **_k: called_db.__setitem__("n", called_db["n"] + 1) or True,
+    )
+    out = pix.criar_cobranca_pix(
+        produto="Notebook Intel i5",
+        consentimento=True,
+        dry_run=False,
+        persistir=True,
+        email="a@b.com",
+    )
+    assert out["ok"] is False
+    assert out["error"] == "pix_temporariamente_indisponivel"
+    assert called_mp["n"] == 0
+    assert called_db["n"] == 0
+
+
+def test_mp_pix_enabled_false_bloqueia_sem_requests_nem_supabase(monkeypatch):
+    from services import pagamento_pix_service as pix
+
+    monkeypatch.setenv("MP_PIX_ENABLED", "false")
+    monkeypatch.setattr(
+        "services.pagamento_pix_service.buscar_produto_por_nome",
+        lambda *_a, **_k: PRODUTO_OK,
+    )
+    called_mp = {"n": 0}
+    called_db = {"n": 0}
+    monkeypatch.setattr(
+        "services.mercadopago_service.criar_pagamento_pix",
+        lambda **_k: called_mp.__setitem__("n", called_mp["n"] + 1),
+    )
+    monkeypatch.setattr(
+        "services.mercadopago_service.requests.post",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("requests.post não deve ser chamado")),
+    )
+    monkeypatch.setattr(
+        pix,
+        "_upsert_pagamento",
+        lambda *_a, **_k: called_db.__setitem__("n", called_db["n"] + 1) or True,
+    )
+    out = pix.criar_cobranca_pix(
+        produto="Notebook Intel i5",
+        consentimento=True,
+        dry_run=False,
+        persistir=True,
+        email="a@b.com",
+    )
+    assert out["ok"] is False
+    assert out["error"] == "pix_temporariamente_indisponivel"
+    assert "indisponível" in (out.get("mensagem_cliente") or "").lower()
+    assert called_mp["n"] == 0
+    assert called_db["n"] == 0
+
+
+def test_mp_pix_enabled_true_permite_quando_requisitos_ok(monkeypatch):
+    from services import mercadopago_service as mp
+    from services import pagamento_pix_service as pix
+
+    monkeypatch.setenv("MP_PIX_ENABLED", "true")
+    monkeypatch.setattr(
+        "services.pagamento_pix_service.buscar_produto_por_nome",
+        lambda *_a, **_k: PRODUTO_OK,
+    )
+    monkeypatch.setattr(pix, "buscar_pagamento_por_pedido", lambda *_a, **_k: None)
+    monkeypatch.setattr(pix, "_upsert_pagamento", lambda *_a, **_k: True)
+
+    def fake_post(url, **kwargs):
+        assert "Authorization" in kwargs.get("headers", {})
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.json.return_value = _mp_payment_response()
+        return resp
+
+    monkeypatch.setattr(mp.requests, "post", fake_post)
+    out = pix.criar_cobranca_pix(
+        produto="Notebook Intel i5",
+        consentimento=True,
+        dry_run=False,
+        persistir=True,
+        email="a@b.com",
+    )
+    assert out["ok"] is True
+    assert out.get("pix_copia_cola")
+
+
+def test_criar_pagamento_pix_respeita_trava(monkeypatch):
+    from services import mercadopago_service as mp
+
+    monkeypatch.setenv("MP_PIX_ENABLED", "false")
+    called = {"n": 0}
+    monkeypatch.setattr(
+        mp.requests,
+        "post",
+        lambda *_a, **_k: called.__setitem__("n", called["n"] + 1),
+    )
+    out = mp.criar_pagamento_pix(
+        valor=10.0,
+        description="x",
+        external_reference="pix-1",
+        idempotency_key="idem-1",
+        payer_email="a@b.com",
+    )
+    assert out["ok"] is False
+    assert out["error"] == "pix_temporariamente_indisponivel"
+    assert called["n"] == 0
+
+
+def test_webhook_info_inclui_pix_enabled(monkeypatch):
+    from main import app
+
+    monkeypatch.setenv("MP_PIX_ENABLED", "false")
+    client = TestClient(app)
+    body = client.get("/webhooks/mercadopago").json()
+    assert body == {
+        "status": "ok",
+        "canal": "mercadopago_pix",
+        "mp_env": "test",
+        "configurado": True,
+        "pix_enabled": False,
+    }

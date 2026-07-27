@@ -236,6 +236,19 @@ def criar_cobranca_pix(
     if qtd < 1 or qtd > 99:
         return _resposta_publica({"ok": False, "error": "quantidade_invalida"})
 
+    if not mp.mp_pix_enabled():
+        _log("pix_bloqueado_mp_pix_enabled_false")
+        return _resposta_publica(
+            {
+                "ok": False,
+                "error": "pix_temporariamente_indisponivel",
+                "mensagem_cliente": (
+                    "O pagamento Pix está temporariamente indisponível. "
+                    "Tente novamente em breve ou peça ajuda a um atendente."
+                ),
+            }
+        )
+
     if dry:
         _log("pix_bloqueado_dry_run")
         return _resposta_publica({"ok": False, "error": "dry_run_sem_cobranca"})

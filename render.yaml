@@ -52,5 +52,7 @@ services:
         sync: false
       - key: MP_ENV
         value: test
+      - key: MP_PIX_ENABLED
+        value: "false"
       - key: VENDEDOR_WHATSAPP
         sync: false

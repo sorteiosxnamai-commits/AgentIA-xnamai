@@ -52,6 +52,12 @@ def mp_configurado() -> bool:
     return bool(mp_access_token())
 
 
+def mp_pix_enabled() -> bool:
+    """Trava geral: Pix só cria cobrança se MP_PIX_ENABLED=true. Default false."""
+    raw = (os.getenv("MP_PIX_ENABLED") or "").strip().lower()
+    return raw in ("1", "true", "yes", "sim", "on")
+
+
 def mp_em_producao() -> bool:
     return mp_env() in ("production", "prod", "live")
 
@@ -154,6 +160,9 @@ def criar_pagamento_pix(
     notification_url: str | None = None,
 ) -> dict[str, Any]:
     """POST /v1/payments — payment_method_id=pix."""
+    if not mp_pix_enabled():
+        _log("mp_pix_desabilitado", mp_env=mp_env())
+        return {"ok": False, "error": "pix_temporariamente_indisponivel", "provider": "mercadopago"}
     if not mp_configurado():
         return {"ok": False, "error": "mp_access_token_ausente", "provider": "mercadopago"}
 
