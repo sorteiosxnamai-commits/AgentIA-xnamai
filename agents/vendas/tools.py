@@ -172,6 +172,36 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "criar_cobranca_pix",
+            "description": (
+                "Criar cobrança Pix Mercado Pago após o cliente confirmar compra. "
+                "O backend valida produto, preço e estoque reais — NÃO invente valor. "
+                "Exige consentimento explícito. Envie o Pix Copia e Cola ao cliente "
+                "sem alterar nenhum caractere. Nunca diga que está pago sem confirmação."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "produto": {"type": "string", "description": "Nome do produto confirmado"},
+                    "quantidade": {"type": "integer", "minimum": 1, "maximum": 99},
+                    "telefone": {"type": "string"},
+                    "email": {"type": "string"},
+                    "nome_pagador": {"type": "string"},
+                    "cpf": {"type": "string", "description": "Somente se o cliente informar e for necessário"},
+                    "consentimento": {
+                        "type": "boolean",
+                        "description": "true se o cliente pediu/confirmou gerar o Pix",
+                    },
+                    "pedido_id": {"type": "string"},
+                },
+                "required": ["produto", "consentimento"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 CATALOG_ERROR_MSG = "Não foi possível consultar o catálogo agora."
@@ -193,7 +223,17 @@ def _ok(data: Any) -> dict[str, Any]:
 
 def _err(mensagem: str) -> dict[str, Any]:
     safe = (mensagem or "erro_interno")[:180]
-    for segredo in ("sk-", "eyJ", "sb_secret_", "Bearer ", "CompanyToken", "ApplicationToken"):
+    for segredo in (
+        "sk-",
+        "eyJ",
+        "sb_secret_",
+        "Bearer ",
+        "CompanyToken",
+        "ApplicationToken",
+        "APP_USR-",
+        "TEST-",
+        "MP_ACCESS",
+    ):
         if segredo in safe:
             safe = "erro_interno"
             break
@@ -561,6 +601,46 @@ def _request_human_support(motivo: str | None = None) -> dict[str, Any]:
     )
 
 
+def _criar_cobranca_pix(args: dict[str, Any]) -> dict[str, Any]:
+    from services.pagamento_pix_service import criar_cobranca_pix
+
+    out = criar_cobranca_pix(
+        produto=str(args.get("produto") or ""),
+        quantidade=int(args.get("quantidade") or 1),
+        telefone=args.get("telefone"),
+        email=args.get("email"),
+        nome_pagador=args.get("nome_pagador"),
+        cpf=args.get("cpf"),
+        consentimento=bool(args.get("consentimento")),
+        pedido_id=args.get("pedido_id"),
+    )
+    if out.get("ok"):
+        # Não envia e-mail/CPF ao modelo; pix_copia_cola vai para o agente copiar literalmente
+        return _ok(
+            {
+                k: out.get(k)
+                for k in (
+                    "ok",
+                    "provider",
+                    "payment_id",
+                    "external_reference",
+                    "status",
+                    "valor",
+                    "pix_copia_cola",
+                    "qr_code_base64",
+                    "ticket_url",
+                    "expira_em",
+                    "pedido_id",
+                    "produto",
+                    "quantidade",
+                    "mensagem_cliente",
+                    "enviar_sem_alterar",
+                )
+            }
+        )
+    return _err(str(out.get("error") or "pix_falhou"))
+
+
 def execute_tool(
     name: str,
     arguments: dict[str, Any],
@@ -607,6 +687,8 @@ def execute_tool(
             )
         elif name == "request_human_support":
             out = _request_human_support(args.get("motivo"))
+        elif name == "criar_cobranca_pix":
+            out = _criar_cobranca_pix(args)
         else:
             out = _err(f"unknown_tool:{name}")
 

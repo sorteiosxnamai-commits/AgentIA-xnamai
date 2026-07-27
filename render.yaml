@@ -44,5 +44,13 @@ services:
         value: whatsapp
       - key: BREVO_SENDER_NUMBER
         sync: false
+      - key: MP_ACCESS_TOKEN
+        sync: false
+      - key: MP_WEBHOOK_SECRET
+        sync: false
+      - key: MP_NOTIFICATION_URL
+        sync: false
+      - key: MP_ENV
+        value: test
       - key: VENDEDOR_WHATSAPP
         sync: false

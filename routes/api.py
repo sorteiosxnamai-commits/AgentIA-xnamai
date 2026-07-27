@@ -212,6 +212,9 @@ def processar_mensagem(data: dict, dry_run: bool = False, persistir: bool = True
     Se persistir não for informado (padrão True), mantém o comportamento atual
     (grava no banco mesmo com dry_run=True).
     """
+    from services.turno_context import set_turno_flags
+
+    set_turno_flags(dry_run=dry_run, persistir=persistir)
     inicio = __import__("time").time()
     claim_ok = False
     numero = ""

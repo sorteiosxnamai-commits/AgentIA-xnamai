@@ -9,10 +9,12 @@ app = FastAPI()
 from routes.api import router
 from routes.mercos_homolog import router as mercos_homolog_router
 from routes.mercos_homolog_ui import router as mercos_homolog_ui_router
+from routes.mercadopago_webhook import router as mercadopago_router
 
 app.include_router(router)
 app.include_router(mercos_homolog_router)
 app.include_router(mercos_homolog_ui_router)
+app.include_router(mercadopago_router)
 
 
 @app.middleware("http")
