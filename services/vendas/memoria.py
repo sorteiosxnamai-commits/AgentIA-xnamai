@@ -10,6 +10,12 @@ from typing import Any
 SESSAO_PADRAO: dict[str, Any] = {
     "produto_ativo": "",
     "preco_cotado": None,
+    "produto_id": "",
+    "mercos_id": "",
+    "produto_codigo": "",
+    "estoque_saldo": None,
+    "stock_confirmed": False,
+    "origem_produto": "",
     "intencao": "neutro",
     "nf": None,
     "envio": None,
@@ -191,17 +197,52 @@ def atualizar_sessao_turno(
     nome_oferta, preco_oferta = _extrair_oferta_ia(historico_texto or "")
     if produtos:
         p0 = produtos[0] or {}
-        if p0.get("nome"):
-            out["produto_ativo"] = str(p0["nome"])
-            out["produto_mencionado"] = str(p0["nome"])
-            if p0.get("categoria"):
-                out["categoria_interesse"] = str(p0["categoria"])
-            bruto = p0.get("preco") if p0.get("preco") not in (None, "") else p0.get("preco_tabela")
+        nome_p = str(p0.get("nome") or p0.get("name") or "").strip()
+        if nome_p:
+            out["produto_ativo"] = nome_p
+            out["produto_mencionado"] = nome_p
+            out["produto_checkout"] = out.get("produto_checkout") or nome_p
+            if p0.get("categoria") or p0.get("category"):
+                out["categoria_interesse"] = str(p0.get("categoria") or p0.get("category"))
+            bruto = (
+                p0.get("preco")
+                if p0.get("preco") not in (None, "")
+                else p0.get("price") if p0.get("price") not in (None, "") else p0.get("preco_tabela")
+            )
             try:
                 out["preco_cotado"] = float(bruto) if bruto not in (None, "") else out.get("preco_cotado")
             except (TypeError, ValueError):
                 pass
-            _adicionar_fato(out, f"Produto em discussão: {p0['nome']}")
+            pid = str(p0.get("id") or p0.get("mercos_id") or "").strip()
+            if pid:
+                out["produto_id"] = pid
+            if p0.get("mercos_id") not in (None, ""):
+                out["mercos_id"] = str(p0.get("mercos_id"))
+            attrs = p0.get("attributes") if isinstance(p0.get("attributes"), dict) else {}
+            codigo = p0.get("codigo") or p0.get("sku") or (attrs or {}).get("codigo") or (attrs or {}).get("sku")
+            if codigo not in (None, ""):
+                out["produto_codigo"] = str(codigo)
+            estoque = p0.get("stock_quantity")
+            if estoque is None:
+                estoque = p0.get("estoque")
+            if estoque is None:
+                estoque = p0.get("saldo_estoque")
+            if estoque is not None:
+                try:
+                    out["estoque_saldo"] = float(estoque)
+                except (TypeError, ValueError):
+                    pass
+            if "stock_confirmed" in p0:
+                out["stock_confirmed"] = bool(p0.get("stock_confirmed"))
+            elif out.get("estoque_saldo") is not None:
+                try:
+                    out["stock_confirmed"] = float(out["estoque_saldo"]) > 0
+                except (TypeError, ValueError):
+                    out["stock_confirmed"] = False
+            origem = str(p0.get("source") or p0.get("fonte") or "").strip()
+            if origem:
+                out["origem_produto"] = origem
+            _adicionar_fato(out, f"Produto em discussão: {nome_p}")
     elif nome_oferta:
         out["produto_ativo"] = nome_oferta
         out["produto_mencionado"] = nome_oferta

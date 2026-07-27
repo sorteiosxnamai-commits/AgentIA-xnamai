@@ -90,13 +90,26 @@ def _produto_ativo(
         stock_q = raw.get("stock_quantity")
         if stock_q is None and "estoque" in raw:
             stock_q = raw.get("estoque")
+        if stock_q is None:
+            stock_q = raw.get("saldo_estoque")
+        attrs = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
         p0 = {
-            "id": str(raw.get("id") or raw.get("mercos_id") or ""),
+            "id": str(raw.get("id") or raw.get("mercos_id") or sessao.get("produto_id") or ""),
             "name": str(raw.get("name") or raw.get("nome") or ""),
             "price": price,
             "stock_quantity": stock_q,
-            "stock_confirmed": bool(raw.get("stock_confirmed")),
+            "stock_confirmed": False,
+            "codigo": raw.get("codigo") or raw.get("sku") or (attrs or {}).get("codigo") or "",
+            "source": raw.get("source") or raw.get("fonte") or "",
+            "mercos_id": str(raw.get("mercos_id") or ""),
         }
+        if "stock_confirmed" in raw:
+            p0["stock_confirmed"] = bool(raw.get("stock_confirmed"))
+        elif stock_q is not None:
+            try:
+                p0["stock_confirmed"] = float(stock_q) > 0
+            except (TypeError, ValueError):
+                p0["stock_confirmed"] = False
 
     nome = p0.get("name") or str(
         sessao.get("produto_checkout") or sessao.get("produto_ativo") or ""
@@ -105,13 +118,133 @@ def _produto_ativo(
     if preco is None:
         preco = sessao.get("preco_cotado")
 
+    stock_q = p0.get("stock_quantity")
+    if stock_q is None:
+        stock_q = sessao.get("estoque_saldo")
+
+    if p0:
+        stock_confirmed = bool(p0.get("stock_confirmed"))
+    else:
+        stock_confirmed = bool(sessao.get("stock_confirmed"))
+        if not stock_confirmed and stock_q is not None:
+            try:
+                stock_confirmed = float(stock_q) > 0
+            except (TypeError, ValueError):
+                stock_confirmed = False
+
     return {
-        "id": str(p0.get("id") or ""),
+        "id": str(p0.get("id") or sessao.get("produto_id") or sessao.get("mercos_id") or ""),
         "name": nome,
         "price": preco,
-        "stock_quantity": p0.get("stock_quantity"),
-        "stock_confirmed": bool(p0.get("stock_confirmed")) if p0 else False,
+        "stock_quantity": stock_q,
+        "stock_confirmed": stock_confirmed,
+        "codigo": str(p0.get("codigo") or sessao.get("produto_codigo") or ""),
+        "source": str(p0.get("source") or sessao.get("origem_produto") or ""),
+        "mercos_id": str(p0.get("mercos_id") or sessao.get("mercos_id") or ""),
     }
+
+
+def _gravar_produto_selecionado(sessao: dict, produto: dict) -> None:
+    """Persiste identificadores e estoque do produto selecionado na sessão."""
+    if not produto or not produto.get("name"):
+        return
+    sessao["produto_checkout"] = produto["name"]
+    sessao["produto_ativo"] = produto["name"]
+    sessao["produto_mencionado"] = produto["name"]
+    if produto.get("price") is not None:
+        sessao["preco_cotado"] = produto["price"]
+    if produto.get("id"):
+        sessao["produto_id"] = str(produto["id"])
+    if produto.get("mercos_id"):
+        sessao["mercos_id"] = str(produto["mercos_id"])
+    if produto.get("codigo"):
+        sessao["produto_codigo"] = str(produto["codigo"])
+    if produto.get("stock_quantity") is not None:
+        sessao["estoque_saldo"] = produto["stock_quantity"]
+    sessao["stock_confirmed"] = bool(produto.get("stock_confirmed"))
+    if produto.get("source"):
+        sessao["origem_produto"] = str(produto["source"])
+
+
+def _revalidar_produto_catalogo(
+    sessao: dict,
+    produto: dict,
+) -> dict:
+    """Reconsulta preço/estoque no Product Service pelo id/nome salvo (não confia no cliente)."""
+    nome = (produto.get("name") or sessao.get("produto_ativo") or "").strip()
+    if not nome and not sessao.get("produto_id"):
+        return produto
+
+    encontrado: dict | None = None
+    try:
+        from services.product_service import buscar_produto_por_nome
+
+        pid = str(sessao.get("produto_id") or produto.get("id") or "").strip()
+        if pid:
+            # Busca por nome e prefere o mesmo id, se houver
+            r = buscar_produto_por_nome(nome or pid)
+            for p in r.get("products") or []:
+                if str(p.get("id") or "") == pid or str(p.get("mercos_id") or "") == pid:
+                    encontrado = p
+                    break
+            if encontrado is None and r.get("found") and (r.get("products") or []):
+                # id não bateu — ainda usa match por nome exato
+                for p in r.get("products") or []:
+                    if _normalizar(str(p.get("name") or "")) == _normalizar(nome):
+                        encontrado = p
+                        break
+        if encontrado is None and nome:
+            r = buscar_produto_por_nome(nome)
+            if r.get("found") and (r.get("products") or []):
+                # Preferir nome exato
+                for p in r.get("products") or []:
+                    if _normalizar(str(p.get("name") or "")) == _normalizar(nome):
+                        encontrado = p
+                        break
+                if encontrado is None:
+                    encontrado = (r.get("products") or [None])[0]
+    except Exception:
+        encontrado = None
+
+    if not encontrado:
+        return produto
+
+    nome_encontrado = str(encontrado.get("name") or encontrado.get("nome") or "").strip()
+    # Nunca trocar o produto selecionado por outro item do catálogo
+    if nome and nome_encontrado and _normalizar(nome_encontrado) != _normalizar(nome):
+        pid_ref = str(sessao.get("produto_id") or produto.get("id") or "").strip()
+        pid_achado = str(encontrado.get("id") or encontrado.get("mercos_id") or "").strip()
+        if not pid_ref or pid_achado != pid_ref:
+            return produto
+
+    price = encontrado.get("price")
+    if price is None:
+        price = encontrado.get("preco")
+    stock_q = encontrado.get("stock_quantity")
+    if stock_q is None:
+        stock_q = encontrado.get("estoque")
+    atualizado = {
+        "id": str(encontrado.get("id") or encontrado.get("mercos_id") or produto.get("id") or ""),
+        "name": str(encontrado.get("name") or encontrado.get("nome") or produto.get("name") or ""),
+        "price": price if price is not None else produto.get("price"),
+        "stock_quantity": stock_q,
+        "stock_confirmed": bool(encontrado.get("stock_confirmed")),
+        "codigo": str(
+            encontrado.get("codigo")
+            or (encontrado.get("attributes") or {}).get("codigo")
+            or produto.get("codigo")
+            or ""
+        ),
+        "source": str(encontrado.get("source") or produto.get("source") or ""),
+        "mercos_id": str(encontrado.get("mercos_id") or produto.get("mercos_id") or ""),
+    }
+    if stock_q is not None and "stock_confirmed" not in encontrado:
+        try:
+            atualizado["stock_confirmed"] = float(stock_q) > 0
+        except (TypeError, ValueError):
+            pass
+    _gravar_produto_selecionado(sessao, atualizado)
+    return atualizado
 
 
 def estoque_ok_para_afirmar(produto: dict) -> bool:
@@ -220,10 +353,7 @@ def atualizar_sessao_checkout(
 
     prod = _produto_ativo(out, produtos)
     if prod.get("name"):
-        out["produto_checkout"] = prod["name"]
-        out["produto_ativo"] = prod["name"]
-    if prod.get("price") is not None:
-        out["preco_cotado"] = prod["price"]
+        _gravar_produto_selecionado(out, prod)
 
     qty = _extrair_quantidade(mensagem)
     if qty is not None:
@@ -359,6 +489,17 @@ def avaliar_checkout(
     intent_u = (intent or "").upper()
     msg_n = _normalizar(mensagem)
     pediu_pix = bool(re.search(r"\bpix\b", msg_n)) or intent_u == "PAGAMENTO"
+
+    # Turno sem lista de produtos: reusa sessão; só reconsulta catálogo se
+    # faltar estoque/preço ou no fechamento Pix (entrega já escolhida).
+    if produto.get("name") and not produtos:
+        precisa_revalidar = (
+            not estoque_ok_para_afirmar(produto)
+            or produto.get("price") is None
+            or (pediu_pix and bool(sessao.get("forma_entrega")))
+        )
+        if precisa_revalidar:
+            produto = _revalidar_produto_catalogo(sessao, produto)
 
     # Estoque zero → não segue fechamento
     qty = produto.get("stock_quantity")
@@ -496,9 +637,56 @@ def avaliar_checkout(
     )
     needs_human = ready and (not integracao_ok or not create_flag)
 
+    # Pix autorizado pelo cliente: tenta cobrança segura (respeita MP_PIX_ENABLED)
+    pix_out: dict | None = None
+    if ready and pediu_pix and not dry_run and persistir:
+        try:
+            from services.pagamento_pix_service import criar_cobranca_pix
+
+            qtd = int(sessao.get("quantidade") or 1)
+            pix_out = criar_cobranca_pix(
+                produto=str(produto.get("name") or ""),
+                quantidade=qtd,
+                consentimento=True,
+                dry_run=dry_run,
+                persistir=persistir,
+            )
+        except Exception as exc:
+            log_seguro("checkout_pix_erro", erro=type(exc).__name__)
+            pix_out = {"ok": False, "error": "pix_falhou"}
+
     if ready:
         status = "pronto_para_pedido"
-        if needs_human:
+        if pix_out is not None:
+            needs_human = False
+            err = str(pix_out.get("error") or "")
+            if pix_out.get("ok"):
+                reason = "pix_gerado"
+                reply = pix_out.get("mensagem_cliente") or (
+                    f"Certo, gerei o Pix de {_fmt_preco(pix_out.get('valor')) or 'valor confirmado'}."
+                )
+                sessao["forma_pagamento"] = sessao.get("forma_pagamento") or "PIX"
+            elif err == "pix_temporariamente_indisponivel":
+                reason = "pix_temporariamente_indisponivel"
+                reply = (
+                    pix_out.get("mensagem_cliente")
+                    or (
+                        "Perfeito, o pedido está alinhado "
+                        f"({summary}). "
+                        "O pagamento Pix está temporariamente indisponível. "
+                        "Assim que liberar, te aviso para concluirmos."
+                    )
+                )
+            else:
+                reason = f"pix_bloqueado:{err or 'erro'}"
+                reply = (
+                    f"Perfeito. Resumo: {summary}. "
+                    "Consigo seguir com o pedido, mas o Pix não ficou disponível agora. "
+                    "Posso te encaminhar para o time finalizar com segurança."
+                )
+                needs_human = True
+                status = "humano_necessario"
+        elif needs_human:
             status = "humano_necessario"
             reason = "humano_sem_integracao" if not integracao_ok else "create_order_desabilitado"
             reply = (
@@ -519,7 +707,7 @@ def avaliar_checkout(
     sessao["checkout_status"] = status
     sessao["checkout_resumo"] = summary
     if produto.get("name"):
-        sessao["produto_checkout"] = produto["name"]
+        _gravar_produto_selecionado(sessao, produto)
 
     resultado = {
         "ready": ready,
@@ -533,6 +721,7 @@ def avaliar_checkout(
         "reply": reply,
         "sessao": sessao,
         "pedido": None,
+        "pix": pix_out,
     }
 
     if status == "nao_iniciado" or (intent_u in ("COMPRA", "PAGAMENTO") and status == "coletando_dados"):
