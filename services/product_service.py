@@ -127,6 +127,8 @@ _TOKENS_CATEGORIA: dict[str, tuple[str, ...]] = {
     "hdmi": ("hdmi", "cabo"),
     "carregador": ("carregador", "fonte"),
     "celular": ("celular", "smartphone", "iphone", "galaxy"),
+    "adaptador": ("adaptador", "tomada", "plugue", "benjamin", "multiplicador"),
+    "tomada": ("adaptador", "tomada", "plugue", "benjamin"),
 }
 
 
@@ -205,8 +207,35 @@ def _filtrar_por_orcamento(produtos: list[dict], orcamento_max: float | None) ->
 
 def _limite_busca_especifica(limite: int, categoria: str) -> int:
     if categoria:
-        return max(1, min(int(limite or 3), 3))
+        return max(1, min(int(limite or 5), 5))
     return max(1, min(int(limite or 8), 8))
+
+
+def _pediu_com_estoque(mensagem: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(estoque|com\s+estoque|disponivel|disponível)\b",
+            _normalizar(mensagem or ""),
+        )
+    )
+
+
+def _priorizar_com_estoque(produtos: list[dict]) -> list[dict]:
+    """Quando o cliente pede estoque: só itens com saldo > 0; se nenhum, mantém lista."""
+    com = []
+    sem = []
+    for p in produtos:
+        qtd = p.get("stock_quantity")
+        if qtd is None:
+            qtd = p.get("saldo_estoque")
+        if qtd is None:
+            qtd = p.get("estoque")
+        try:
+            ok = float(qtd) > 0 if qtd not in (None, "") else False
+        except (TypeError, ValueError):
+            ok = False
+        (com if ok else sem).append(p)
+    return com if com else list(produtos)
 
 
 def montar_catalogo_para_prompt(produtos: list[dict]) -> str:
@@ -281,7 +310,7 @@ def buscar_por_intencao(
     Nunca inventa itens — só o que veio do catálogo.
     Com categoria específica: filtra só essa família (máx. 3) e respeita orçamento.
     """
-    from services.vendas.respostas import query_apenas_generica
+    from services.vendas.respostas import mensagem_tem_produto_especifico, query_apenas_generica
 
     intent_u = (intent or "").upper().strip()
     query = (product_query or mensagem or "").strip()
@@ -295,9 +324,14 @@ def buscar_por_intencao(
 
         orc_max = _parse_orcamento_valor(extract_budget(mensagem or ""))
 
-    # CATÁLOGO GERAL / produtos disponíveis — amostra geral (não herda categoria da sessão)
+    # CATÁLOGO GERAL — só se a mensagem for realmente genérica
     if intent_u in ("CATALOGO_GERAL", "PRODUTOS_DISPONIVEIS"):
-        return listar_produtos_catalogo(limit=limite)
+        if mensagem_tem_produto_especifico(mensagem) or (
+            mensagem and not query_apenas_generica(mensagem)
+        ):
+            intent_u = "BUSCA_PRODUTO"
+        else:
+            return listar_produtos_catalogo(limit=limite)
 
     # Query só com genéricos ("mande catálogo") → lista geral, nunca "não encontrei"
     if query and query_apenas_generica(query) and not cat_msg and intent_u in (
@@ -365,6 +399,9 @@ def buscar_por_intencao(
 
     if orc_max:
         normalizados = _filtrar_por_orcamento(normalizados, orc_max)
+
+    if _pediu_com_estoque(mensagem):
+        normalizados = _priorizar_com_estoque(normalizados)
 
     limite_efetivo = _limite_busca_especifica(limite, categoria)
     normalizados = normalizados[:limite_efetivo]

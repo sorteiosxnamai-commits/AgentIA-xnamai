@@ -914,7 +914,13 @@ def _processar_mensagem_locked(
                 produto_ativo=str(sessao.get("produto_ativo") or ""),
                 product_query=str(intent.get("product_query") or mensagem),
                 orcamento_max=sessao.get("orcamento"),
-                limite=3 if (intent.get("category") or sessao.get("categoria_interesse")) else 8,
+                limite=5
+                if (
+                    intent.get("category")
+                    or sessao.get("categoria_interesse")
+                    or intent_nome == "BUSCA_PRODUTO"
+                )
+                else 8,
             )
             aplicar_resultado_no_contexto(contexto_venda, resultado_produtos)
             produtos = contexto_venda.produtos

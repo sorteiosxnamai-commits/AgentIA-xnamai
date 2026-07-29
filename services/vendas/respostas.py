@@ -104,13 +104,35 @@ _CATEGORIAS_ESPECIFICAS = (
     "headset", "fone", "cabo", "hdmi", "mouse", "teclado", "monitor",
     "notebook", "laptop", "webcam", "ssd", "hd", "hub", "carregador",
     "celular", "smartphone", "mesa", "cadeira", "caixa",
+    # Elétricos / tomadas — evita tratar "quais opções" como catálogo geral
+    "adaptador", "tomada", "tomadas", "plugue", "benjamin", "multiplicador",
 )
 
 
 def mensagem_tem_produto_especifico(mensagem: str) -> bool:
-    """True se a mensagem cita categoria/produto concreto."""
+    """True se a mensagem cita categoria/produto concreto (não só 'quais opções')."""
     texto = _normalizar(mensagem or "")
-    return any(re.search(rf"\b{re.escape(c)}\b", texto) for c in _CATEGORIAS_ESPECIFICAS)
+    if any(re.search(rf"\b{re.escape(c)}\b", texto) for c in _CATEGORIAS_ESPECIFICAS):
+        return True
+    # Termos de produto além de genéricos de catálogo / pedido
+    if query_apenas_generica(mensagem):
+        return False
+    from services.mercos_service import _extrair_termos
+    from services.vendas.catalogo import STOPWORDS_CONSULTA, termos_produto_relevantes
+
+    ruido = {
+        "estoque", "disponivel", "disponíveis", "disponiveis", "opcao", "opcoes",
+        "procurando", "procuro", "preciso", "quero", "queria", "voce", "voces",
+        "quais", "opcoes", "opcao", "tem", "com", "para", "uma", "uns",
+    }
+    termos = termos_produto_relevantes(_extrair_termos(mensagem))
+    uteis = [
+        t for t in termos
+        if t not in STOPWORDS_CONSULTA
+        and t not in ruido
+        and not eh_termo_generico_catalogo(t)
+    ]
+    return len(uteis) >= 1
 
 
 def detectar_finalidade(mensagem: str) -> str | None:
@@ -754,7 +776,7 @@ def resposta_busca_produtos(
             "Quer que eu verifique outra faixa de preço ou outra categoria?"
         )
 
-    amostra = itens[:3]
+    amostra = itens[:5]
     linhas: list[str] = []
     for produto in amostra:
         linhas.append(f"• {_montar_item_catalogo(produto)}")
@@ -772,27 +794,35 @@ def resposta_busca_produtos(
         motivo_partes.append(f"até R$ {orcamento_max:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
     motivo = " ".join(motivo_partes)
+    cat_l = _normalizar(cat)
+    msg_l = _normalizar(mensagem or "")
+    if any(t in cat_l or t in msg_l for t in ("adaptador", "tomada", "plugue", "benjamin")):
+        fechamento = "Você precisa de modelo universal, 10A ou 20A?"
+    elif len(amostra) == 1:
+        fechamento = "Quer que eu detalhe esse modelo ou avance com a compra?"
+    elif len(amostra) < 3:
+        fechamento = "Qual dessas te interessa?"
+    else:
+        fechamento = "Qual dessas faz mais sentido para você?"
+
     if len(amostra) == 1:
         intro = (
             f"{nome}, encontrei esta opção de {cat}"
             + (f" {motivo}" if motivo else "")
             + " que combina com o que você pediu:"
         )
-        fechamento = "Quer que eu detalhe esse modelo ou avance com a compra?"
     elif len(amostra) < 3:
         intro = (
             f"{nome}, encontrei somente {len(amostra)} opções de {cat}"
             + (f" {motivo}" if motivo else "")
             + ":"
         )
-        fechamento = "Qual dessas te interessa?"
     else:
         intro = (
             f"{nome}, estas são opções de {cat}"
             + (f" {motivo}" if motivo else "")
             + ":"
         )
-        fechamento = "Qual dessas faz mais sentido para você?"
 
     texto = intro + "\n" + "\n".join(linhas) + "\n" + fechamento
     return texto_para_exibicao(texto)

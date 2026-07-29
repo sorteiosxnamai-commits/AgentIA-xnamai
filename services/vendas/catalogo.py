@@ -60,18 +60,10 @@ def _norm_list(produtos: list[dict]) -> list[dict]:
 
 
 def _tem_categoria_especifica(mensagem: str) -> bool:
-    """True se o cliente citou categoria/produto concreto (ex.: notebook)."""
-    import re
+    """True se o cliente citou categoria/produto concreto (ex.: notebook, adaptador)."""
+    from services.vendas.respostas import mensagem_tem_produto_especifico
 
-    texto = _normalizar(mensagem or "")
-    for chave in ALIASES_PRODUTO:
-        if re.search(rf"\b{re.escape(chave)}\b", texto):
-            return True
-    # Sinônimos comuns fora do mapa de aliases
-    for chave in ("laptop", "notebooks", "computador", "pc", "smartphone"):
-        if re.search(rf"\b{re.escape(chave)}\b", texto):
-            return True
-    return False
+    return mensagem_tem_produto_especifico(mensagem)
 
 
 def _consulta_catalogo(mensagem: str) -> bool:

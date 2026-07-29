@@ -233,10 +233,16 @@ def resposta_estoque_disponibilidade(nome_cliente: str = "") -> str:
 
 def cliente_perguntou_estoque(mensagem: str) -> bool:
     """Pergunta de estoque/disponibilidade de um item — não catálogo geral."""
-    from services.vendas.respostas import cliente_quer_ver_catalogo
+    from services.vendas.respostas import (
+        cliente_quer_ver_catalogo,
+        mensagem_tem_produto_especifico,
+    )
 
     # "quais produtos tem disponível" = catálogo, não estoque unitário
     if cliente_quer_ver_catalogo(mensagem):
+        return False
+    # "adaptador ... com estoque" / "quais opções com estoque" = busca filtrada
+    if mensagem_tem_produto_especifico(mensagem):
         return False
     t = _normalizar(mensagem)
     if re.search(

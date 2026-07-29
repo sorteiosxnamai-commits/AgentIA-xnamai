@@ -51,6 +51,10 @@ _CATEGORIAS = (
     "smartphone",
     "mesa",
     "cadeira",
+    "adaptador",
+    "tomada",
+    "plugue",
+    "benjamin",
 )
 
 
@@ -104,6 +108,8 @@ def _extrair_categoria(texto: str, contexto: dict | None = None) -> str:
                 return "headset"
             if cat in ("smartphone",):
                 return "celular"
+            if cat in ("tomada", "plugue", "benjamin"):
+                return "adaptador"
             return cat
     return str(ctx.get("categoria_interesse") or ctx.get("category") or "")
 
@@ -371,14 +377,18 @@ def classificar_intencao(
         )
 
     # --- BUSCA DE PRODUTO ---
+    from services.vendas.respostas import mensagem_tem_produto_especifico
+
     cat_msg = _extrair_categoria(t, ctx)
+    tem_produto_especifico = mensagem_tem_produto_especifico(msg)
     if re.search(
         r"\b(quero|queria|procuro|procurando|preciso|tem|têm|voces\s+tem|vocês\s+têm|"
         r"busca|looking|me\s+indica|indica|recomend|para\s+jogos|pra\s+jogos|"
-        r"gamer)\b",
+        r"gamer|quais\s+(opcoes|opções)|opcoes|opções)\b",
         t,
     ) and (
         cat_msg
+        or tem_produto_especifico
         or re.search(
             r"\b(produto|item|modelo|aparelho)\b",
             t,
@@ -393,13 +403,15 @@ def classificar_intencao(
             reason="busca_produto",
         )
 
-    if cat_msg and re.search(r"\b(quero|tem|procuro|preciso|indica)\b", t):
+    if (cat_msg or tem_produto_especifico) and re.search(
+        r"\b(quero|tem|procuro|preciso|indica|opcoes|opções)\b", t
+    ):
         return _resultado(
             "BUSCA_PRODUTO",
             0.86,
             needs_catalog=True,
             product_query=_extrair_product_query(msg, cat_msg),
-            category=cat_msg,
+            category=cat_msg or categoria,
             reason="categoria_na_mensagem",
         )
 
