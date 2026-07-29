@@ -1823,16 +1823,30 @@ def invalidar_cache_produtos() -> None:
 
 
 def buscar_produtos():
+    """Lista produtos do Supabase (paginado — PostgREST limita ~1000 por request)."""
     agora = time.time()
     if _cache_produtos["dados"] is not None and agora < float(_cache_produtos["expira_em"]):
         return list(_cache_produtos["dados"])
 
-    resultado = (
-        supabase.table("produtos")
-        .select("*")
-        .execute()
-    )
-    produtos = [_normalizar_produto(row) for row in (resultado.data or [])]
+    page_size = 1000
+    offset = 0
+    brutos: list = []
+    while True:
+        resultado = (
+            supabase.table("produtos")
+            .select("*")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        lote = list(resultado.data or [])
+        if not lote:
+            break
+        brutos.extend(lote)
+        if len(lote) < page_size:
+            break
+        offset += page_size
+
+    produtos = [_normalizar_produto(row) for row in brutos]
     _cache_produtos["dados"] = produtos
     _cache_produtos["expira_em"] = agora + max(30.0, _CACHE_PRODUTOS_SEG)
     return list(produtos)

@@ -218,6 +218,21 @@ def _expandir_aliases(termos: list[str]) -> list[str]:
     return expandidos
 
 
+# Stopwords extras da consulta (além das de _extrair_termos / TERMOS_NAO_PRODUTO)
+STOPWORDS_CONSULTA = {
+    "de", "da", "do", "das", "dos", "para", "com", "em", "e", "a", "o", "as", "os",
+    "um", "uma", "uns", "umas", "no", "na", "nos", "nas", "por", "ao", "aos",
+    "pra", "pro", "pelo", "pela", "pelos", "pelas",
+}
+
+# Níveis de relevância (menor = melhor)
+NIVEL_FRASE = 0          # nome contém a frase completa
+NIVEL_TODOS_TERMOS = 1   # nome contém todos os termos relevantes
+NIVEL_COMECA = 2         # nome começa com o(s) termo(s) da busca
+NIVEL_PARCIAL = 3        # nome contém só parte dos termos
+NIVEL_NENHUM = 99
+
+
 def _mensagem_busca(mensagem: str, historico_texto: str = "") -> str:
     termos = _expandir_aliases(_termos_do_cliente(mensagem, historico_texto))
     if termos:
@@ -225,14 +240,85 @@ def _mensagem_busca(mensagem: str, historico_texto: str = "") -> str:
     return mensagem.strip()
 
 
-def _score_produto(produto: dict, termos: list[str]) -> int:
-    """Pontua match: nome > codigo > categoria/descricao."""
+def _frase_consulta(mensagem: str) -> str:
+    """Frase normalizada (caixa/acentos), espaços colapsados — mantém 'de' etc."""
+    return " ".join(_normalizar(mensagem or "").split())
+
+
+def _termos_consulta_busca(mensagem: str, historico_texto: str = "") -> list[str]:
+    """Termos relevantes da consulta (sem stopwords curtas / genéricas)."""
+    busca = _mensagem_busca(mensagem, historico_texto)
+    brutos = _expandir_aliases(
+        termos_produto_relevantes(_extrair_termos(busca)) or _extrair_termos(busca)
+    )
+    out: list[str] = []
+    for t in brutos:
+        tn = _normalizar(t)
+        if not tn or tn in STOPWORDS_CONSULTA or len(tn) < 3:
+            continue
+        if tn not in out:
+            out.append(tn)
+    return out
+
+
+def _estoque_valor(produto: dict) -> float:
+    bruto = produto.get("estoque")
+    if bruto in (None, ""):
+        bruto = produto.get("saldo_estoque")
+    if bruto in (None, ""):
+        return 0.0
+    try:
+        return float(bruto)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _tem_estoque(produto: dict) -> bool:
+    return _estoque_valor(produto) > 0
+
+
+def _nivel_relevancia_nome(
+    nome_norm: str, frase: str, termos: list[str]
+) -> int:
+    if not nome_norm:
+        return NIVEL_NENHUM
+    if frase and len(frase) >= 3 and frase in nome_norm:
+        return NIVEL_FRASE
+    if termos and all(t in nome_norm for t in termos):
+        return NIVEL_TODOS_TERMOS
+    if termos:
+        primeiro = termos[0]
+        if nome_norm.startswith(primeiro) or (
+            frase and nome_norm.startswith(frase.split()[0] if frase else "")
+        ):
+            return NIVEL_COMECA
+    if termos and any(t in nome_norm for t in termos):
+        return NIVEL_PARCIAL
+    return NIVEL_NENHUM
+
+
+def _score_produto(produto: dict, termos: list[str], frase: str = "") -> int:
+    """Pontua match: frase/todos os termos >> nome parcial > codigo > categoria."""
     nome = _normalizar(str(produto.get("nome") or ""))
     codigo = _normalizar(str(produto.get("codigo") or ""))
     resto = _normalizar(
         f"{produto.get('categoria') or ''} {produto.get('descricao') or ''}"
     )
+    frase_n = _frase_consulta(frase) if frase else ""
+    if not frase_n and termos:
+        frase_n = " ".join(termos)
+
+    nivel = _nivel_relevancia_nome(nome, frase_n, termos)
     score = 0
+    if nivel == NIVEL_FRASE:
+        score += 1000
+    elif nivel == NIVEL_TODOS_TERMOS:
+        score += 500
+    elif nivel == NIVEL_COMECA:
+        score += 80
+    elif nivel == NIVEL_PARCIAL:
+        score += 10
+
     for t in termos:
         if not t:
             continue
@@ -245,6 +331,61 @@ def _score_produto(produto: dict, termos: list[str]) -> int:
         if t in resto:
             score += 2
     return score
+
+
+def _ranquear_produtos_por_consulta(
+    produtos: list[dict],
+    mensagem: str,
+    historico_texto: str = "",
+    *,
+    limite: int | None = None,
+) -> list[dict]:
+    """Ranqueia catálogo local pela consulta.
+
+    Prioridade: frase completa → todos os termos → começa com termo → parcial.
+    Com matches fortes (frase/todos), exclui parciais fracos (ex.: só 'tomada').
+    No mesmo nível, saldo_estoque > 0 vem antes.
+    """
+    if not produtos:
+        return []
+
+    frase = _frase_consulta(mensagem)
+    # Frase sem stopwords (para match de "adaptador tomada" se o nome omitir "de")
+    termos = _termos_consulta_busca(mensagem, historico_texto)
+    if not termos and not frase:
+        return []
+
+    frase_termos = " ".join(termos) if termos else frase
+    pontuados: list[tuple[int, int, int, dict]] = []
+    for produto in produtos:
+        nome = _normalizar(str(produto.get("nome") or ""))
+        nivel = _nivel_relevancia_nome(nome, frase, termos)
+        if nivel == NIVEL_NENHUM and frase_termos and frase_termos != frase:
+            nivel = _nivel_relevancia_nome(nome, frase_termos, termos)
+        if nivel == NIVEL_NENHUM:
+            # Último recurso: match só em codigo/categoria (parcial fraco)
+            score_extra = _score_produto(produto, termos, frase=frase)
+            if score_extra <= 0:
+                continue
+            nivel = NIVEL_PARCIAL
+        sem_estoque = 0 if _tem_estoque(produto) else 1
+        score = _score_produto(produto, termos, frase=frase)
+        pontuados.append((nivel, sem_estoque, -score, produto))
+
+    if not pontuados:
+        return []
+
+    tem_forte = any(n <= NIVEL_TODOS_TERMOS for n, *_ in pontuados)
+    if tem_forte:
+        pontuados = [item for item in pontuados if item[0] <= NIVEL_TODOS_TERMOS]
+    else:
+        tem_comeca = any(n <= NIVEL_COMECA for n, *_ in pontuados)
+        if tem_comeca:
+            pontuados = [item for item in pontuados if item[0] <= NIVEL_COMECA]
+
+    pontuados.sort(key=lambda x: (x[0], x[1], x[2]))
+    lim = LIMITE_CATALOGO if limite is None else max(1, int(limite))
+    return [p for *_, p in pontuados[:lim]]
 
 
 def _buscar_mercos(mensagem: str, historico_texto: str = "") -> tuple[list[dict], str | None]:
@@ -263,10 +404,13 @@ def _buscar_mercos(mensagem: str, historico_texto: str = "") -> tuple[list[dict]
 
         produtos = buscar_mercos_por_mensagem(busca)
         if produtos:
-            ranqueados = sorted(
-                produtos, key=lambda p: _score_produto(p, termos), reverse=True
+            return (
+                _ranquear_produtos_por_consulta(
+                    produtos, mensagem, historico_texto, limite=LIMITE_CATALOGO
+                )
+                or produtos[:LIMITE_CATALOGO],
+                None,
             )
-            return [p for p in ranqueados if _score_produto(p, termos) > 0] or ranqueados, None
         return produtos, None
     except Exception as e:
         return [], str(e)
@@ -288,21 +432,9 @@ def _buscar_supabase(mensagem: str, historico_texto: str = "") -> list[dict]:
     if _consulta_catalogo(mensagem):
         return produtos[:LIMITE_CATALOGO]
 
-    busca = _mensagem_busca(mensagem, historico_texto)
-    termos = _expandir_aliases(
-        termos_produto_relevantes(_extrair_termos(busca)) or _extrair_termos(busca)
+    return _ranquear_produtos_por_consulta(
+        produtos, mensagem, historico_texto, limite=LIMITE_CATALOGO
     )
-    if not termos:
-        return []
-
-    pontuados = []
-    for produto in produtos:
-        score = _score_produto(produto, termos)
-        if score > 0:
-            pontuados.append((score, produto))
-
-    pontuados.sort(key=lambda x: x[0], reverse=True)
-    return [p for _, p in pontuados[:LIMITE_CATALOGO]]
 
 
 def _categoria_chave(produto: dict) -> str:
