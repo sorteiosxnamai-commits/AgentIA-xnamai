@@ -168,7 +168,7 @@ def test_buscar_por_intencao_so_adaptadores_com_estoque(monkeypatch):
         intent="BUSCA_PRODUTO",
         product_query=MSG,
         categoria_ativa="adaptador",
-        limite=5,
+        limite=20,
     )
     assert r["found"] is True
     nomes = [p["name"] for p in r["products"]]
@@ -216,6 +216,8 @@ def test_processar_mensagem_chat_adaptador_dry_run(monkeypatch):
     assert "pessoal, trabalho ou gamer" not in resp
     assert "fallback_ia_nao_deveria" not in resp
     assert "10a" in resp or "20a" in resp or "universal" in resp
+    bullets = [ln for ln in (out.get("resposta") or "").splitlines() if ln.strip().startswith("•")]
+    assert len(bullets) <= 3
     # dry_run + persistir=false: sem gravação / WhatsApp
     assert gravacoes["cliente"] == 0
     assert gravacoes["historico"] == 0

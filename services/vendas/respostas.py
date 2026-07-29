@@ -21,6 +21,41 @@ def _normalizar(texto: str) -> str:
     return texto.lower().strip()
 
 
+# Limite de produtos na resposta ao cliente (busca comum e "mais opções").
+LIMITE_APRESENTACAO_PRODUTOS = 3
+
+
+def _nome_produto_norm(produto: dict) -> str:
+    return _normalizar(str(produto.get("name") or produto.get("nome") or "").strip())
+
+
+def _filtrar_produtos_nao_apresentados(
+    produtos: list,
+    historico_texto: str = "",
+    *,
+    limite: int = LIMITE_APRESENTACAO_PRODUTOS,
+) -> list:
+    """Remove itens já citados no histórico; mantém até ``limite`` novos.
+
+    Se todos já tiverem sido mostrados, devolve os primeiros ``limite``
+    originais (evita resposta vazia).
+    """
+    itens = [p for p in (produtos or []) if p]
+    if not itens:
+        return []
+    hist = _normalizar(historico_texto or "")
+    novos: list = []
+    for p in itens:
+        nome = _nome_produto_norm(p)
+        if not nome:
+            continue
+        if hist and nome in hist:
+            continue
+        novos.append(p)
+    base = novos if novos else itens
+    return base[: max(1, int(limite or LIMITE_APRESENTACAO_PRODUTOS))]
+
+
 def _termos_produto(termos: list | None) -> list[str]:
     if not termos:
         return []
@@ -475,8 +510,11 @@ def resposta_mais_opcoes(
         )
 
     pergunta = criterio_util_por_categoria(cat, itens)
+    amostra = _filtrar_produtos_nao_apresentados(
+        itens, historico_texto, limite=LIMITE_APRESENTACAO_PRODUTOS
+    )
     linhas = [f"Temos sim, {nome}! Olha outras opções de {cat}:"]
-    for p in itens[:4]:
+    for p in amostra:
         nome_p = p.get("name") or p.get("nome") or "Produto"
         preco = p.get("price")
         if preco is None:
@@ -776,7 +814,7 @@ def resposta_busca_produtos(
             "Quer que eu verifique outra faixa de preço ou outra categoria?"
         )
 
-    amostra = itens[:5]
+    amostra = itens[:LIMITE_APRESENTACAO_PRODUTOS]
     linhas: list[str] = []
     for produto in amostra:
         linhas.append(f"• {_montar_item_catalogo(produto)}")

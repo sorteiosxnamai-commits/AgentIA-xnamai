@@ -19,7 +19,7 @@ TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 5},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 3},
                 },
                 "required": ["query"],
                 "additionalProperties": False,
@@ -297,8 +297,8 @@ def _reduce_produto(produto: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _products_from_context(context_products: list[dict[str, Any]], limit: int = 5) -> dict[str, Any]:
-    limit = max(1, min(int(limit or 5), 5))
+def _products_from_context(context_products: list[dict[str, Any]], limit: int = 3) -> dict[str, Any]:
+    limit = max(1, min(int(limit or 3), 3))
     reduzidos = [_reduce_produto(p) for p in (context_products or []) if isinstance(p, dict)]
     reduzidos = [p for p in reduzidos if p.get("name")][:limit]
     catalog_text = ""
@@ -350,7 +350,7 @@ def _run_with_timeout(fn, *args, timeout: float | None = None, **kwargs):
 
 def _search_products(
     query: str,
-    limit: int = 5,
+    limit: int = 3,
     *,
     context_products: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -371,7 +371,7 @@ def _search_products(
         if _is_catalog_failure(exc):
             return _catalog_unavailable(exc)
         return _catalog_unavailable(exc)
-    limit = max(1, min(int(limit or 5), 5))
+    limit = max(1, min(int(limit or 3), 3))
     reduzidos = [_reduce_produto(p) for p in (encontrados or [])[:limit]]
     return _ok(
         {
@@ -654,7 +654,7 @@ def execute_tool(
         if name == "search_products":
             out = _search_products(
                 str(args.get("query") or ""),
-                int(args.get("limit") or 5),
+                int(args.get("limit") or 3),
                 context_products=ctx or None,
             )
         elif name == "get_product":

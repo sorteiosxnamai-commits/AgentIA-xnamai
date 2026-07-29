@@ -205,10 +205,14 @@ def _filtrar_por_orcamento(produtos: list[dict], orcamento_max: float | None) ->
     return out
 
 
-def _limite_busca_especifica(limite: int, categoria: str) -> int:
-    if categoria:
-        return max(1, min(int(limite or 5), 5))
-    return max(1, min(int(limite or 8), 8))
+def _limite_candidatos_ranqueados(limite: int, categoria: str) -> int:
+    """Quantos candidatos manter APÓS ranqueamento (não é o limite de exibição).
+
+    A apresentação ao cliente fica em respostas.py (normalmente 3).
+    """
+    # Pool interno para ranqueamento / "mais opções" sem cortar cedo demais
+    pedido = int(limite or (20 if categoria else 20))
+    return max(1, min(pedido, 20))
 
 
 def _pediu_com_estoque(mensagem: str) -> bool:
@@ -348,7 +352,7 @@ def buscar_por_intencao(
             categoria=categoria,
             historico_texto=historico_texto,
             mensagem=mensagem,
-            limite=_limite_busca_especifica(limite, categoria),
+            limite=_limite_candidatos_ranqueados(limite, categoria),
             orcamento_max=orc_max,
         )
 
@@ -403,7 +407,7 @@ def buscar_por_intencao(
     if _pediu_com_estoque(mensagem):
         normalizados = _priorizar_com_estoque(normalizados)
 
-    limite_efetivo = _limite_busca_especifica(limite, categoria)
+    limite_efetivo = _limite_candidatos_ranqueados(limite, categoria)
     normalizados = normalizados[:limite_efetivo]
 
     if not normalizados:
@@ -482,7 +486,7 @@ def buscar_mais_opcoes(
     orc = _parse_orcamento_valor(orcamento_max)
     if orc:
         produtos = _filtrar_por_orcamento(produtos, orc)
-    produtos = produtos[: _limite_busca_especifica(limite, cat)]
+    produtos = produtos[: _limite_candidatos_ranqueados(limite, cat)]
 
     if not produtos:
         return _resultado(
@@ -642,18 +646,22 @@ def aplicar_resultado_no_contexto(contexto_venda, resultado: dict) -> None:
     if contexto_venda is None or not resultado:
         return
 
+    from services.vendas.respostas import LIMITE_APRESENTACAO_PRODUTOS
+
     found = bool(resultado.get("found"))
     produtos = resultado.get("products") or [] if found else []
     relacionados = resultado.get("related") or []
 
+    # Mantém lista ranqueada completa (para "mais opções"); prompt só com os top 3
     contexto_venda.produtos = produtos
     contexto_venda.sem_match = not found
     # Não injeta amostra aleatória no prompt
     contexto_venda.amostra_disponivel = relacionados if relacionados else []
 
     if found:
+        para_prompt = produtos[:LIMITE_APRESENTACAO_PRODUTOS]
         contexto_venda.catalogo = (
-            resultado.get("catalogo") or montar_catalogo_para_prompt(produtos)
+            resultado.get("catalogo") or montar_catalogo_para_prompt(para_prompt)
         )
     else:
         contexto_venda.catalogo = (
