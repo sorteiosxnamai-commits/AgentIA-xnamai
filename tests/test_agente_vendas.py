@@ -24,7 +24,8 @@ def test_persona_xnamai_nao_newstore():
     instr = build_system_instructions()
     assert "xNamai" in NOME_AGENTE
     assert "Agente de Vendas" in NOME_AGENTE
-    assert "Você é o Agente de Vendas da xNamai" in instr
+    assert "Agente de Vendas oficial da xNamai" in instr
+    assert "assistente de vendas da xnamai" in instr.lower()
     assert "xNamai" in APRESENTACAO
     assert "NewStoreAgent" not in APRESENTACAO
     assert "sorteio" not in APRESENTACAO.lower()

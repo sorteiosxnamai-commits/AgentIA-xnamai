@@ -376,3 +376,8 @@ def test_instructions_local_ainda_existe():
     text = build_system_instructions()
     assert "xNamai" in text
     assert "Agente" in text or "atendente" in text.lower()
+    assert "PAGAMENTO PIX" in text
+    assert "criar_cobranca_pix" in text
+    assert "até três opções" in text.lower() or "ate tres opcoes" in text.lower()
+    assert "Nunca invente" in text or "nunca invente" in text.lower()
+    assert "WhatsApp" in text or "whatsapp" in text.lower()
