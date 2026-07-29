@@ -5000,10 +5000,19 @@ def test_ui_produtos_alterar_erro_mercos(client, monkeypatch):
     assert "CompanyToken" not in resp.text
 
 
+def _forcar_mercos_sandbox(monkeypatch):
+    """Ambiente sandbox determinístico — independente do .env do desenvolvedor."""
+    url = "https://sandbox.mercos.com/api"
+    monkeypatch.setenv("MERCOS_BASE_URL", url)
+    # BASE_URL é resolvido no import; força o valor usado por mercos_ambiente_sandbox()
+    monkeypatch.setattr("services.mercos_service.BASE_URL", url)
+
+
 def _seed_produto_imagem(client, monkeypatch):
     """Sessão + produto 988c59d30ae54204 no catálogo local de produtos."""
     from services import mercos_produtos_catalogo as catp
 
+    _forcar_mercos_sandbox(monkeypatch)
     catp._reset_todos_para_testes()
     monkeypatch.setattr(
         "routes.mercos_homolog_ui.mercos_configurado", lambda: True

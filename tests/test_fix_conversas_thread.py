@@ -171,7 +171,10 @@ def test_sou_de_londrina_salva_cidade():
 # 5
 def test_salvar_mensagem_thread_nao_insere_campos_inexistentes(monkeypatch):
     sb._SCHEMA_FLAGS["conversas_thread"] = True
+    sb._SCHEMA_FLAGS["clientes_historico"] = True
+    sb._SCHEMA_FLAGS["contexto_venda"] = True
     inserts = []
+    updates = []
 
     class FakeTable:
         def __init__(self, name):
@@ -187,6 +190,7 @@ def test_salvar_mensagem_thread_nao_insere_campos_inexistentes(monkeypatch):
             return self
 
         def update(self, payload):
+            updates.append({"table": self.name, "payload": payload})
             self._payload = payload
             return self
 
@@ -196,14 +200,16 @@ def test_salvar_mensagem_thread_nao_insere_campos_inexistentes(monkeypatch):
 
         def execute(self):
             if self.name == sb.TABELA_CLIENTES and hasattr(self, "_payload"):
-                return MagicMock(data=[{"historico": []}])
+                return MagicMock(data=[{"historico": self._payload.get("historico", [])}])
             if self.name == sb.TABELA_CLIENTES:
                 return MagicMock(data=[{"historico": []}])
             return MagicMock(data=[])
 
     monkeypatch.setattr(sb, "supabase", MagicMock(table=lambda n: FakeTable(n)))
+    monkeypatch.setattr(sb, "clientes_tem_historico", lambda: True)
     result = sb.salvar_mensagem("cli-1", "cliente", "oi", message_id="m1")
     assert result["modo"] == "historico_json"
+    assert updates  # gravou em clientes.historico
     # Nenhuma insert em conversas com cliente_id/tipo/mensagem
     for ins in inserts:
         if ins["table"] == sb.TABELA_HISTORICO:

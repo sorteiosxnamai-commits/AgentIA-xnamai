@@ -336,14 +336,103 @@ def test_conversas_ausente_nao_quebra_memoria(monkeypatch):
     assert out["error"] == "cliente_inexistente"
 
 
-def test_nenhum_arquivo_mercos_alterado():
-    """Throttle e mercos_service (agente) intactos; homologação pode evoluir."""
-    import subprocess
+def test_protecoes_mercos_agente(monkeypatch):
+    """Throttle, 1 GET /v1/produtos, filtro excluído e dry-run sem escrita."""
+    from unittest.mock import MagicMock
 
-    out = subprocess.check_output(
-        ["git", "diff", "--name-only", "--",
-         "services/mercos_service.py", "services/mercos_throttle.py"],
-        cwd=str(Path(__file__).resolve().parents[1]),
-        text=True,
+    import services.mercos_service as ms
+    import services.mercos_throttle as mt
+    import services.sync_mercos_service as sync_mod
+    from services.sync_mercos_service import sincronizar_produtos_mercos
+
+    src = Path(ms.__file__).read_text(encoding="utf-8")
+    assert "mercos_throttle.executar" in src
+    assert hasattr(mt, "executar")
+
+    ms.invalidar_cache_produtos_mercos()
+    chamadas = []
+
+    def fake_exec(method, path, params=None, json_body=None, timeout=15):
+        chamadas.append({"method": method, "path": path, "params": dict(params or {})})
+        r = MagicMock()
+        r.status_code = 200
+        r.headers = {
+            "MEUSPEDIDOS_LIMITOU_REGISTROS": "0",
+            "MEUSPEDIDOS_REQUISICOES_EXTRAS": "0",
+            "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS": "2",
+        }
+        r.json.return_value = [
+            {"id": 1, "nome": "Ativo", "codigo": "A1", "excluido": False, "ativo": True},
+            {
+                "id": 20400678,
+                "nome": "Excluido",
+                "codigo": "HOM-PROD-001",
+                "excluido": True,
+                "ativo": True,
+            },
+        ]
+        return r
+
+    monkeypatch.setattr(ms, "_executar_requisicao_mercos", fake_exec)
+    monkeypatch.setenv("MERCOS_OCULTAR_EXEMPLOS", "false")
+    out = ms.buscar_produtos_mercos()
+    assert len(chamadas) == 1
+    assert chamadas[0]["path"] == "/v1/produtos"
+    assert chamadas[0]["params"].get("excluido") == "false"
+    assert "alterado_apos" in chamadas[0]["params"]
+    assert "pagina" not in chamadas[0]["params"]
+    assert [p["id"] for p in out] == [1]
+
+    writes = {"n": 0}
+
+    def fake_seguro(dados, *, dry_run=False, log_item=True, indice=None, defer_upsert=False):
+        if not dry_run:
+            writes["n"] += 1
+        return {"acao": "dry_run_criaria" if dry_run else "criado", "match": None}
+
+    monkeypatch.setattr(sync_mod, "sincronizar_produto_mercos_seguro", fake_seguro)
+    monkeypatch.setattr(sync_mod, "mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        sync_mod,
+        "buscar_produtos_mercos_detalhado",
+        lambda **_k: {
+            "produtos": [{"id": 9, "nome": "X", "codigo": "X1", "excluido": False}],
+            "chamadas_mercos": 1,
+            "total_informado_mercos": 1,
+            "unicos_recebidos": 1,
+            "excluidos": 0,
+            "inativos": 0,
+            "ativos_processados": 1,
+        },
     )
-    assert out.strip() == ""
+    monkeypatch.setattr(
+        sync_mod,
+        "carregar_indice_produtos_locais",
+        lambda **_k: {
+            "por_mercos_id": {},
+            "por_codigo": {},
+            "total_carregados": 0,
+            "paginas": 0,
+        },
+    )
+    monkeypatch.setattr(
+        sync_mod,
+        "normalizar_produto",
+        lambda p: {
+            "nome": p.get("nome"),
+            "codigo": p.get("codigo"),
+            "preco": 1,
+            "estoque": 0,
+            "descricao": "",
+        },
+    )
+    monkeypatch.setattr(sync_mod, "extrair_imagem_mercos", lambda p: None)
+    monkeypatch.setattr(
+        sync_mod,
+        "invalidar_cache_produtos",
+        lambda: (_ for _ in ()).throw(AssertionError("dry-run não invalida cache")),
+    )
+
+    resumo = sincronizar_produtos_mercos(dry_run=True)
+    assert resumo["dry_run"] is True
+    assert writes["n"] == 0

@@ -1877,26 +1877,180 @@ def buscar_produto_por_mercos_id(mercos_id):
     return None
 
 
-def sincronizar_produto_mercos(dados: dict) -> str:
-    """Legado ÔÇö preferir ETL do backend PulseDesk."""
-    mercos_id = dados.get("mercos_id")
-    existente = None
-
-    if mercos_id is not None:
-        existente = buscar_produto_por_mercos_id(mercos_id)
-
-    if not existente and dados.get("nome"):
+def _produtos_por_eq(campo: str, valor) -> list[dict]:
+    """Busca exata; retorna lista (pode haver ambiguidade em codigo)."""
+    if valor is None:
+        return []
+    if isinstance(valor, str):
+        valor = valor.strip()
+        if not valor:
+            return []
+    if not campo:
+        return []
+    try:
         resultado = (
             supabase.table("produtos")
             .select("*")
-            .eq("nome", dados["nome"])
-            .limit(1)
+            .eq(campo, valor)
             .execute()
         )
-        if resultado.data:
-            existente = resultado.data[0]
+        return list(resultado.data or [])
+    except Exception as exc:
+        if erro_coluna_ausente(exc, campo):
+            return []
+        raise
 
-    # Schema PulseDesk (ETL): preco_tabela / saldo_estoque ÔÇö sem coluna categoria/preco/estoque
+
+def _normalizar_codigo_produto(codigo) -> str:
+    return str(codigo or "").strip()
+
+
+def carregar_indice_produtos_locais(*, page_size: int = 1000) -> dict:
+    """Carrega public.produtos uma vez (paginado) e monta mapas em memória.
+
+    Retorna:
+      por_mercos_id: dict[int, dict]
+      por_codigo: dict[str, list[dict]]  (codigo normalizado → candidatos)
+      total_carregados: int
+      paginas: int
+    """
+    from services.webhook_guard import log_seguro
+
+    tamanho = max(1, min(int(page_size or 1000), 1000))
+    por_mercos_id: dict[int, dict] = {}
+    por_codigo: dict[str, list[dict]] = {}
+    offset = 0
+    paginas = 0
+    total = 0
+
+    print(
+        f"carregar_indice_produtos: início page_size={tamanho}",
+        flush=True,
+    )
+
+    while True:
+        try:
+            resultado = (
+                supabase.table("produtos")
+                .select("*")
+                .range(offset, offset + tamanho - 1)
+                .execute()
+            )
+        except Exception as exc:
+            nome = type(exc).__name__
+            if "Timeout" in nome or "timeout" in str(exc).lower():
+                raise ValueError(
+                    "Supabase produtos: timeout ao carregar índice local. "
+                    "Verifique rede/RLS e tente novamente. "
+                    f"Detalhe={nome}"
+                ) from exc
+            raise
+
+        lote = list(resultado.data or [])
+        paginas += 1
+        if not lote:
+            break
+
+        for row in lote:
+            if not isinstance(row, dict):
+                continue
+            total += 1
+            mid = row.get("mercos_id")
+            if mid is not None and mid != "":
+                try:
+                    por_mercos_id[int(mid)] = row
+                except (TypeError, ValueError):
+                    pass
+            codigo = _normalizar_codigo_produto(row.get("codigo"))
+            if codigo:
+                por_codigo.setdefault(codigo, []).append(row)
+
+        if len(lote) < tamanho:
+            break
+        offset += tamanho
+
+    log_seguro(
+        "indice_produtos_carregado",
+        total=total,
+        paginas=paginas,
+        por_mercos_id=len(por_mercos_id),
+        codigos=len(por_codigo),
+    )
+    print(
+        f"carregar_indice_produtos: fim total={total} paginas={paginas}",
+        flush=True,
+    )
+    return {
+        "por_mercos_id": por_mercos_id,
+        "por_codigo": por_codigo,
+        "total_carregados": total,
+        "paginas": paginas,
+    }
+
+
+def _buscar_no_indice(indice: dict | None, mercos_id: int | None, codigo: str) -> tuple[list[dict], str | None]:
+    """Resolve candidatos no índice em memória. Retorna (rows, match)."""
+    if not indice:
+        return [], None
+    if mercos_id is not None:
+        row = (indice.get("por_mercos_id") or {}).get(int(mercos_id))
+        if row:
+            return [row], "mercos_id"
+    codigo_n = _normalizar_codigo_produto(codigo)
+    if codigo_n:
+        rows = list((indice.get("por_codigo") or {}).get(codigo_n) or [])
+        if len(rows) == 1:
+            return rows, "codigo"
+        if len(rows) > 1:
+            return rows, "codigo"
+    return [], None
+
+
+def upsert_produtos_mercos_em_lote(
+    payloads: list[dict],
+    *,
+    batch_size: int = 200,
+) -> int:
+    """Upsert em lotes com on_conflict=mercos_id. Retorna qtd enviada."""
+    if not payloads:
+        return 0
+    tamanho = max(1, min(int(batch_size or 200), 500))
+    enviados = 0
+    for i in range(0, len(payloads), tamanho):
+        lote = payloads[i : i + tamanho]
+        try:
+            supabase.table("produtos").upsert(
+                lote,
+                on_conflict="mercos_id",
+            ).execute()
+        except Exception as exc:
+            limpo = [
+                _sem_colunas_opcionais(dict(p), "imagem_url") for p in lote
+            ]
+            if erro_coluna_ausente(exc, "imagem_url") or "imagem_url" in str(exc):
+                supabase.table("produtos").upsert(
+                    limpo,
+                    on_conflict="mercos_id",
+                ).execute()
+            else:
+                raise
+        enviados += len(lote)
+    return enviados
+
+
+def _parse_mercos_id_sync(dados: dict) -> int | None:
+    bruto = dados.get("mercos_id")
+    if bruto is None or bruto == "":
+        return None
+    try:
+        return int(bruto)
+    except (TypeError, ValueError):
+        return None
+
+
+def _montar_campos_produto_sync(dados: dict) -> dict:
+    """Payload alinhado ao schema real (sem ean / mercos_produto_id)."""
+    mercos_id = _parse_mercos_id_sync(dados)
     campos = {
         "mercos_id": mercos_id,
         "nome": dados.get("nome"),
@@ -1911,30 +2065,253 @@ def sincronizar_produto_mercos(dados: dict) -> str:
         campos["unidade"] = dados.get("unidade")
     if dados.get("ultima_alteracao"):
         campos["ultima_alteracao"] = dados["ultima_alteracao"]
-
     if dados.get("imagem_url"):
-        # S├│ grava se a coluna existir no projeto; ignora se falhar no insert/update
         campos["imagem_url"] = dados["imagem_url"]
+    return campos
 
-    def _sem_imagem(payload: dict) -> dict:
-        return {k: v for k, v in payload.items() if k != "imagem_url"}
 
-    if existente:
-        if mercos_id is not None and not existente.get("mercos_id"):
-            campos["mercos_id"] = mercos_id
+def _sem_colunas_opcionais(payload: dict, *cols: str) -> dict:
+    return {k: v for k, v in payload.items() if k not in cols}
+
+
+def sincronizar_produto_mercos_seguro(
+    dados: dict,
+    *,
+    dry_run: bool = False,
+    log_item: bool = True,
+    indice: dict | None = None,
+    defer_upsert: bool = False,
+) -> dict:
+    """Associa/atualiza produto sem duplicar (schema real).
+
+    Prioridade: mercos_id → codigo. Nunca pelo nome.
+    Com ``indice``: resolve em memória (sem SELECT por produto).
+    Novo / já por mercos_id: upsert on_conflict=mercos_id.
+    Match por codigo (1): update na linha + mercos_id recebido.
+    defer_upsert=True: não grava upsert; devolve payload em ``campos`` para lote.
+    """
+    from services.webhook_guard import log_seguro
+
+    mercos_id = _parse_mercos_id_sync(dados)
+    codigo = str(dados.get("codigo") or "").strip()
+
+    if mercos_id is None:
+        if log_item:
+            log_seguro(
+                "sync_produto_ignorado",
+                motivo="sem_mercos_id",
+                codigo=codigo[:40] or "-",
+            )
+        return {
+            "acao": "ignorado",
+            "motivo": "sem_mercos_id",
+            "match": None,
+        }
+
+    match = None
+    candidatos: list[dict] = []
+
+    if indice is not None:
+        candidatos, match = _buscar_no_indice(indice, mercos_id, codigo)
+    else:
+        # Fallback legado (testes unitários / chamada isolada)
+        rows = _produtos_por_eq("mercos_id", mercos_id)
+        if rows:
+            candidatos = rows
+            match = "mercos_id"
+        if not candidatos and codigo:
+            rows = _produtos_por_eq("codigo", codigo)
+            if rows:
+                candidatos = rows
+                match = "codigo"
+
+    if match == "codigo" and len(candidatos) > 1:
+        ids = [str(r.get("id")) for r in candidatos[:10]]
+        log_seguro(
+            "sync_produto_ambiguo",
+            motivo="codigo_duplicado",
+            mercos_id=mercos_id,
+            codigo=codigo[:40],
+            candidatos=len(candidatos),
+        )
+        return {
+            "acao": "ambiguo",
+            "motivo": "codigo_duplicado",
+            "match": "codigo",
+            "candidatos": ids,
+        }
+
+    if len(candidatos) > 1:
+        ids = [str(r.get("id")) for r in candidatos[:10]]
+        log_seguro(
+            "sync_produto_ambiguo",
+            motivo="multiplos_matches",
+            mercos_id=mercos_id,
+            codigo=codigo[:40] or "-",
+            candidatos=len(candidatos),
+        )
+        return {
+            "acao": "ambiguo",
+            "motivo": "multiplos_matches",
+            "match": match,
+            "candidatos": ids,
+        }
+
+    campos = _montar_campos_produto_sync(dados)
+
+    if candidatos:
+        existente = candidatos[0]
+        if dry_run:
+            if log_item:
+                log_seguro(
+                    "sync_produto_dry_run",
+                    acao="relacionaria" if match == "codigo" else "atualizaria",
+                    match=match or "-",
+                    mercos_id=mercos_id,
+                    codigo=codigo[:40] or "-",
+                )
+            return {
+                "acao": "dry_run_atualizaria",
+                "match": match,
+                "produto_id": existente.get("id"),
+                "campos": campos,
+            }
+
+        if match == "codigo":
+            # 1ª associação: update da linha local com o mercos_id recebido
+            try:
+                supabase.table("produtos").update(campos).eq(
+                    "id", existente["id"]
+                ).execute()
+            except Exception as exc:
+                payload = dict(campos)
+                if erro_coluna_ausente(exc, "imagem_url") or "imagem_url" in str(exc):
+                    payload = _sem_colunas_opcionais(payload, "imagem_url")
+                supabase.table("produtos").update(payload).eq(
+                    "id", existente["id"]
+                ).execute()
+            # Atualiza índice em memória
+            if indice is not None:
+                indice.setdefault("por_mercos_id", {})[int(mercos_id)] = {
+                    **existente,
+                    **campos,
+                }
+            if log_item:
+                log_seguro(
+                    "sync_produto_atualizado",
+                    match="codigo",
+                    mercos_id=mercos_id,
+                    codigo=codigo[:40] or "-",
+                )
+            return {
+                "acao": "atualizado",
+                "match": "codigo",
+                "produto_id": existente.get("id"),
+                "campos": campos,
+            }
+
+        # Já vinculado por mercos_id → upsert (ou defer para lote)
+        if defer_upsert:
+            return {
+                "acao": "atualizado",
+                "match": "mercos_id",
+                "produto_id": existente.get("id"),
+                "campos": campos,
+                "defer": True,
+            }
+
         try:
-            supabase.table("produtos").update(campos).eq("id", existente["id"]).execute()
-        except Exception:
-            supabase.table("produtos").update(_sem_imagem(campos)).eq(
-                "id", existente["id"]
+            supabase.table("produtos").upsert(
+                campos,
+                on_conflict="mercos_id",
             ).execute()
-        return "atualizado"
+        except Exception as exc:
+            payload = dict(campos)
+            if erro_coluna_ausente(exc, "imagem_url") or "imagem_url" in str(exc):
+                payload = _sem_colunas_opcionais(payload, "imagem_url")
+            supabase.table("produtos").upsert(
+                payload,
+                on_conflict="mercos_id",
+            ).execute()
+
+        if log_item:
+            log_seguro(
+                "sync_produto_atualizado",
+                match="mercos_id",
+                mercos_id=mercos_id,
+                codigo=codigo[:40] or "-",
+            )
+        return {
+            "acao": "atualizado",
+            "match": "mercos_id",
+            "produto_id": existente.get("id"),
+            "campos": campos,
+        }
+
+    # Sem match → produto novo
+    if dry_run:
+        if log_item:
+            log_seguro(
+                "sync_produto_dry_run",
+                acao="criaria",
+                mercos_id=mercos_id,
+                codigo=codigo[:40] or "-",
+            )
+        return {"acao": "dry_run_criaria", "match": None, "campos": campos}
+
+    if defer_upsert:
+        return {
+            "acao": "criado",
+            "match": None,
+            "campos": campos,
+            "defer": True,
+        }
 
     try:
-        supabase.table("produtos").insert(campos).execute()
-    except Exception:
-        supabase.table("produtos").insert(_sem_imagem(campos)).execute()
-    return "criado"
+        supabase.table("produtos").upsert(
+            campos,
+            on_conflict="mercos_id",
+        ).execute()
+    except Exception as exc:
+        payload = dict(campos)
+        if erro_coluna_ausente(exc, "imagem_url"):
+            payload.pop("imagem_url", None)
+        try:
+            supabase.table("produtos").upsert(
+                payload,
+                on_conflict="mercos_id",
+            ).execute()
+        except Exception:
+            supabase.table("produtos").insert(
+                _sem_colunas_opcionais(payload, "imagem_url")
+            ).execute()
+
+    if indice is not None:
+        indice.setdefault("por_mercos_id", {})[int(mercos_id)] = dict(campos)
+        codigo_n = _normalizar_codigo_produto(campos.get("codigo"))
+        if codigo_n:
+            indice.setdefault("por_codigo", {}).setdefault(codigo_n, []).append(
+                dict(campos)
+            )
+
+    if log_item:
+        log_seguro(
+            "sync_produto_criado",
+            mercos_id=mercos_id,
+            codigo=codigo[:40] or "-",
+        )
+    return {"acao": "criado", "match": None, "campos": campos}
+
+
+def sincronizar_produto_mercos(dados: dict) -> str:
+    """Compatibilidade: delega ao fluxo seguro (sem dry_run)."""
+    out = sincronizar_produto_mercos_seguro(dict(dados or {}), dry_run=False)
+    acao = str(out.get("acao") or "")
+    if acao == "criado":
+        return "criado"
+    if acao == "atualizado":
+        return "atualizado"
+    return acao or "ignorado"
 
 
 # =========================

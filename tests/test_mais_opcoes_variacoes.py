@@ -9,6 +9,21 @@ from services.vendas.respostas import (
 )
 from services.xnamai_script import mensagem_nao_e_busca_produto
 
+# Catálogo fake: alternativas de headset (não depende de Supabase/.env).
+# Nomes com "Headset Gamer" batem a categoria detectada no histórico pela oferta.
+_CATALOGO_HEADSET_MAIS_OPCOES = [
+    {"nome": "Headset Gamer RGB", "preco": 129.9, "categoria": "headset", "estoque": 5},
+    {"nome": "Headset Gamer Pro", "preco": 199.9, "categoria": "headset", "estoque": 3},
+    {"nome": "Mouse Gamer", "preco": 79.9, "categoria": "mouse", "estoque": 10},
+]
+
+
+def _mock_catalogo_geral(produtos: list):
+    def _fake(limite: int = 40):
+        return {"produtos": list(produtos)[:limite], "fonte": "teste"}
+
+    return _fake
+
 # Frases que DEVEM acionar o fluxo de mais opções
 VARIACOES_POSITIVAS = [
     "tem outras opções?",
@@ -76,16 +91,38 @@ def test_resposta_mais_opcoes_comportamento_sem_categoria():
     assert "econômico ou com melhor desempenho" not in texto.lower()
 
 
-def test_resposta_mais_opcoes_comportamento_com_categoria():
+def test_resposta_mais_opcoes_comportamento_com_categoria(monkeypatch):
+    """Com outras opções na categoria: 'Temos sim' + alternativas (sem Supabase)."""
     hist = "Cliente: quero headset\nIA: Headset Gamer — R$ 89,90\n"
+    # produto já mostrado no histórico NÃO entra no mock → não deve se repetir
+    monkeypatch.setattr(
+        "services.vendas.catalogo.montar_catalogo_geral",
+        _mock_catalogo_geral(_CATALOGO_HEADSET_MAIS_OPCOES),
+    )
     texto = resposta_mais_opcoes("Arthur", hist, [])
     assert "Temos sim" in texto
     assert "não trabalhamos" not in texto.lower()
     assert "econômico ou com melhor desempenho" not in texto.lower()
+    assert "Headset Gamer RGB" in texto or "Headset Gamer Pro" in texto
+    # Não reapresenta a oferta já mostrada no histórico
+    assert "Headset Gamer — R$ 89,90" not in texto
     assert any(
         trecho in texto.lower()
         for trecho in ("categoria", "linha", "opções", "preferência", "preço", "marca")
     )
+
+
+def test_resposta_mais_opcoes_sem_alternativas_no_catalogo(monkeypatch):
+    """Categoria detectada, mas catálogo sem outras opções da linha."""
+    hist = "Cliente: quero headset\nIA: Headset Gamer — R$ 89,90\n"
+    monkeypatch.setattr(
+        "services.vendas.catalogo.montar_catalogo_geral",
+        _mock_catalogo_geral([]),
+    )
+    texto = resposta_mais_opcoes("Arthur", hist, [])
+    assert "no momento não encontrei mais opções" in texto.lower()
+    assert "Headset Gamer" in texto or "headset" in texto.lower()
+    assert "Temos sim" not in texto
 
 
 def test_fora_catalogo_nao_usa_termos_genericos():

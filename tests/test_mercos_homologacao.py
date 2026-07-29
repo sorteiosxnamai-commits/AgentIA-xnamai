@@ -722,6 +722,7 @@ def test_bloqueio_sem_token(monkeypatch):
 
 
 def test_paginacao_para_quando_lote_curto(monkeypatch):
+    """listar_paginado genérico — path de exemplo != produtos (produtos não pagina)."""
     chamadas = {"n": 0}
 
     def fake_get(path, params=None):
@@ -734,7 +735,7 @@ def test_paginacao_para_quando_lote_curto(monkeypatch):
         return []
 
     monkeypatch.setattr("services.mercos_api_client.get_json", fake_get)
-    out = listar_paginado("/v1/produtos", max_paginas=10, page_size_hint=50)
+    out = listar_paginado("/v1/clientes", max_paginas=10, page_size_hint=50)
     assert out["paginas_lidas"] == 2
     assert out["total"] == 51
     assert chamadas["n"] == 2
@@ -767,7 +768,7 @@ def test_paginacao_respeita_max_paginas(monkeypatch):
         "services.mercos_api_client.get_json",
         lambda path, params=None: [{"id": i} for i in range(50)],
     )
-    out = listar_paginado("/v1/produtos", max_paginas=3, page_size_hint=50)
+    out = listar_paginado("/v1/clientes", max_paginas=3, page_size_hint=50)
     assert out["paginas_lidas"] == 3
     assert out["total"] == 150
 

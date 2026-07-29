@@ -26,7 +26,7 @@ LIMITE_CATALOGO = 20
 SANDBOX_APPLICATION_TOKEN = "7a1540f6-642c-11e8-a500-72dcfa7a7c91"
 CACHE_TTL_SEGUNDOS = int(os.getenv("MERCOS_CACHE_SEGUNDOS", "600"))
 
-_cache_produtos: dict = {"dados": None, "expira_em": 0.0}
+_cache_produtos: dict = {"dados": None, "expira_em": 0.0, "meta": {}}
 
 STOPWORDS = {
     "a", "o", "as", "os", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das",
@@ -55,6 +55,7 @@ def mercos_ambiente_sandbox() -> bool:
 def invalidar_cache_produtos_mercos() -> None:
     _cache_produtos["dados"] = None
     _cache_produtos["expira_em"] = 0.0
+    _cache_produtos["meta"] = {}
 
 
 def _application_tokens() -> list[str]:
@@ -138,12 +139,9 @@ def _executar_requisicao_mercos(
     )
 
 
-def _requisicao_mercos(pagina: int) -> requests.Response:
-    return _executar_requisicao_mercos(
-        "GET",
-        "/v1/produtos",
-        params={"pagina": pagina},
-    )
+def _requisicao_produtos(params: dict | None = None) -> requests.Response:
+    """GET /v1/produtos — sem ``pagina``; paginação via ``alterado_apos``."""
+    return _executar_requisicao_mercos("GET", "/v1/produtos", params=params)
 
 
 def _normalizar_texto(texto: str) -> str:
@@ -275,37 +273,280 @@ def normalizar_produto(produto: dict) -> dict:
     }
 
 
-def buscar_produtos_mercos() -> list[dict]:
+_DEFAULT_ALTERADO_APOS = "2000-01-01T00:00:00"
+_HEADER_LIMITOU = "MEUSPEDIDOS_LIMITOU_REGISTROS"
+_HEADER_QTDE_TOTAL = "MEUSPEDIDOS_QTDE_TOTAL_REGISTROS"
+_HEADER_EXTRAS = "MEUSPEDIDOS_REQUISICOES_EXTRAS"
+
+
+def _produtos_alterado_apos_inicial() -> str:
+    return (
+        os.getenv("MERCOS_PRODUTOS_ALTERADO_APOS", _DEFAULT_ALTERADO_APOS).strip()
+        or _DEFAULT_ALTERADO_APOS
+    )
+
+
+def _produtos_max_chamadas() -> int:
+    try:
+        n = int(os.getenv("MERCOS_PRODUTOS_MAX_CHAMADAS", "100"))
+    except ValueError:
+        n = 100
+    return max(1, min(n, 500))
+
+
+def _header_int_ci(headers, nome: str) -> int | None:
+    if headers is None:
+        return None
+    alvo = nome.lower()
+    try:
+        items = headers.items()
+    except Exception:
+        return None
+    for k, v in items:
+        if str(k).lower() == alvo:
+            try:
+                return int(str(v).strip())
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _maior_ultima_alteracao(itens: list) -> str | None:
+    maior: str | None = None
+    for item in itens:
+        if not isinstance(item, dict):
+            continue
+        bruto = item.get("ultima_alteracao")
+        if bruto is None or bruto == "":
+            continue
+        texto = str(bruto)
+        if maior is None or texto > maior:
+            maior = texto
+    return maior
+
+
+def _log_detalhado_produtos() -> bool:
+    return os.getenv("SYNC_PRODUTOS_LOG_DETALHADO", "").strip().lower() in (
+        "1",
+        "true",
+        "sim",
+        "yes",
+    )
+
+
+def _atualizar_total_informado(atual: int | None, novo: int | None) -> int | None:
+    """Preserva o maior QTDE_TOTAL visto (não o residual do último lote)."""
+    if novo is None:
+        return atual
+    if atual is None:
+        return novo
+    return max(atual, novo)
+
+
+def buscar_produtos_mercos_detalhado(*, usar_cache: bool = True) -> dict:
+    """Busca paginada com metadados (chamadas, totais, filtros).
+
+    Retorna dict com produtos ativos e estatísticas — sem log por item
+    ignorado (salvo SYNC_PRODUTOS_LOG_DETALHADO=true).
+    """
+    from services.webhook_guard import log_seguro
+
     agora = time.time()
-    if _cache_produtos["dados"] is not None and agora < _cache_produtos["expira_em"]:
-        return _cache_produtos["dados"]
+    if (
+        usar_cache
+        and _cache_produtos["dados"] is not None
+        and agora < _cache_produtos["expira_em"]
+    ):
+        meta = dict(_cache_produtos.get("meta") or {})
+        return {
+            "produtos": list(_cache_produtos["dados"]),
+            **meta,
+        }
 
-    produtos = []
-    pagina = 1
+    cursor = _produtos_alterado_apos_inicial()
+    max_chamadas = _produtos_max_chamadas()
+    por_id: dict[str, dict] = {}
+    chamadas = 0
+    total_informado: int | None = None
+    extras_atual: int | None = None
+    detalhado = _log_detalhado_produtos()
 
-    while True:
-        resposta = _requisicao_mercos(pagina)
+    print("buscar_produtos_mercos: início da consulta", flush=True)
+
+    while chamadas < max_chamadas:
+        params = {
+            "excluido": "false",
+            "alterado_apos": cursor,
+        }
+        params.pop("pagina", None)
+
+        try:
+            resposta = _requisicao_produtos(params)
+        except Exception as exc:
+            nome = type(exc).__name__
+            if "Timeout" in nome or "timeout" in str(exc).lower():
+                raise ValueError(
+                    "Mercos GET /v1/produtos: timeout na leitura. "
+                    "Aumente o timeout ou tente novamente. "
+                    f"Detalhe={nome}"
+                ) from exc
+            raise
+        chamadas += 1
+
+        status = getattr(resposta, "status_code", None)
+        if status not in (200, 201):
+            raise ValueError(
+                f"Mercos GET /v1/produtos: HTTP {status} (esperado 200)"
+            )
+
         lote = resposta.json()
+        if not isinstance(lote, list):
+            print(
+                "buscar_produtos_mercos: resposta não é lista "
+                f"(tipo={type(lote).__name__})",
+                flush=True,
+            )
+            raise ValueError(
+                "Mercos GET /v1/produtos: resposta esperada é lista, "
+                f"recebido {type(lote).__name__}"
+            )
 
-        if isinstance(lote, dict):
-            lote = lote.get("produtos") or lote.get("data") or lote.get("results") or []
+        headers = getattr(resposta, "headers", None) or {}
+        limitou = _header_int_ci(headers, _HEADER_LIMITOU)
+        total_lote = _header_int_ci(headers, _HEADER_QTDE_TOTAL)
+        total_informado = _atualizar_total_informado(total_informado, total_lote)
+        extras_atual = _header_int_ci(headers, _HEADER_EXTRAS)
+
+        novos_no_lote = 0
+        for p in lote:
+            if not isinstance(p, dict):
+                continue
+            mid = p.get("id")
+            if mid is None or mid == "":
+                continue
+            chave = str(mid)
+            if chave not in por_id:
+                por_id[chave] = p
+                novos_no_lote += 1
+
+        max_ua = _maior_ultima_alteracao(lote)
+
+        print(
+            f"buscar_produtos_mercos: lote={chamadas} "
+            f"recebidos_lote={len(lote)} "
+            f"acumulado_unico={len(por_id)} "
+            f"cursor={cursor} "
+            f"total_mercos={total_informado if total_informado is not None else '-'} "
+            f"extras={extras_atual if extras_atual is not None else '-'}",
+            flush=True,
+        )
 
         if not lote:
             break
 
-        produtos.extend(lote)
-
-        if len(lote) < 50:
+        if limitou is None or limitou == 0:
             break
 
-        pagina += 1
-        time.sleep(0.3)
+        if extras_atual is not None and extras_atual <= 0:
+            break
 
-    ativos = [p for p in produtos if _produto_ativo(p)]
-    ativos = _filtrar_catalogo(ativos)
+        if max_ua is None:
+            raise ValueError(
+                "Mercos GET /v1/produtos: lote limitado sem ultima_alteracao "
+                "para avançar o cursor alterado_apos"
+            )
+
+        if max_ua == cursor and novos_no_lote == 0:
+            raise ValueError(
+                "Mercos GET /v1/produtos: cursor alterado_apos sem progresso "
+                f"(cursor={cursor}, lote={chamadas}, acumulado={len(por_id)})"
+            )
+
+        cursor = max_ua
+    else:
+        raise ValueError(
+            f"Mercos GET /v1/produtos: limite de segurança de {max_chamadas} "
+            f"chamadas atingido (acumulado={len(por_id)}, "
+            f"total_mercos={total_informado})"
+        )
+
+    ocultar_exemplos = ocultar_produtos_exemplo()
+    ativos: list[dict] = []
+    excluidos = 0
+    inativos = 0
+    exemplos = 0
+    for p in por_id.values():
+        mid = p.get("id")
+        codigo = str(p.get("codigo") or "")[:40] or "-"
+        nome = str(p.get("nome") or "")[:80] or "-"
+
+        if p.get("excluido"):
+            excluidos += 1
+            if detalhado:
+                log_seguro(
+                    "sync_produto_ignorado",
+                    motivo="excluido",
+                    mercos_id=mid if mid is not None else "-",
+                    codigo=codigo,
+                    nome=nome,
+                )
+            continue
+
+        if p.get("ativo") is False:
+            inativos += 1
+            if detalhado:
+                log_seguro(
+                    "sync_produto_ignorado",
+                    motivo="inativo",
+                    mercos_id=mid if mid is not None else "-",
+                    codigo=codigo,
+                    nome=nome,
+                )
+            continue
+
+        if ocultar_exemplos and eh_produto_exemplo(p):
+            exemplos += 1
+            if detalhado:
+                log_seguro(
+                    "sync_produto_ignorado",
+                    motivo="produto_exemplo",
+                    mercos_id=mid if mid is not None else "-",
+                    codigo=codigo,
+                    nome=nome,
+                )
+            continue
+
+        ativos.append(p)
+
+    meta = {
+        "chamadas_mercos": chamadas,
+        "total_informado_mercos": total_informado,
+        "unicos_recebidos": len(por_id),
+        "excluidos": excluidos,
+        "inativos": inativos,
+        "exemplos_ocultos": exemplos,
+        "ativos_processados": len(ativos),
+    }
     _cache_produtos["dados"] = ativos
     _cache_produtos["expira_em"] = agora + CACHE_TTL_SEGUNDOS
-    return ativos
+    _cache_produtos["meta"] = meta
+
+    print(
+        f"buscar_produtos_mercos: finalização "
+        f"chamadas={chamadas} "
+        f"unicos={len(por_id)} "
+        f"ativos={len(ativos)} "
+        f"excluidos={excluidos} "
+        f"inativos={inativos} "
+        f"total_mercos={total_informado if total_informado is not None else '-'}",
+        flush=True,
+    )
+    return {"produtos": ativos, **meta}
+
+
+def buscar_produtos_mercos() -> list[dict]:
+    """Lista produtos Mercos ativos (compatível com catálogo/agente)."""
+    return list(buscar_produtos_mercos_detalhado().get("produtos") or [])
 
 
 def _produto_corresponde(produto: dict, termos: list[str]) -> bool:

@@ -591,36 +591,41 @@ def _processar_mensagem_locked(
         # =========================
 
         if persistir and not str(cliente_id).startswith("ephemeral-"):
-            if historico_essencial:
-                historico_tentou_salvar = True
-                _tentar_persistir(
-                    "salvar_mensagem_cliente",
-                    lambda: salvar_mensagem(
-                        cliente_id,
-                        "cliente",
-                        mensagem,
-                        message_id=msg_id or None,
-                        telefone=numero,
-                        nome=nome_cliente,
-                    ),
-                    essencial=True,
-                    etapa_flag="historico_ok",
-                )
-                if etapas.get("historico_ok"):
-                    historico_salvo_em = "banco"
-                else:
-                    historico_erro_dbg = obter_ultimo_erro_historico()
-                    historico_salvo_em = "nenhum"
-                    # Se a coluna sumiu no meio do caminho, deixa de ser essencial
-                    if not clientes_tem_historico():
-                        historico_essencial = False
-                        etapas["historico_ok"] = True
-                        historico_salvo_em = "nenhum"
-            else:
-                # Sem coluna historico: não essencial — contexto_venda cobre a sessão
-                etapas["historico_ok"] = True
+            # Sempre tenta gravar mensagem quando persistir=True (dry_run do chat
+            # não bloqueia persistência). historico_essencial só define se a falha
+            # derruba persistencia_ok — coluna ausente → skip seguro.
+            historico_tentou_salvar = True
+            result_msg = _tentar_persistir(
+                "salvar_mensagem_cliente",
+                lambda: salvar_mensagem(
+                    cliente_id,
+                    "cliente",
+                    mensagem,
+                    message_id=msg_id or None,
+                    telefone=numero,
+                    nome=nome_cliente,
+                ),
+                essencial=historico_essencial,
+                etapa_flag="historico_ok",
+            )
+            skipped = isinstance(result_msg, dict) and (
+                result_msg.get("skipped") or result_msg.get("modo") == "skip"
+            )
+            if skipped:
                 historico_salvo_em = "nenhum"
-                historico_tentou_salvar = False
+                if not historico_essencial:
+                    etapas["historico_ok"] = True
+                elif not clientes_tem_historico():
+                    historico_essencial = False
+                    etapas["historico_ok"] = True
+            elif etapas.get("historico_ok"):
+                historico_salvo_em = "banco"
+            else:
+                historico_erro_dbg = obter_ultimo_erro_historico()
+                historico_salvo_em = "nenhum"
+                if not clientes_tem_historico():
+                    historico_essencial = False
+                    etapas["historico_ok"] = True
 
             # Thread PulseDesk — opcional
             _tentar_persistir(
@@ -652,7 +657,7 @@ def _processar_mensagem_locked(
                         etapa="espelhar_cliente",
                         erro=type(exc).__name__,
                     )
-            if historico_essencial:
+            if historico_essencial and clientes_tem_historico():
                 _tentar_persistir(
                     "atualizar_historico_json",
                     lambda: atualizar_historico_json(cliente_id),
@@ -1491,29 +1496,39 @@ def _processar_mensagem_locked(
         # =========================
 
         if persistir and not str(cliente_id).startswith("ephemeral-"):
-            if historico_essencial and clientes_tem_historico():
+            result_ia = _tentar_persistir(
+                "salvar_mensagem_ia",
+                lambda: salvar_mensagem(
+                    cliente_id,
+                    "ia",
+                    resposta_ia,
+                    telefone=numero,
+                    nome=nome_cliente,
+                ),
+                essencial=historico_essencial,
+                etapa_flag="historico_ok",
+            )
+            skipped_ia = isinstance(result_ia, dict) and (
+                result_ia.get("skipped") or result_ia.get("modo") == "skip"
+            )
+            if skipped_ia:
+                if not historico_essencial:
+                    etapas["historico_ok"] = True
+                elif not clientes_tem_historico():
+                    historico_essencial = False
+                    etapas["historico_ok"] = True
+                # mantém historico_salvo_em já definido no inbound, salvo se ainda nenhum
+            elif etapas.get("historico_ok"):
+                historico_salvo_em = "banco"
                 historico_tentou_salvar = True
-                _tentar_persistir(
-                    "salvar_mensagem_ia",
-                    lambda: salvar_mensagem(
-                        cliente_id,
-                        "ia",
-                        resposta_ia,
-                        telefone=numero,
-                        nome=nome_cliente,
-                    ),
-                    essencial=True,
-                    etapa_flag="historico_ok",
-                )
-                if etapas.get("historico_ok"):
-                    historico_salvo_em = "banco"
-                else:
-                    historico_erro_dbg = obter_ultimo_erro_historico() or historico_erro_dbg
-                    if not clientes_tem_historico():
-                        historico_essencial = False
-                        etapas["historico_ok"] = True
+            else:
+                historico_erro_dbg = obter_ultimo_erro_historico() or historico_erro_dbg
+                if not clientes_tem_historico():
+                    historico_essencial = False
+                    etapas["historico_ok"] = True
+                    if historico_salvo_em != "banco":
                         historico_salvo_em = "nenhum"
-            elif not historico_essencial:
+            if not historico_essencial:
                 etapas["historico_ok"] = True
 
             if dry_run:
@@ -1889,10 +1904,80 @@ async def webhook_info():
     }
 
 
+def _resumo_seguro_payload_brevo_legado(data: dict) -> dict:
+    """Resumo estrutural do payload em POST /webhook — sem telefone completo nem segredos."""
+    from services.config_tabelas import mascarar_telefone
+
+    if not isinstance(data, dict):
+        return {"tipo_payload": type(data).__name__}
+
+    def _masc(valor) -> str | None:
+        if valor in (None, ""):
+            return None
+        digits = "".join(c for c in str(valor) if c.isdigit())
+        if len(digits) >= 8:
+            return mascarar_telefone(digits)
+        texto = str(valor).strip()
+        return (texto[:4] + "***") if len(texto) > 4 else "***"
+
+    def _len_texto(*candidatos) -> int:
+        for c in candidatos:
+            if isinstance(c, str) and c.strip():
+                return len(c.strip())
+        return 0
+
+    event = (
+        data.get("event")
+        or data.get("eventName")
+        or data.get("event_type")
+        or data.get("type")
+        or data.get("msg_status")
+    )
+    contact = data.get("contactNumber") or data.get("contact_number") or data.get("from")
+    sender = data.get("senderNumber") or data.get("sender_number") or data.get("sender")
+    body = data.get("body") or data.get("text") or data.get("message") or data.get("reply")
+    if isinstance(body, dict):
+        body = body.get("text") or body.get("body")
+    msg_id = data.get("messageId") or data.get("message_id") or data.get("id")
+    messages = data.get("messages") if isinstance(data.get("messages"), list) else None
+
+    return {
+        "chaves_raiz": sorted(str(k) for k in data.keys())[:40],
+        "event": str(event)[:80] if event is not None else None,
+        "tem_contactNumber": bool(data.get("contactNumber") or data.get("contact_number")),
+        "tem_senderNumber": bool(data.get("senderNumber") or data.get("sender_number")),
+        "tem_body": bool(isinstance(body, str) and body.strip()),
+        "tem_messageId": bool(msg_id),
+        "tem_messages": bool(messages),
+        "qtd_messages": len(messages) if messages is not None else 0,
+        "tem_visitor": isinstance(data.get("visitor"), dict),
+        "contact_mascarado": _masc(contact),
+        "sender_mascarado": _masc(sender),
+        "message_id_sufixo": (str(msg_id)[-12:] if msg_id else None),
+        "texto_chars": _len_texto(body if isinstance(body, str) else None),
+        "parece_whatsapp_reply": str(event or "").lower()
+        in ("whatsapp-reply", "whatsappreply", "reply"),
+    }
+
+
 @router.post("/webhook")
 async def webhook(data: dict, background_tasks: BackgroundTasks):
-    """Legado Z-API/UltraMsg — não processa; redireciona mentalmente para Brevo."""
+    """Legado Z-API/UltraMsg — não processa; redireciona mentalmente para Brevo.
+
+    Mantém ACK 200 para o teste da Brevo, mas não entra no pipeline de mensagem.
+    Log seguro apenas para diagnóstico do payload real.
+    """
+    from services.webhook_guard import log_seguro
+
     _ = background_tasks
+    resumo = _resumo_seguro_payload_brevo_legado(data if isinstance(data, dict) else {})
+    log_seguro(
+        "webhook_legado_payload_recebido",
+        rota="/webhook",
+        processa=False,
+        use="/webhooks/brevo/whatsapp",
+        **resumo,
+    )
     return {
         "status": "ignored",
         "motivo": "legado_zapi_ultramsg_removido_use_brevo",
@@ -2360,17 +2445,23 @@ async def registrar_pedido_pulsedesk(tel: str = "", token: str = ""):
 
 @router.post("/sync-produtos")
 @router.get("/sync-produtos")
-async def sync_produtos(token: str = ""):
-    """Sincroniza produtos Mercos → Supabase. Exige SYNC_TOKEN (ou DIAGNOSTICOS_ABERTOS)."""
+async def sync_produtos(token: str = "", dry_run: str = ""):
+    """Sincroniza produtos Mercos → Supabase. Exige SYNC_TOKEN (ou DIAGNOSTICOS_ABERTOS).
+
+    dry_run=1|true|sim: não insert/update; só resume de associação.
+    """
     bloqueio = _bloqueio_diagnostico(token)
     if bloqueio:
         return bloqueio
 
+    dry = str(dry_run or "").strip().lower() in ("1", "true", "sim", "yes")
+
     try:
         from services.supabase_service import invalidar_cache_produtos
 
-        resultado = sincronizar_produtos_mercos()
-        invalidar_cache_produtos()
+        resultado = sincronizar_produtos_mercos(dry_run=dry)
+        if not dry:
+            invalidar_cache_produtos()
         return {"status": "ok", **resultado}
     except Exception as e:
         return {"status": "erro", "mensagem": str(e)}

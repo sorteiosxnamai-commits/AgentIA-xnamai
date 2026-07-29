@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 
@@ -270,21 +271,89 @@ def test_timeout_whatsapp_nao_libera_duplicata(monkeypatch):
     assert marcado["n"] == 1
 
 
-def test_mercos_intacta():
-    """Throttle e mercos_service intactos após integração Brevo."""
-    import subprocess
-    from pathlib import Path
+def test_protecoes_mercos_apos_brevo(monkeypatch):
+    """Após Brevo: throttle intacto, 1 GET produtos, excluído filtrado, dry-run sem escrita."""
+    from unittest.mock import MagicMock
 
-    out = subprocess.check_output(
-        [
-            "git",
-            "diff",
-            "--name-only",
-            "--",
-            "services/mercos_service.py",
-            "services/mercos_throttle.py",
-        ],
-        cwd=str(Path(__file__).resolve().parents[1]),
-        text=True,
+    import services.mercos_service as ms
+    import services.mercos_throttle as mt
+    import services.sync_mercos_service as sync_mod
+    from services.sync_mercos_service import sincronizar_produtos_mercos
+
+    assert hasattr(mt, "executar")
+    src = Path(ms.__file__).read_text(encoding="utf-8")
+    assert "mercos_throttle.executar" in src
+
+    ms.invalidar_cache_produtos_mercos()
+    chamadas = []
+
+    def fake_exec(method, path, params=None, json_body=None, timeout=15):
+        chamadas.append({"path": path, "params": dict(params or {})})
+        r = MagicMock()
+        r.status_code = 200
+        r.headers = {
+            "MEUSPEDIDOS_LIMITOU_REGISTROS": "0",
+            "MEUSPEDIDOS_REQUISICOES_EXTRAS": "0",
+        }
+        r.json.return_value = [
+            {"id": 10, "nome": "Ok", "codigo": "C", "excluido": False},
+            {"id": 11, "nome": "X", "codigo": "D", "excluido": True},
+        ]
+        return r
+
+    monkeypatch.setattr(ms, "_executar_requisicao_mercos", fake_exec)
+    monkeypatch.setenv("MERCOS_OCULTAR_EXEMPLOS", "false")
+    produtos = ms.buscar_produtos_mercos()
+    assert len(chamadas) == 1
+    assert "pagina" not in chamadas[0]["params"]
+    assert chamadas[0]["params"].get("excluido") == "false"
+    assert len(produtos) == 1
+
+    monkeypatch.setattr(sync_mod, "mercos_configurado", lambda: True)
+    monkeypatch.setattr(
+        sync_mod,
+        "buscar_produtos_mercos_detalhado",
+        lambda **_k: {
+            "produtos": [{"id": 1, "nome": "P", "codigo": "P1"}],
+            "chamadas_mercos": 1,
+            "total_informado_mercos": 1,
+            "unicos_recebidos": 1,
+            "excluidos": 0,
+            "inativos": 0,
+            "ativos_processados": 1,
+        },
     )
-    assert out.strip() == ""
+    monkeypatch.setattr(
+        sync_mod,
+        "carregar_indice_produtos_locais",
+        lambda **_k: {
+            "por_mercos_id": {},
+            "por_codigo": {},
+            "total_carregados": 0,
+            "paginas": 0,
+        },
+    )
+    monkeypatch.setattr(
+        sync_mod,
+        "normalizar_produto",
+        lambda p: {
+            "nome": p.get("nome"),
+            "codigo": p.get("codigo"),
+            "preco": 1,
+            "estoque": 0,
+            "descricao": "",
+        },
+    )
+    monkeypatch.setattr(sync_mod, "extrair_imagem_mercos", lambda p: None)
+    monkeypatch.setattr(
+        sync_mod,
+        "sincronizar_produto_mercos_seguro",
+        lambda *a, dry_run=False, log_item=True, **k: {
+            "acao": "dry_run_criaria" if dry_run else "criado",
+            "match": None,
+        },
+    )
+    monkeypatch.setattr(sync_mod, "invalidar_cache_produtos", lambda: None)
+    resumo = sincronizar_produtos_mercos(dry_run=True)
+    assert resumo["dry_run"] is True
+    assert resumo["novos"] >= 1
